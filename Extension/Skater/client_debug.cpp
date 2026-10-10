@@ -7,6 +7,7 @@
 #include "Engine/Game/Build/20260929/engine.h"
 #include "Engine/Game/Multiplayer/session_tools.h"
 #include "free_flight.h"
+#include "drone_flight.h"
 #include "Engine/Game/Skater/velocity_boost.h"
 #include "Extension/Multiplayer/Remote/native_skater.h"
 #include "Extension/Objects/ParkEditor/park_editor_runtime.h"
@@ -218,7 +219,12 @@ void debug_flight_tick(SourceTrial& trial, std::uintptr_t client, bool ready, bo
                 : "First person on. The camera follows the skater's head.";
         }
     } else {
-        next = step_free_flight(debug.flight_matrix, input ? *input : idle, seconds, debug.flight_speed);
+        if (drone::is_enabled()) {
+            next = drone::step_drone_flight(debug.flight_matrix, debug.drone_state, input ? *input : idle, seconds, debug.flight_speed);
+        } else {
+            debug.drone_state.valid = false; // restart from the current view next time drone mode turns on
+            next = step_free_flight(debug.flight_matrix, input ? *input : idle, seconds, debug.flight_speed);
+        }
     }
     // Runs after the native client update on the same engine thread. Publishing
     // our owned pose each tick also prevents native helper input from drifting it.
@@ -735,7 +741,9 @@ void debug_action(SourceTrial& trial, std::uintptr_t client, bool can_control, b
         debug.flight_matrix = pose;
         debug.flight_time = source_flight_now();
         debug.flight_ready = true;
-        debug.status = "Freecam enabled. WASD / Q E move; hold RMB to look; Shift boosts.";
+        debug.drone_state.valid = false; // a fresh Freecam starts the drone at rest
+        debug.status = drone::is_enabled() ? "Freecam enabled in drone mode. WASD pitch/roll, Q E throttle, hold RMB + mouse to yaw."
+            : "Freecam enabled. WASD / Q E move; hold RMB to look; Shift boosts.";
         return;
     }
     source_require(false, "Unknown debug request.");

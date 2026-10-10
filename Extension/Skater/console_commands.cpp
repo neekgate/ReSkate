@@ -1,6 +1,7 @@
 #include "Extension/Console/commands.h"
 #include "Extension/Profile/local_profile_runtime.h"
 #include "ai_skaters.h"
+#include "drone_flight.h"
 #include <format>
 namespace dingosdk::console {
 void register_movement_commands(Commands &registry) {
@@ -55,6 +56,21 @@ void register_movement_commands(Commands &registry) {
         };
         registry.add(std::move(entry));
     }
+    auto drone_mode = variable("dronemode",
+        "FPV drone flight for the Freecam (WASD pitch/roll, Q/E throttle, mouse yaw). Turn on freecam first",
+        Group::movement, argument("0|1", Type::boolean));
+    drone_mode.inspect = [](const Model &m) {
+        return boolean_state(m.debug.available, drone::is_enabled(), "Waiting for local player controls.",
+                             "Needs freecam; flyspeed sets the top speed");
+    };
+    drone_mode.run = [](const Model &, const Values &args, const Output &out) {
+        const bool on = std::get<bool>(args[0]);
+        drone::set_enabled(on);
+        out(on ? "Drone mode on. Use 'freecam 1' and fly: forward = nose down, Q/E = throttle, mouse = yaw."
+               : "Drone mode off. Freecam flies normally.");
+    };
+    drone_mode.reset = [](const Model &, const Output &) { drone::set_enabled(false); };
+    registry.add(std::move(drone_mode));
     auto speed = argument("speed", Type::number);
     speed.choices = {"0.6", "3", "5", "15", "60", "300", "1500"};
     auto flight = variable("flyspeed", "Free-flight speed in world units per second", Group::movement, speed);
