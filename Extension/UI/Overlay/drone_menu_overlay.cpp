@@ -79,7 +79,7 @@ void tab_fly() {
     ImGui::EndDisabled();
     if (!s.model.debug.camera_available) ImGui::TextDisabled("Waiting for the player's controls (load into a level).");
     bool radio = radio_on;
-    if (ImGui::Checkbox("Fly with the radio controller", &radio)) run(radio ? "droneradio 1" : "droneradio 0");
+    if (ImGui::Checkbox("Fly with the selected controller (radio / Xbox / PlayStation)", &radio)) run(radio ? "droneradio 1" : "droneradio 0");
     ImGui::Separator();
     const bool armed = drone::armed();
     ImGui::Text("Motors: %s", armed ? "ARMED" : "DISARMED");
@@ -161,17 +161,39 @@ void tab_display() {
 }
 
 void tab_radio() {
+    // Which controller. The list is read again at most once a second (it asks Windows for every joystick).
+    static std::vector<drone::radio::DeviceInfo> devices;
+    static ULONGLONG listed_at = 0;
+    if (devices.empty() || GetTickCount64() - listed_at > 1000) { devices = drone::radio::list_devices(); listed_at = GetTickCount64(); }
+    const int selected = drone::radio::config().device.load();
+    std::string current = "Auto";
+    for (const auto& device : devices) if (device.id == selected) current = device.name;
+    ImGui::SetNextItemWidth(-ImGui::GetFontSize() * 6.0f);
+    if (ImGui::BeginCombo("Controller", current.c_str())) {
+        for (const auto& device : devices) {
+            const std::string label = device.id >= 0 && device.id != drone::radio::gamepad_device
+                                          ? std::format("{} (joystick {})", device.name, device.id) : device.name;
+            if (ImGui::Selectable(label.c_str(), device.id == selected)) run(std::format("dronecontroller {}", device.id));
+        }
+        ImGui::EndCombo();
+    }
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Radios and joysticks come from Windows' game controller list. Pick the Xbox / PlayStation entry for a gamepad.");
     const auto sample = drone::radio::poll();
+    const bool pad = sample.valid ? sample.gamepad : selected == drone::radio::gamepad_device;
     if (!sample.valid) {
-        ImGui::TextWrapped("No radio controller found. Plug it in and set its USB mode to Joystick.");
+        ImGui::TextWrapped(pad ? "No Xbox / PlayStation controller found. Plug it in (or pair it) and press a button."
+                               : "No controller found. Plug in a radio (USB mode Joystick) or pick another above.");
     } else {
-        ImGui::Text("Controller: %s", sample.name.c_str());
+        ImGui::Text("Reading: %s", sample.name.c_str());
+        static const char* const pad_names[6] = {"Left X", "Left Y", "Right X", "Right Y", "Left trigger", "Right trigger"};
         for (int i = 0; i < 6; ++i) {
-            char label[32];
-            std::snprintf(label, sizeof label, "Axis %d", i + 1);
+            char label[40];
+            if (sample.gamepad) std::snprintf(label, sizeof label, "Axis %d (%s)", i + 1, pad_names[i]);
+            else std::snprintf(label, sizeof label, "Axis %d", i + 1);
             char value[16];
             std::snprintf(value, sizeof value, "%+.2f", static_cast<double>(sample.axes[static_cast<std::size_t>(i)]));
-            ImGui::ProgressBar((sample.axes[static_cast<std::size_t>(i)] + 1.0f) * 0.5f, ImVec2(ImGui::GetContentRegionAvail().x * 0.7f, 0), value);
+            ImGui::ProgressBar((sample.axes[static_cast<std::size_t>(i)] + 1.0f) * 0.5f, ImVec2(ImGui::GetContentRegionAvail().x * 0.5f, 0), value);
             ImGui::SameLine();
             ImGui::TextUnformatted(label);
         }
@@ -181,11 +203,20 @@ void tab_radio() {
         ImGui::Text("Buttons pressed: %s", pressed.empty() ? "none" : pressed.c_str());
         ImGui::TextDisabled("Move a stick or flip a switch to see which axis or button it is.");
     }
+    if (pad) {
+        ImGui::Separator();
+        ImGui::TextUnformatted("Gamepad layout");
+        if (ImGui::Button("Mode 2: left throttle + yaw, right pitch + roll")) run("dronegamepad 2");
+        if (ImGui::Button("Mode 1: left pitch + yaw, right throttle + roll")) run("dronegamepad 1");
+        static const char* const modes[] = {"Auto", "Absolute (radio style)", "Middle = hover (gamepad style)"};
+        choice(Knob::kThrottleMode, "Throttle stick", modes, 3);
+        slider(Knob::kPadDeadzone, "Stick dead zone");
+    }
     ImGui::Separator();
     ImGui::TextUnformatted("Which axis each stick uses");
     static const char* const names[4] = {"Roll", "Pitch", "Throttle", "Yaw"};
     static const char* const axes[] = {"Axis 1", "Axis 2", "Axis 3", "Axis 4", "Axis 5", "Axis 6"};
-    auto map = drone::radio::mapping_snapshot();
+    auto map = drone::radio::selected_mapping();
     bool changed = false;
     for (int i = 0; i < 4; ++i) {
         ImGui::PushID(i);
@@ -200,7 +231,7 @@ void tab_radio() {
     }
     if (changed) run(std::format("droneaxes {} {} {} {}", map[0], map[1], map[2], map[3]));
     ImGui::Separator();
-    ImGui::TextUnformatted("Switches (use an axis or button no stick uses; 0 = none)");
+    ImGui::TextUnformatted("Switches (use an axis or button no stick uses; 0 = none). On a gamepad try a trigger or a bumper");
     integer(Knob::kArmAxis, "Arm switch axis");
     integer(Knob::kArmButton, "Arm button");
     integer(Knob::kResetAxis, "Reset switch axis");
@@ -236,7 +267,7 @@ void draw_drone_window() {
             if (ImGui::BeginTabItem("Handling")) { tab_handling(); ImGui::EndTabItem(); }
             if (ImGui::BeginTabItem("Rates")) { tab_rates(); ImGui::EndTabItem(); }
             if (ImGui::BeginTabItem("Display")) { tab_display(); ImGui::EndTabItem(); }
-            if (ImGui::BeginTabItem("Radio")) { tab_radio(); ImGui::EndTabItem(); }
+            if (ImGui::BeginTabItem("Controller")) { tab_radio(); ImGui::EndTabItem(); }
             if (ImGui::BeginTabItem("Lobby")) { tab_lobby(); ImGui::EndTabItem(); }
             ImGui::EndTabBar();
         }

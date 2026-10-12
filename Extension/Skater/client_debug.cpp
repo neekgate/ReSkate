@@ -238,7 +238,7 @@ void debug_flight_tick(SourceTrial& trial, std::uintptr_t client, bool ready, bo
                 if (sample.valid) {
                     drone::apply_switches(sample.axes, sample.buttons);
                     next = drone::step_drone_radio(debug.flight_matrix, debug.drone_state,
-                        drone::radio::map_axes(sample.axes, drone::radio::mapping_snapshot()), seconds, debug.flight_speed,
+                        drone::command_from_sample(sample), seconds, debug.flight_speed,
                         drone::live_settings(), &world);
                     flown_by_radio = true;
                 }
@@ -366,6 +366,15 @@ void load_saved_debug(InteractiveDebug& debug) noexcept {
             const auto axis = saved::number(std::format("Drone.Axis{}", i).c_str());
             const int signed_axis = axis ? static_cast<int>(std::lround(*axis)) : 0;
             if (signed_axis != 0 && std::abs(signed_axis) <= 6) drone::radio::config().map[i] = signed_axis;
+            const auto pad_axis = saved::number(std::format("Drone.PadAxis{}", i).c_str());
+            const int pad_signed = pad_axis ? static_cast<int>(std::lround(*pad_axis)) : 0;
+            if (pad_signed != 0 && std::abs(pad_signed) <= 6) drone::radio::config().pad_map[i] = pad_signed;
+        }
+        // Which controller: -1 auto, 0-15 a joystick / radio, 100 an Xbox / PlayStation controller.
+        if (const auto device = saved::number("Drone.Device")) {
+            const int id = static_cast<int>(std::lround(*device));
+            if (id == drone::radio::auto_device || id == drone::radio::gamepad_device || (id >= 0 && id < 16))
+                drone::radio::config().device = id;
         }
         auto arm = debug.first_person_settings;
         if (const auto enabled = profile_runtime::local_preference(saved::spring)) arm.enabled = *enabled;

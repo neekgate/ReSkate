@@ -156,7 +156,7 @@ void register_movement_commands(Commands &registry) {
     };
     registry.add(std::move(reset_command));
     auto radio_mode = variable("droneradio",
-        "Fly the drone with a USB radio controller (set the radio's USB mode to Joystick). Needs dronemode 1",
+        "Fly the drone with a USB radio, Xbox or PlayStation controller (pick which with dronecontroller). Needs dronemode 1",
         Group::movement, argument("0|1", Type::boolean));
     radio_mode.inspect = [](const Model &m) {
         return boolean_state(m.debug.available, drone::radio::config().enabled.load(), "Waiting for local player controls.",
@@ -179,7 +179,7 @@ void register_movement_commands(Commands &registry) {
     radio_check.run = [](const Model &, const Values &, const Output &out) {
         const auto sample = drone::radio::poll();
         if (!sample.valid) {
-            out("No radio controller found. Plug it in and set its USB mode to Joystick, then try again.");
+            out("No controller found. Plug in a radio (USB mode Joystick), Xbox or PlayStation controller, pick it with dronecontroller, then try again.");
             return;
         }
         out(std::format("Controller: {}", sample.name));
@@ -189,8 +189,8 @@ void register_movement_commands(Commands &registry) {
         for (int n = 1; n <= 32; ++n)
             if (sample.buttons & (1u << (n - 1))) pressed += (pressed.empty() ? "" : " ") + std::to_string(n);
         out(std::format("Buttons pressed: {}", pressed.empty() ? "none" : pressed));
-        const auto map = drone::radio::mapping_snapshot();
-        const auto cmd = drone::radio::map_axes(sample.axes, map);
+        const auto map = drone::radio::mapping_for(sample.device);
+        const auto cmd = drone::command_from_sample(sample);
         out(std::format("Mapping (roll pitch throttle yaw): {} {} {} {}", map[0], map[1], map[2], map[3]));
         out(std::format("Drone reads: roll {:+.2f} (right +)  pitch {:+.2f} (forward +)  throttle {:.2f}  yaw {:+.2f} (right +)",
                         cmd.roll, cmd.pitch, cmd.throttle, cmd.yaw));
@@ -204,10 +204,12 @@ void register_movement_commands(Commands &registry) {
         a.maximum = 6;
         return a;
     };
-    auto radio_axes = action("droneaxes", "Map radio axes: roll pitch throttle yaw, each 1-6 (a minus sign flips it). Default: 1 2 3 4",
+    auto radio_axes = action("droneaxes",
+        "Map the selected controller's axes: roll pitch throttle yaw, each 1-6 (a minus sign flips it). Radio default: 1 2 3 4. "
+        "Gamepad (1 left X, 2 left Y, 3 right X, 4 right Y, 5 LT, 6 RT) default: 3 4 2 1",
         Group::movement, {axis_argument("roll"), axis_argument("pitch"), axis_argument("throttle"), axis_argument("yaw")});
     radio_axes.inspect = [](const Model &) {
-        const auto map = drone::radio::mapping_snapshot();
+        const auto map = drone::radio::selected_mapping();
         return State{true, std::format("{} {} {} {}", map[0], map[1], map[2], map[3]), {}, {}, false};
     };
     radio_axes.run = [](const Model &, const Values &args, const Output &out) {
@@ -219,15 +221,62 @@ void register_movement_commands(Commands &registry) {
                 return;
             }
         }
+        const bool pad = drone::radio::config().device.load() == drone::radio::gamepad_device;
         std::vector<std::pair<std::string, Json>> saved;
-        for (std::size_t i = 0; i < 4; ++i) {
-            drone::radio::config().map[i] = next[i];
-            saved.emplace_back(std::format("Drone.Axis{}", i), static_cast<double>(next[i]));
-        }
+        for (std::size_t i = 0; i < 4; ++i)
+            saved.emplace_back(std::format(pad ? "Drone.PadAxis{}" : "Drone.Axis{}", i), static_cast<double>(next[i]));
+        drone::radio::store_selected_mapping(next);
         profile_runtime::set_local_values(saved);
-        out(std::format("Axes saved: roll {} pitch {} throttle {} yaw {}", next[0], next[1], next[2], next[3]));
+        out(std::format("{} axes saved: roll {} pitch {} throttle {} yaw {}", pad ? "Gamepad" : "Radio", next[0], next[1], next[2], next[3]));
     };
     registry.add(std::move(radio_axes));
+    auto controller = variable("dronecontroller",
+        "Which controller flies the drone: -1 = auto, 0-15 = a radio / joystick (see dronecontrollers), 100 = Xbox or PlayStation controller",
+        Group::movement, argument("controller", Type::number));
+    controller.inspect = [](const Model &m) {
+        return State{m.debug.available, std::optional<std::string>(std::to_string(drone::radio::config().device.load())),
+                     "Waiting for local player controls.", {}, false};
+    };
+    controller.run = [](const Model &, const Values &args, const Output &out) {
+        const int id = static_cast<int>(std::lround(std::get<double>(args[0])));
+        if (id != drone::radio::auto_device && id != drone::radio::gamepad_device && (id < 0 || id > 15)) {
+            out("error: Use -1 (auto), 0-15 (a joystick or radio), or 100 (Xbox / PlayStation controller).");
+            return;
+        }
+        drone::radio::config().device = id;
+        profile_runtime::set_local_values({{"Drone.Device", static_cast<double>(id)}});
+        out(id == drone::radio::gamepad_device ? "Using the Xbox / PlayStation controller. Left stick throttle + yaw, right stick pitch + roll (dronegamepad 1 for mode 1). The middle of the throttle stick hovers."
+            : id == drone::radio::auto_device  ? "Using the first radio found, else the first controller."
+                                               : std::format("Using joystick {}.", id));
+    };
+    controller.reset = [](const Model &, const Output &) {
+        drone::radio::config().device = drone::radio::auto_device;
+        profile_runtime::set_local_values({{"Drone.Device", -1.0}});
+    };
+    registry.add(std::move(controller));
+    auto controllers = action("dronecontrollers", "List the controllers the drone can use and their numbers for dronecontroller", Group::movement);
+    controllers.inspect = [](const Model &) { return State{true, {}, {}, {}, false}; };
+    controllers.run = [](const Model &, const Values &, const Output &out) {
+        for (const auto &device : drone::radio::list_devices())
+            out(std::format("{:>3}  {}{}", device.id, device.name, device.id == drone::radio::config().device.load() ? "   <- selected" : ""));
+    };
+    registry.add(std::move(controllers));
+    auto gamepad_mode = action("dronegamepad", "Set the Xbox / PlayStation stick layout: mode 2 (default: left throttle+yaw, right pitch+roll) or mode 1",
+        Group::movement, {argument("mode", Type::number)});
+    gamepad_mode.inspect = [](const Model &) { return State{true, {}, {}, {}, false}; };
+    gamepad_mode.run = [](const Model &, const Values &args, const Output &out) {
+        const int mode = static_cast<int>(std::lround(std::get<double>(args[0])));
+        if (mode != 1 && mode != 2) { out("error: Mode must be 1 or 2."); return; }
+        const auto map = drone::radio::gamepad_preset(mode);
+        std::vector<std::pair<std::string, Json>> saved;
+        for (std::size_t i = 0; i < 4; ++i) {
+            drone::radio::config().pad_map[i] = map[i];
+            saved.emplace_back(std::format("Drone.PadAxis{}", i), static_cast<double>(map[i]));
+        }
+        profile_runtime::set_local_values(saved);
+        out(std::format("Gamepad mode {} (roll {} pitch {} throttle {} yaw {}).", mode, map[0], map[1], map[2], map[3]));
+    };
+    registry.add(std::move(gamepad_mode));
     auto speed = argument("speed", Type::number);
     speed.choices = {"0.6", "3", "5", "15", "60", "300", "1500"};
     auto flight = variable("flyspeed", "Free-flight speed in world units per second", Group::movement, speed);

@@ -462,6 +462,18 @@ extern "C" __declspec(dllexport) bool DingoSDKOverlayStartV2(
 extern "C" __declspec(dllexport) bool DingoSDKOverlayStartV3(
     const dingosdk::overlay::CallbacksV3* callbacks);
 
+// The first Xbox (XInput) or PlayStation (DualShock 4 / DualSense) controller, read directly.
+// Sticks are -1..1 (up and right positive), triggers 0..1; `buttons` is XInput's wButtons bit mask.
+// Used by the FPV drone's controller selection (Skater/drone_radio.h); safe from any thread.
+struct Gamepad {
+    bool valid = false;
+    bool playstation = false;
+    float left_x = 0, left_y = 0, right_x = 0, right_y = 0;
+    float left_trigger = 0, right_trigger = 0;
+    unsigned buttons = 0;
+};
+Gamepad read_gamepad();
+
 // Nonblocking. A later Present releases GPU resources after its fence completes.
 // The DLL stays pinned until process exit so no thread can return into unloaded
 // detours. Input is released immediately, even if rendering has stopped.

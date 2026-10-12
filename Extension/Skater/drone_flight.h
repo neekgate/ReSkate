@@ -102,7 +102,8 @@ struct KnobInfo { const char* name; const char* help; float lo, hi, def; };
 enum Knob : std::size_t { kGravity, kDrag, kHover, kRollCenter, kRollMax, kRollExpo, kPitchCenter, kPitchMax, kPitchExpo,
     kYawCenter, kYawMax, kYawExpo, kUptilt, kFloor, kPark, kCollide, kRadius, kOsd, kVolume,
     kOsdScale, kOsdColor, kOsdFont, kOsdMargin, kCrosshair, kShowArmed, kShowBattery, kShowTimer, kShowThrottle, kShowAlt,
-    kShowSpeed, kSticks, kStickSize, kArmAxis, kResetAxis, kDisarmFreeze, kBeacon, kShowBeacons, kArmButton, kResetButton };
+    kShowSpeed, kSticks, kStickSize, kArmAxis, kResetAxis, kDisarmFreeze, kBeacon, kShowBeacons, kArmButton, kResetButton,
+    kThrottleMode, kPadDeadzone };
 inline constexpr KnobInfo knob_info[] = {
     {"gravity", "downward pull", 0.0f, 50.0f, 9.81f},
     {"drag", "air drag: higher stops you sooner", 0.0f, 3.0f, 0.15f},
@@ -143,9 +144,11 @@ inline constexpr KnobInfo knob_info[] = {
     {"showbeacons", "1 = show markers for other players' drones", 0.0f, 1.0f, 1.0f},
     {"armbutton", "radio button 1-32 for arming (held = armed; 0 = none)", 0.0f, 32.0f, 0.0f},
     {"resetbutton", "radio button 1-32 for reset (press = reset; 0 = none)", 0.0f, 32.0f, 0.0f},
+    {"throttlemode", "throttle stick: 0 = auto (a gamepad's springs to the middle = hover; a radio's is absolute), 1 = absolute, 2 = middle holds hover", 0.0f, 2.0f, 0.0f},
+    {"padzone", "gamepad stick dead zone, 0-0.4 (stops drift)", 0.0f, 0.4f, 0.12f},
 };
 inline constexpr std::size_t knob_count = std::size(knob_info);
-static_assert(knob_count == kResetButton + 1, "knob enum and table must match");
+static_assert(knob_count == kPadDeadzone + 1, "knob enum and table must match");
 struct KnobValues {
     std::atomic<float> value[knob_count];
     KnobValues() { for (std::size_t i = 0; i < knob_count; ++i) value[i] = knob_info[i].def; }
@@ -166,6 +169,16 @@ inline Settings live_settings() {
     s.collide = get(kCollide) >= 0.5f; s.body_radius = get(kRadius);
     s.armed = armed(); s.disarm_freeze = get(kDisarmFreeze) >= 0.5f; s.beacon = get(kBeacon) >= 0.5f;
     return s;
+}
+
+// What the sticks of a polled controller ask for, using the right mapping, dead zone and throttle
+// style for it (a radio's throttle is absolute; a gamepad's springs back to the middle).
+inline radio::Command command_from_sample(const radio::Sample& sample) {
+    const auto get = [](Knob k) { return knobs().value[k].load(std::memory_order_relaxed); };
+    const int mode = static_cast<int>(std::lround(get(kThrottleMode)));
+    const bool centred = mode == 2 || (mode == 0 && sample.gamepad);
+    const float dz = sample.gamepad ? get(kPadDeadzone) : 0.03f;
+    return radio::map_axes(sample.axes, radio::mapping_for(sample.device), dz, centred ? get(kHover) : -1.0f);
 }
 
 namespace detail {

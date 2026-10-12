@@ -4,6 +4,7 @@
 // small `drone` packet (Multiplayer/Net/protocol.h); the receiver keeps the latest position of
 // each player's drone and the overlay draws a marker for it (UI/Overlay/drone_hud_overlay.cpp).
 // Header-only and free of game code, so the networking can use it without pulling in the flight model.
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cmath>
@@ -44,7 +45,7 @@ inline void publish_local(const Position& position, bool share) {
 }
 
 struct Outgoing { bool active; Position position; };
-// Asked by the network every tick: a position to send now (about five times a second while
+// Asked by the network every tick: a position to send now (twenty times a second while
 // flying, and once to say it stopped), or nothing.
 inline std::optional<Outgoing> next_outgoing(Clock::time_point now = Clock::now()) {
     auto& l = local();
@@ -52,7 +53,7 @@ inline std::optional<Outgoing> next_outgoing(Clock::time_point now = Clock::now(
     const bool flying = l.share && l.updated != Clock::time_point{} && now - l.updated < std::chrono::milliseconds(300) &&
                         valid_position(l.position);
     if (flying) {
-        if (l.announced && now - l.last_sent < std::chrono::milliseconds(200)) return std::nullopt;
+        if (l.announced && now - l.last_sent < std::chrono::milliseconds(50)) return std::nullopt;
         l.announced = true;
         l.last_sent = now;
         return Outgoing{true, l.position};
@@ -69,8 +70,13 @@ inline std::optional<Outgoing> next_outgoing(Clock::time_point now = Clock::now(
 struct Remote {
     std::uint64_t id{};
     std::string name;
-    Position position{};
+    Position position{};          // what to draw: smoothed, see snapshot()
     Clock::time_point seen{};
+    // Smoothing state: the packets arrive in steps, the picture should glide between them.
+    Position target{};            // newest position received
+    Position velocity{};          // units per second, estimated from the last packets
+    Position shown{};             // eased position
+    Clock::time_point shown_at{};
 };
 struct Remotes {
     std::mutex mutex;
@@ -89,12 +95,23 @@ inline void receive(std::uint64_t id, std::string name, const Position& position
         if (it->id == id) {
             if (!active) { r.list.erase(it); return; }
             if (!name.empty()) it->name = std::move(name);
-            it->position = position;
+            const float dt = std::chrono::duration<float>(now - it->seen).count();
+            float moved = 0.0f;
+            for (std::size_t i = 0; i < 3; ++i) moved += (position[i] - it->target[i]) * (position[i] - it->target[i]);
+            if (dt > 0.01f && dt < 0.6f && moved < 2500.0f) {
+                for (std::size_t i = 0; i < 3; ++i) {
+                    const float v = (position[i] - it->target[i]) / dt;
+                    it->velocity[i] = it->velocity[i] * 0.5f + v * 0.5f;
+                }
+            } else {
+                it->velocity = {};
+            }
+            it->target = position;
             it->seen = now;
             return;
         }
     if (!active || r.list.size() >= max_remote) return;
-    r.list.push_back({id, std::move(name), position, now});
+    r.list.push_back({id, std::move(name), position, now, position, {}, position, now});
 }
 // Someone left the session.
 inline void forget(std::uint64_t id) {
@@ -102,11 +119,27 @@ inline void forget(std::uint64_t id) {
     std::lock_guard lock(r.mutex);
     std::erase_if(r.list, [id](const Remote& x) { return x.id == id; });
 }
-// The drones to show now (stale ones are dropped).
+// The drones to show now (stale ones are dropped). Each position is the newest packet carried
+// forward by the drone's estimated velocity (for at most a quarter second) and eased toward, so
+// it moves smoothly even though packets arrive in steps and sometimes late. Call it once a frame.
 inline std::vector<Remote> snapshot(Clock::time_point now = Clock::now()) {
     auto& r = remotes();
     std::lock_guard lock(r.mutex);
     std::erase_if(r.list, [now](const Remote& x) { return now - x.seen > stale_after; });
+    for (auto& x : r.list) {
+        const float ahead = std::min(std::chrono::duration<float>(now - x.seen).count(), 0.25f);
+        Position goal{};
+        float jump = 0.0f;
+        for (std::size_t i = 0; i < 3; ++i) {
+            goal[i] = x.target[i] + x.velocity[i] * std::max(ahead, 0.0f);
+            jump += (goal[i] - x.shown[i]) * (goal[i] - x.shown[i]);
+        }
+        const float dt = std::clamp(std::chrono::duration<float>(now - x.shown_at).count(), 0.0f, 0.5f);
+        const float blend = jump > 2500.0f ? 1.0f : 1.0f - std::exp(-dt * 25.0f);   // far away = teleported: snap
+        for (std::size_t i = 0; i < 3; ++i) x.shown[i] += (goal[i] - x.shown[i]) * blend;
+        x.shown_at = now;
+        x.position = x.shown;
+    }
     return r.list;
 }
 } // namespace dingosdk::drone::beacon
