@@ -13,6 +13,8 @@
 #include "Extension/Objects/ParkEditor/park_editor_runtime.h"
 #include "Extension/Profile/local_profile_runtime.h"
 #include <cmath>
+#include <cstdlib>
+#include <format>
 #include <optional>
 #include <utility>
 
@@ -220,7 +222,17 @@ void debug_flight_tick(SourceTrial& trial, std::uintptr_t client, bool ready, bo
         }
     } else {
         if (drone::is_enabled()) {
-            next = drone::step_drone_flight(debug.flight_matrix, debug.drone_state, input ? *input : idle, seconds, debug.flight_speed);
+            bool flown_by_radio = false;
+            if (drone::radio::config().enabled.load(std::memory_order_acquire) && drone::radio::game_in_foreground()) {
+                const auto sample = drone::radio::poll();
+                if (sample.valid) {
+                    next = drone::step_drone_radio(debug.flight_matrix, debug.drone_state,
+                        drone::radio::map_axes(sample.axes, drone::radio::mapping_snapshot()), seconds, debug.flight_speed);
+                    flown_by_radio = true;
+                }
+            }
+            if (!flown_by_radio)
+                next = drone::step_drone_flight(debug.flight_matrix, debug.drone_state, input ? *input : idle, seconds, debug.flight_speed);
         } else {
             debug.drone_state.valid = false; // restart from the current view next time drone mode turns on
             next = step_free_flight(debug.flight_matrix, input ? *input : idle, seconds, debug.flight_speed);
@@ -330,6 +342,13 @@ void load_saved_debug(InteractiveDebug& debug) noexcept {
         if (const auto fov = saved::number(saved::free_camera_fov);
             fov && (*fov == 0.0f || (*fov >= first_person_fov_min && *fov <= first_person_fov_max)))
             debug.free_camera_fov = *fov;
+        // Drone radio: on/off and which axis is which (signed 1..6), saved by the console commands.
+        if (const auto radio_on = saved::number("Drone.Radio")) drone::radio::config().enabled = *radio_on != 0.0f;
+        for (int i = 0; i < 4; ++i) {
+            const auto axis = saved::number(std::format("Drone.Axis{}", i).c_str());
+            const int signed_axis = axis ? static_cast<int>(std::lround(*axis)) : 0;
+            if (signed_axis != 0 && std::abs(signed_axis) <= 6) drone::radio::config().map[i] = signed_axis;
+        }
         auto arm = debug.first_person_settings;
         if (const auto enabled = profile_runtime::local_preference(saved::spring)) arm.enabled = *enabled;
         for (std::size_t i = 0; i < 3; ++i) {

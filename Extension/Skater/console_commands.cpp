@@ -2,7 +2,10 @@
 #include "Extension/Profile/local_profile_runtime.h"
 #include "ai_skaters.h"
 #include "drone_flight.h"
+#include <cstdlib>
 #include <format>
+#include <utility>
+#include <vector>
 namespace dingosdk::console {
 void register_movement_commands(Commands &registry) {
     using Debug = overlay::DebugAction;
@@ -71,6 +74,74 @@ void register_movement_commands(Commands &registry) {
     };
     drone_mode.reset = [](const Model &, const Output &) { drone::set_enabled(false); };
     registry.add(std::move(drone_mode));
+    auto radio_mode = variable("droneradio",
+        "Fly the drone with a USB radio controller (set the radio's USB mode to Joystick). Needs dronemode 1",
+        Group::movement, argument("0|1", Type::boolean));
+    radio_mode.inspect = [](const Model &m) {
+        return boolean_state(m.debug.available, drone::radio::config().enabled.load(), "Waiting for local player controls.",
+                             "droneradiocheck shows the stick values; droneaxes remaps them");
+    };
+    radio_mode.run = [](const Model &, const Values &args, const Output &out) {
+        const bool on = std::get<bool>(args[0]);
+        drone::radio::config().enabled = on;
+        profile_runtime::set_local_values({{"Drone.Radio", on ? 1.0 : 0.0}});
+        out(on ? "Radio on. Throttle stick down = parked; about 35% hovers. Run droneradiocheck if a stick does the wrong thing."
+               : "Radio off. The drone uses the keyboard and mouse.");
+    };
+    radio_mode.reset = [](const Model &, const Output &) {
+        drone::radio::config().enabled = false;
+        profile_runtime::set_local_values({{"Drone.Radio", 0.0}});
+    };
+    registry.add(std::move(radio_mode));
+    auto radio_check = action("droneradiocheck", "Show the radio's raw axes (1-6) and how the drone reads them", Group::movement);
+    radio_check.inspect = [](const Model &) { return State{true, {}, {}, {}, false}; };
+    radio_check.run = [](const Model &, const Values &, const Output &out) {
+        const auto sample = drone::radio::poll();
+        if (!sample.valid) {
+            out("No radio controller found. Plug it in and set its USB mode to Joystick, then try again.");
+            return;
+        }
+        out(std::format("Controller: {}", sample.name));
+        out(std::format("Raw axes 1-6: {:+.2f} {:+.2f} {:+.2f} {:+.2f} {:+.2f} {:+.2f}", sample.axes[0], sample.axes[1],
+                        sample.axes[2], sample.axes[3], sample.axes[4], sample.axes[5]));
+        const auto map = drone::radio::mapping_snapshot();
+        const auto cmd = drone::radio::map_axes(sample.axes, map);
+        out(std::format("Mapping (roll pitch throttle yaw): {} {} {} {}", map[0], map[1], map[2], map[3]));
+        out(std::format("Drone reads: roll {:+.2f} (right +)  pitch {:+.2f} (forward +)  throttle {:.2f}  yaw {:+.2f} (right +)",
+                        cmd.roll, cmd.pitch, cmd.throttle, cmd.yaw));
+        out("Hold a stick over and run this again to see which axis moves. Use droneaxes to remap; a minus sign flips an axis.");
+    };
+    registry.add(std::move(radio_check));
+    const auto axis_argument = [](const char *name) {
+        auto a = argument(name, Type::number);
+        a.minimum = -6;
+        a.maximum = 6;
+        return a;
+    };
+    auto radio_axes = action("droneaxes", "Map radio axes: roll pitch throttle yaw, each 1-6 (a minus sign flips it). Default: 1 2 3 4",
+        Group::movement, {axis_argument("roll"), axis_argument("pitch"), axis_argument("throttle"), axis_argument("yaw")});
+    radio_axes.inspect = [](const Model &) {
+        const auto map = drone::radio::mapping_snapshot();
+        return State{true, std::format("{} {} {} {}", map[0], map[1], map[2], map[3]), {}, {}, false};
+    };
+    radio_axes.run = [](const Model &, const Values &args, const Output &out) {
+        std::array<int, 4> next{};
+        for (std::size_t i = 0; i < 4; ++i) {
+            next[i] = static_cast<int>(std::lround(std::get<double>(args[i])));
+            if (next[i] == 0 || std::abs(next[i]) > 6) {
+                out("error: Each axis must be 1-6, or -1 to -6 to flip it.");
+                return;
+            }
+        }
+        std::vector<std::pair<std::string, Json>> saved;
+        for (std::size_t i = 0; i < 4; ++i) {
+            drone::radio::config().map[i] = next[i];
+            saved.emplace_back(std::format("Drone.Axis{}", i), static_cast<double>(next[i]));
+        }
+        profile_runtime::set_local_values(saved);
+        out(std::format("Axes saved: roll {} pitch {} throttle {} yaw {}", next[0], next[1], next[2], next[3]));
+    };
+    registry.add(std::move(radio_axes));
     auto speed = argument("speed", Type::number);
     speed.choices = {"0.6", "3", "5", "15", "60", "300", "1500"};
     auto flight = variable("flyspeed", "Free-flight speed in world units per second", Group::movement, speed);

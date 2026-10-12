@@ -12,6 +12,7 @@
 //   input.look_y   -> extra pitch (mouse look delta)
 //   input.boost    -> doubles the speed cap
 #include "free_flight.h"
+#include "drone_radio.h"
 #include <atomic>
 
 namespace dingosdk::drone {
@@ -87,12 +88,23 @@ inline std::array<float, 16> camera_from_body(const std::array<float, 16>& body,
 }
 }
 
-// One step. `camera` is the camera pose published last tick (its translation is the drone position).
-inline std::array<float, 16> step_drone_flight(const std::array<float, 16>& camera, State& state,
-    const overlay::FlightInput& input, float seconds, float speed, const Settings& cfg = {}) {
+// What the pilot is asking for, whatever the input device.
+struct Cmd {
+    float pitch = 0;          // + = nose up
+    float roll = 0;           // + = roll right
+    float yaw_rad = 0;        // radians this step; negative = turn right
+    float look_pitch_rad = 0; // extra pitch from the mouse (radians, + = look down)
+    float throttle = 0.35f;   // 0..1 absolute
+    bool boost = false;
+    bool park = false;        // motors off: hold position
+};
+
+// One step of the flight model. `camera` is the pose published last tick (its translation is
+// the drone position).
+inline std::array<float, 16> step_drone_cmd(const std::array<float, 16>& camera, State& state, const Cmd& cmd,
+    float seconds, float speed, const Settings& cfg = {}) {
     using namespace detail;
-    if (!input.active || !valid_flight_transform(camera) || !std::isfinite(seconds) || !std::isfinite(speed) ||
-        !std::isfinite(input.look_x) || !std::isfinite(input.look_y)) return camera;
+    if (!valid_flight_transform(camera) || !std::isfinite(seconds) || !std::isfinite(speed)) return camera;
     const float dt = std::clamp(seconds, 0.0f, 0.05f);
     const float uptilt = cfg.camera_uptilt_deg * kDegToRad;
     const Vec3 position{camera[12], camera[13], camera[14]};
@@ -105,11 +117,10 @@ inline std::array<float, 16> step_drone_flight(const std::array<float, 16>& came
         state.valid = true;
     }
 
-    const float pitch_in = clamp1(-input.forward);          // forward stick = nose down
-    const float roll_in = clamp1(input.right);
-    const float up_in = clamp1(input.up);
-    const float yaw_delta = -std::clamp(input.look_x, -250.0f, 250.0f) * cfg.yaw_look_scale; // rad, right = negative about up
-    const float look_pitch = std::clamp(input.look_y, -250.0f, 250.0f) * cfg.yaw_look_scale;
+    const float pitch_in = clamp1(cmd.pitch);
+    const float roll_in = clamp1(cmd.roll);
+    const float yaw_delta = std::isfinite(cmd.yaw_rad) ? cmd.yaw_rad : 0.0f;
+    const float look_pitch = std::isfinite(cmd.look_pitch_rad) ? cmd.look_pitch_rad : 0.0f;
 
     // Attitude
     if (!cfg.angle_mode) {
@@ -121,18 +132,17 @@ inline std::array<float, 16> step_drone_flight(const std::array<float, 16>& came
     } else {
         // Heading from yaw input; tilt eases toward the commanded angle.
         const Vec3 fwd = scale(row(state.body, 2), -1.0f);
-        const float heading = std::atan2(fwd[0], -fwd[2]) + 0.0f;
-        const float new_heading = heading + yaw_delta * -1.0f;   // yaw_delta is negative for look right
+        const float heading = std::atan2(fwd[0], -fwd[2]);
+        const float new_heading = heading - yaw_delta;
         const float max_a = cfg.max_angle_deg * kDegToRad;
         const float k = 1 - std::exp(-cfg.angle_response * dt);
         const float cur_pitch = std::asin(std::clamp(fwd[1], -1.0f, 1.0f));
         const float cur_roll = std::asin(std::clamp(row(state.body, 0)[1], -1.0f, 1.0f)) * -1.0f;
-        const float want_pitch = -pitch_in * max_a, want_roll = roll_in * max_a;
+        const float want_pitch = pitch_in * max_a, want_roll = roll_in * max_a;
         const float p = cur_pitch + (want_pitch - cur_pitch) * k - look_pitch;
         const float r = cur_roll + (want_roll - cur_roll) * k;
-        // Rebuild: level basis for the heading, then pitch and roll.
         Vec3 f{std::sin(new_heading), 0, -std::cos(new_heading)};
-        Vec3 right{-f[2], 0, f[0]};  // f x worldUp
+        Vec3 right{-f[2], 0, f[0]};
         Vec3 up{0, 1, 0};
         std::array<float, 16> m = state.body;
         set_row(m, 0, right); set_row(m, 1, up); set_row(m, 2, scale(f, -1.0f));
@@ -142,24 +152,61 @@ inline std::array<float, 16> step_drone_flight(const std::array<float, 16>& came
     }
 
     // Translation
-    const Vec3 up = row(state.body, 1);
-    const float thr = up_in >= 0 ? cfg.hover_throttle + up_in * (1.0f - cfg.hover_throttle)
-                                 : cfg.hover_throttle + up_in * cfg.hover_throttle;
-    const float thrust = thr * (cfg.gravity / cfg.hover_throttle);
-    const float spd = std::sqrt(dot(state.velocity, state.velocity));
-    const float drag = cfg.lin_drag + cfg.quad_drag * spd;
-    Vec3 accel{up[0] * thrust - state.velocity[0] * drag,
-               up[1] * thrust - cfg.gravity - state.velocity[1] * drag,
-               up[2] * thrust - state.velocity[2] * drag};
-    for (int i = 0; i < 3; ++i) state.velocity[i] += accel[i] * dt;
-    const float cap = std::clamp(speed, 0.6f, 1500.0f) * 4.0f * (input.boost ? 2.0f : 1.0f);
-    const float now = std::sqrt(dot(state.velocity, state.velocity));
-    if (now > cap) for (auto& v : state.velocity) v *= cap / now;
-    const Vec3 next_pos{position[0] + state.velocity[0] * dt, position[1] + state.velocity[1] * dt,
-                        position[2] + state.velocity[2] * dt};
+    Vec3 next_pos = position;
+    if (cmd.park) {
+        state.velocity = {0, 0, 0};
+    } else {
+        const Vec3 up = row(state.body, 1);
+        const float thrust = std::clamp(cmd.throttle, 0.0f, 1.0f) * (cfg.gravity / cfg.hover_throttle);
+        const float spd = std::sqrt(dot(state.velocity, state.velocity));
+        const float drag = cfg.lin_drag + cfg.quad_drag * spd;
+        Vec3 accel{up[0] * thrust - state.velocity[0] * drag,
+                   up[1] * thrust - cfg.gravity - state.velocity[1] * drag,
+                   up[2] * thrust - state.velocity[2] * drag};
+        for (int i = 0; i < 3; ++i) state.velocity[i] += accel[i] * dt;
+        const float cap = std::clamp(speed, 0.6f, 1500.0f) * 4.0f * (cmd.boost ? 2.0f : 1.0f);
+        const float now = std::sqrt(dot(state.velocity, state.velocity));
+        if (now > cap) for (auto& v : state.velocity) v *= cap / now;
+        next_pos = {position[0] + state.velocity[0] * dt, position[1] + state.velocity[1] * dt,
+                    position[2] + state.velocity[2] * dt};
+    }
 
     const auto out = camera_from_body(state.body, next_pos, uptilt);
     if (!valid_flight_transform(out)) { state.valid = false; return camera; }
     return out;
+}
+
+// Keyboard / mouse / game-controller input (the Freecam's own FlightInput).
+inline std::array<float, 16> step_drone_flight(const std::array<float, 16>& camera, State& state,
+    const overlay::FlightInput& input, float seconds, float speed, const Settings& cfg = {}) {
+    using namespace detail;
+    if (!input.active || !std::isfinite(input.look_x) || !std::isfinite(input.look_y)) return camera;
+    Cmd cmd;
+    cmd.pitch = clamp1(-input.forward);   // forward stick = nose down
+    cmd.roll = clamp1(input.right);
+    cmd.yaw_rad = -std::clamp(input.look_x, -250.0f, 250.0f) * cfg.yaw_look_scale;  // right = negative about up
+    cmd.look_pitch_rad = std::clamp(input.look_y, -250.0f, 250.0f) * cfg.yaw_look_scale;
+    // Keyboard has no absolute throttle: neutral hovers, Q/E climb or descend.
+    const float up_in = clamp1(input.up);
+    cmd.throttle = up_in >= 0 ? cfg.hover_throttle + up_in * (1.0f - cfg.hover_throttle)
+                              : cfg.hover_throttle + up_in * cfg.hover_throttle;
+    cmd.boost = input.boost;
+    return step_drone_cmd(camera, state, cmd, seconds, speed, cfg);
+}
+
+// Radio controller: sticks drive rates directly, the throttle stick is absolute thrust, and a
+// throttle at the bottom parks the drone (motors off) so it does not fall through the map.
+inline std::array<float, 16> step_drone_radio(const std::array<float, 16>& camera, State& state,
+    const radio::Command& sticks, float seconds, float speed, const Settings& cfg = {}) {
+    using namespace detail;
+    if (!sticks.valid) return camera;
+    const float dt = std::clamp(std::isfinite(seconds) ? seconds : 0.0f, 0.0f, 0.05f);
+    Cmd cmd;
+    cmd.pitch = clamp1(-sticks.pitch);    // stick forward = nose down
+    cmd.roll = clamp1(sticks.roll);
+    cmd.yaw_rad = -expo_curve(clamp1(sticks.yaw), cfg.expo) * cfg.yaw_rate_deg * kDegToRad * dt;
+    cmd.throttle = std::clamp(sticks.throttle, 0.0f, 1.0f);
+    cmd.park = sticks.throttle <= 0.03f;
+    return step_drone_cmd(camera, state, cmd, seconds, speed, cfg);
 }
 }
