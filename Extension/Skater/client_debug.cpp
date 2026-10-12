@@ -8,6 +8,7 @@
 #include "Engine/Game/Multiplayer/session_tools.h"
 #include "free_flight.h"
 #include "drone_flight.h"
+#include "drone_audio.h"
 #include "Engine/Game/Skater/velocity_boost.h"
 #include "Extension/Multiplayer/Remote/native_skater.h"
 #include "Extension/Objects/ParkEditor/park_editor_runtime.h"
@@ -222,6 +223,7 @@ void debug_flight_tick(SourceTrial& trial, std::uintptr_t client, bool ready, bo
         }
     } else {
         if (drone::is_enabled()) {
+            drone::audio::ensure_started();
             // The game's own collision query (the Park Editor's ray), so the drone hits ground, walls and ramps.
             static const drone::World world{[](const std::array<float, 3>& from, const std::array<float, 3>& to,
                                               std::array<float, 3>& hit) {

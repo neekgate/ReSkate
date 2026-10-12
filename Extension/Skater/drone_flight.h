@@ -14,6 +14,7 @@
 #include "free_flight.h"
 #include "drone_radio.h"
 #include <atomic>
+#include <chrono>
 #include <functional>
 #include <iterator>
 #include <string_view>
@@ -45,7 +46,20 @@ struct State {
     std::array<float, 16> body{};   // body orientation (translation unused); camera = body tilted up
     std::array<float, 3> velocity{};
     float start_y = 0;              // height the flight began at; the invisible floor hangs below it
+    float flight_time = 0;          // seconds since this flight began (the OSD timer)
 };
+
+// What the OSD and the motor sound read (written by the flight tick, read from other threads).
+struct Telemetry {
+    std::atomic<float> throttle{0}, speed{0}, altitude{0}, seconds{0};
+    std::atomic<long long> last_ms{0};   // steady-clock milliseconds of the last flight tick
+};
+inline Telemetry& telemetry() { static Telemetry value; return value; }
+inline long long now_ms() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+// True while the drone is being flown (a flight tick ran in the last quarter second).
+inline bool flying() { return now_ms() - telemetry().last_ms.load(std::memory_order_relaxed) < 250; }
 
 inline std::atomic<bool>& enabled() {
     static std::atomic<bool> value{false};
@@ -64,11 +78,13 @@ inline constexpr KnobInfo knob_info[] = {
     {"rollrate", "roll speed in deg/s at full stick", 30.0f, 1500.0f, 600.0f},
     {"yawrate", "radio yaw speed in deg/s", 20.0f, 1000.0f, 250.0f},
     {"expo", "stick softness near the centre, 0-1", 0.0f, 1.0f, 0.55f},
-    {"uptilt", "camera tilt up in degrees", 0.0f, 70.0f, 25.0f},
+    {"uptilt", "camera tilt up in degrees (FPV cameras are about 25-40)", -30.0f, 70.0f, 25.0f},
     {"floor", "invisible floor, units below your start height; 0 = none", 0.0f, 1000.0f, 1.5f},
     {"park", "1 = radio throttle at the bottom freezes the drone, 0 = it falls", 0.0f, 1.0f, 0.0f},
     {"collide", "1 = hit the ground, walls and ramps, 0 = fly through everything", 0.0f, 1.0f, 1.0f},
     {"radius", "how close it gets to a surface before stopping", 0.05f, 3.0f, 0.3f},
+    {"osd", "1 = show the flight display (battery, timer, throttle, altitude, speed)", 0.0f, 1.0f, 1.0f},
+    {"volume", "motor sound volume, 0 = silent", 0.0f, 1.0f, 0.5f},
 };
 inline constexpr std::size_t knob_count = std::size(knob_info);
 struct KnobValues {
@@ -165,6 +181,7 @@ inline std::array<float, 16> step_drone_cmd(const std::array<float, 16>& camera,
         rotate_basis(state.body, row(camera, 0), -uptilt);
         state.velocity = {0, 0, 0};
         state.start_y = position[1];
+        state.flight_time = 0;
         state.valid = true;
     }
 
@@ -266,6 +283,13 @@ inline std::array<float, 16> step_drone_cmd(const std::array<float, 16>& camera,
 
     const auto out = camera_from_body(state.body, next_pos, uptilt);
     if (!valid_flight_transform(out)) { state.valid = false; return camera; }
+    state.flight_time += dt;
+    auto& t = telemetry();
+    t.throttle.store(cmd.park ? 0.0f : std::clamp(cmd.throttle, 0.0f, 1.0f), std::memory_order_relaxed);
+    t.speed.store(std::sqrt(dot(state.velocity, state.velocity)), std::memory_order_relaxed);
+    t.altitude.store(next_pos[1] - state.start_y, std::memory_order_relaxed);
+    t.seconds.store(state.flight_time, std::memory_order_relaxed);
+    t.last_ms.store(now_ms(), std::memory_order_relaxed);
     return out;
 }
 

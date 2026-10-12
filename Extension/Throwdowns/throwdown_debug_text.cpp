@@ -7,6 +7,7 @@
 #include "Engine/Game/Build/20260929/throwdown_debug_text.h"
 #include "Extension/Progression/local_entitlement_trigger_runtime.h"
 #include "Engine/Core/Platform/memory.h"
+#include "Extension/Skater/drone_osd.h"
 #include <Windows.h>
 #include <algorithm>
 #include <array>
@@ -354,10 +355,14 @@ int skate_letters_total() noexcept {
 
 overlay::GameText skate_debug_text() {
     auto& s = state();
-    if (s.reskate.load(std::memory_order_relaxed)) return {};
-    std::lock_guard lock(s.mutex);
-    if (s.shown.empty() || std::chrono::steady_clock::now() - s.shown_at > std::chrono::milliseconds(300)) return {};
-    return {static_cast<float>(screen_width), static_cast<float>(screen_height), s.shown};
+    overlay::GameText result;
+    if (!s.reskate.load(std::memory_order_relaxed)) {
+        std::lock_guard lock(s.mutex);
+        if (!s.shown.empty() && std::chrono::steady_clock::now() - s.shown_at <= std::chrono::milliseconds(300))
+            result = {static_cast<float>(screen_width), static_cast<float>(screen_height), s.shown};
+    }
+    dingosdk::drone::osd::append(result); // the FPV drone's flight display, when flying
+    return result;
 }
 
 overlay::SkateHud skate_hud() {
