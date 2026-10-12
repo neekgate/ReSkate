@@ -14,6 +14,9 @@
 #include "free_flight.h"
 #include "drone_radio.h"
 #include <atomic>
+#include <functional>
+#include <iterator>
+#include <string_view>
 
 namespace dingosdk::drone {
 
@@ -31,12 +34,17 @@ struct Settings {
     bool angle_mode = false;        // true = self-levelling (easier), false = acro (full flips)
     float max_angle_deg = 55.0f;
     float angle_response = 8.0f;
+    bool collide = true;            // collide with the world (needs the game's collision query)
+    float body_radius = 0.3f;       // how close it gets to a surface before stopping
+    float floor_depth = 1.5f;       // invisible floor this far below the start height (only without collisions); 0 = none
+    bool park_at_zero = false;      // radio: throttle at the bottom freezes the drone instead of falling
 };
 
 struct State {
     bool valid = false;
     std::array<float, 16> body{};   // body orientation (translation unused); camera = body tilted up
     std::array<float, 3> velocity{};
+    float start_y = 0;              // height the flight began at; the invisible floor hangs below it
 };
 
 inline std::atomic<bool>& enabled() {
@@ -45,6 +53,42 @@ inline std::atomic<bool>& enabled() {
 }
 inline bool is_enabled() { return enabled().load(std::memory_order_acquire); }
 inline void set_enabled(bool on) { enabled().store(on, std::memory_order_release); }
+
+// Settings you can change while flying (`dronetune`). The index order matters: live_settings() uses it.
+struct KnobInfo { const char* name; const char* help; float lo, hi, def; };
+inline constexpr KnobInfo knob_info[] = {
+    {"gravity", "downward pull", 0.0f, 50.0f, 9.81f},
+    {"drag", "air drag: higher stops you sooner", 0.0f, 3.0f, 0.15f},
+    {"hover", "throttle (0.1-0.9) that holds altitude", 0.1f, 0.9f, 0.35f},
+    {"pitchrate", "pitch speed in deg/s at full stick", 30.0f, 1500.0f, 600.0f},
+    {"rollrate", "roll speed in deg/s at full stick", 30.0f, 1500.0f, 600.0f},
+    {"yawrate", "radio yaw speed in deg/s", 20.0f, 1000.0f, 250.0f},
+    {"expo", "stick softness near the centre, 0-1", 0.0f, 1.0f, 0.55f},
+    {"uptilt", "camera tilt up in degrees", 0.0f, 70.0f, 25.0f},
+    {"floor", "invisible floor, units below your start height; 0 = none", 0.0f, 1000.0f, 1.5f},
+    {"park", "1 = radio throttle at the bottom freezes the drone, 0 = it falls", 0.0f, 1.0f, 0.0f},
+    {"collide", "1 = hit the ground, walls and ramps, 0 = fly through everything", 0.0f, 1.0f, 1.0f},
+    {"radius", "how close it gets to a surface before stopping", 0.05f, 3.0f, 0.3f},
+};
+inline constexpr std::size_t knob_count = std::size(knob_info);
+struct KnobValues {
+    std::atomic<float> value[knob_count];
+    KnobValues() { for (std::size_t i = 0; i < knob_count; ++i) value[i] = knob_info[i].def; }
+};
+inline KnobValues& knobs() { static KnobValues values; return values; }
+inline int find_knob(std::string_view name) {
+    for (std::size_t i = 0; i < knob_count; ++i) if (name == knob_info[i].name) return static_cast<int>(i);
+    return -1;
+}
+inline Settings live_settings() {
+    Settings s;
+    auto get = [](std::size_t i) { return knobs().value[i].load(std::memory_order_relaxed); };
+    s.gravity = get(0); s.lin_drag = get(1); s.hover_throttle = get(2);
+    s.pitch_rate_deg = get(3); s.roll_rate_deg = get(4); s.yaw_rate_deg = get(5);
+    s.expo = get(6); s.camera_uptilt_deg = get(7); s.floor_depth = get(8); s.park_at_zero = get(9) >= 0.5f;
+    s.collide = get(10) >= 0.5f; s.body_radius = get(11);
+    return s;
+}
 
 namespace detail {
 using Vec3 = std::array<float, 3>;
@@ -88,6 +132,12 @@ inline std::array<float, 16> camera_from_body(const std::array<float, 16>& body,
 }
 }
 
+// The world the drone can bump into. `cast(from, to, hit)` returns true and the hit point when
+// something solid lies on the line. Without it (or with collide off) the drone flies through everything.
+struct World {
+    std::function<bool(const std::array<float, 3>& from, const std::array<float, 3>& to, std::array<float, 3>& hit)> cast;
+};
+
 // What the pilot is asking for, whatever the input device.
 struct Cmd {
     float pitch = 0;          // + = nose up
@@ -102,7 +152,7 @@ struct Cmd {
 // One step of the flight model. `camera` is the pose published last tick (its translation is
 // the drone position).
 inline std::array<float, 16> step_drone_cmd(const std::array<float, 16>& camera, State& state, const Cmd& cmd,
-    float seconds, float speed, const Settings& cfg = {}) {
+    float seconds, float speed, const Settings& cfg = {}, const World* world = nullptr) {
     using namespace detail;
     if (!valid_flight_transform(camera) || !std::isfinite(seconds) || !std::isfinite(speed)) return camera;
     const float dt = std::clamp(seconds, 0.0f, 0.05f);
@@ -114,6 +164,7 @@ inline std::array<float, 16> step_drone_cmd(const std::array<float, 16>& camera,
         state.body = camera;
         rotate_basis(state.body, row(camera, 0), -uptilt);
         state.velocity = {0, 0, 0};
+        state.start_y = position[1];
         state.valid = true;
     }
 
@@ -169,6 +220,48 @@ inline std::array<float, 16> step_drone_cmd(const std::array<float, 16>& camera,
         if (now > cap) for (auto& v : state.velocity) v *= cap / now;
         next_pos = {position[0] + state.velocity[0] * dt, position[1] + state.velocity[1] * dt,
                     position[2] + state.velocity[2] * dt};
+        if (world && world->cast && cfg.collide) {
+            // Swept move, one axis at a time (up/down first so landing works), so it slides along
+            // walls and rests on the ground. The game's query gives hit points, not surface normals.
+            Vec3 p = position;
+            const Vec3 d{next_pos[0] - position[0], next_pos[1] - position[1], next_pos[2] - position[2]};
+            const float r = std::max(cfg.body_radius, 0.01f);
+            for (const int axis : {1, 0, 2}) {
+                const float move = d[static_cast<std::size_t>(axis)];
+                if (move == 0.0f) continue;
+                const auto a = static_cast<std::size_t>(axis);
+                const float sign = move > 0 ? 1.0f : -1.0f;
+                Vec3 to = p;
+                to[a] += move + sign * r;
+                Vec3 hit{};
+                if (world->cast(p, to, hit)) {
+                    const float allowed = (hit[a] - p[a]) - sign * r;
+                    p[a] += sign > 0 ? std::clamp(allowed, 0.0f, move) : std::clamp(allowed, move, 0.0f);
+                    state.velocity[a] = 0;
+                    if (axis == 1 && sign < 0) {   // landed: skid to a stop
+                        const float grip = std::exp(-6.0f * dt);
+                        state.velocity[0] *= grip;
+                        state.velocity[2] *= grip;
+                    }
+                } else {
+                    p[a] += move;
+                }
+            }
+            next_pos = p;
+            // Safety net if the collision world is not streamed in yet: do not fall forever.
+            const float deep = state.start_y - 300.0f;
+            if (next_pos[1] < deep) { next_pos[1] = deep; if (state.velocity[1] < 0) state.velocity[1] = 0; }
+        } else if (cfg.floor_depth > 0.0f) {
+            // No collisions: an invisible floor so it lands instead of falling through the map.
+            const float floor_y = state.start_y - cfg.floor_depth;
+            if (next_pos[1] < floor_y) {
+                next_pos[1] = floor_y;
+                if (state.velocity[1] < 0) state.velocity[1] = 0;
+                const float grip = std::exp(-6.0f * dt);
+                state.velocity[0] *= grip;
+                state.velocity[2] *= grip;
+            }
+        }
     }
 
     const auto out = camera_from_body(state.body, next_pos, uptilt);
@@ -178,7 +271,8 @@ inline std::array<float, 16> step_drone_cmd(const std::array<float, 16>& camera,
 
 // Keyboard / mouse / game-controller input (the Freecam's own FlightInput).
 inline std::array<float, 16> step_drone_flight(const std::array<float, 16>& camera, State& state,
-    const overlay::FlightInput& input, float seconds, float speed, const Settings& cfg = {}) {
+    const overlay::FlightInput& input, float seconds, float speed, const Settings& cfg = {},
+    const World* world = nullptr) {
     using namespace detail;
     if (!input.active || !std::isfinite(input.look_x) || !std::isfinite(input.look_y)) return camera;
     Cmd cmd;
@@ -191,13 +285,14 @@ inline std::array<float, 16> step_drone_flight(const std::array<float, 16>& came
     cmd.throttle = up_in >= 0 ? cfg.hover_throttle + up_in * (1.0f - cfg.hover_throttle)
                               : cfg.hover_throttle + up_in * cfg.hover_throttle;
     cmd.boost = input.boost;
-    return step_drone_cmd(camera, state, cmd, seconds, speed, cfg);
+    return step_drone_cmd(camera, state, cmd, seconds, speed, cfg, world);
 }
 
-// Radio controller: sticks drive rates directly, the throttle stick is absolute thrust, and a
-// throttle at the bottom parks the drone (motors off) so it does not fall through the map.
+// Radio controller: sticks drive rates directly and the throttle stick is absolute thrust. With the
+// `park` setting on, a throttle at the bottom freezes the drone; otherwise it falls and lands on the
+// invisible floor.
 inline std::array<float, 16> step_drone_radio(const std::array<float, 16>& camera, State& state,
-    const radio::Command& sticks, float seconds, float speed, const Settings& cfg = {}) {
+    const radio::Command& sticks, float seconds, float speed, const Settings& cfg = {}, const World* world = nullptr) {
     using namespace detail;
     if (!sticks.valid) return camera;
     const float dt = std::clamp(std::isfinite(seconds) ? seconds : 0.0f, 0.0f, 0.05f);
@@ -206,7 +301,7 @@ inline std::array<float, 16> step_drone_radio(const std::array<float, 16>& camer
     cmd.roll = clamp1(sticks.roll);
     cmd.yaw_rad = -expo_curve(clamp1(sticks.yaw), cfg.expo) * cfg.yaw_rate_deg * kDegToRad * dt;
     cmd.throttle = std::clamp(sticks.throttle, 0.0f, 1.0f);
-    cmd.park = sticks.throttle <= 0.03f;
-    return step_drone_cmd(camera, state, cmd, seconds, speed, cfg);
+    cmd.park = cfg.park_at_zero && sticks.throttle <= 0.03f;
+    return step_drone_cmd(camera, state, cmd, seconds, speed, cfg, world);
 }
 }

@@ -2,6 +2,7 @@
 #include "Extension/Profile/local_profile_runtime.h"
 #include "ai_skaters.h"
 #include "drone_flight.h"
+#include <algorithm>
 #include <cstdlib>
 #include <format>
 #include <utility>
@@ -74,6 +75,54 @@ void register_movement_commands(Commands &registry) {
     };
     drone_mode.reset = [](const Model &, const Output &) { drone::set_enabled(false); };
     registry.add(std::move(drone_mode));
+    auto tune_name = argument("setting", Type::text, true);
+    for (const auto &knob : drone::knob_info) tune_name.choices.emplace_back(knob.name);
+    tune_name.choices.emplace_back("reset");
+    auto tune_value = argument("value", Type::number, true);
+    auto tune = action("dronetune",
+        "Tune the drone while flying: dronetune <setting> <value>. No value shows it; no arguments lists all; 'reset' restores defaults",
+        Group::movement, {tune_name, tune_value});
+    tune.inspect = [](const Model &) { return State{true, {}, {}, {}, false}; };
+    tune.run = [](const Model &, const Values &args, const Output &out) {
+        const auto show = [&out](std::size_t i) {
+            out(std::format("{:<9} {:<8g} {} (default {:g}, range {:g}-{:g})", drone::knob_info[i].name,
+                            drone::knobs().value[i].load(), drone::knob_info[i].help, drone::knob_info[i].def,
+                            drone::knob_info[i].lo, drone::knob_info[i].hi));
+        };
+        if (args.empty()) {
+            for (std::size_t i = 0; i < drone::knob_count; ++i) show(i);
+            return;
+        }
+        const auto name = std::get<std::string>(args[0]);
+        if (name == "reset") {
+            std::vector<std::pair<std::string, Json>> saved;
+            for (std::size_t i = 0; i < drone::knob_count; ++i) {
+                drone::knobs().value[i] = drone::knob_info[i].def;
+                saved.emplace_back(std::format("Drone.Tune.{}", drone::knob_info[i].name),
+                                   static_cast<double>(drone::knob_info[i].def));
+            }
+            profile_runtime::set_local_values(saved);
+            out("Drone tuning restored to the defaults.");
+            return;
+        }
+        const int index = drone::find_knob(name);
+        if (index < 0) {
+            out(std::format("error: Unknown setting '{}'. Run dronetune on its own to list them.", name));
+            return;
+        }
+        const auto i = static_cast<std::size_t>(index);
+        if (args.size() < 2) {
+            show(i);
+            return;
+        }
+        const auto wanted = static_cast<float>(std::get<double>(args[1]));
+        const auto value = std::clamp(wanted, drone::knob_info[i].lo, drone::knob_info[i].hi);
+        drone::knobs().value[i] = value;
+        profile_runtime::set_local_values({{std::format("Drone.Tune.{}", name), static_cast<double>(value)}});
+        out(value == wanted ? std::format("{} = {:g}", name, value)
+                            : std::format("{} = {:g} (limited to the allowed range)", name, value));
+    };
+    registry.add(std::move(tune));
     auto radio_mode = variable("droneradio",
         "Fly the drone with a USB radio controller (set the radio's USB mode to Joystick). Needs dronemode 1",
         Group::movement, argument("0|1", Type::boolean));
@@ -85,7 +134,7 @@ void register_movement_commands(Commands &registry) {
         const bool on = std::get<bool>(args[0]);
         drone::radio::config().enabled = on;
         profile_runtime::set_local_values({{"Drone.Radio", on ? 1.0 : 0.0}});
-        out(on ? "Radio on. Throttle stick down = parked; about 35% hovers. Run droneradiocheck if a stick does the wrong thing."
+        out(on ? "Radio on. About 35% throttle hovers; lower falls. Run droneradiocheck if a stick does the wrong thing."
                : "Radio off. The drone uses the keyboard and mouse.");
     };
     radio_mode.reset = [](const Model &, const Output &) {

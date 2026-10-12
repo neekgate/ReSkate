@@ -222,17 +222,27 @@ void debug_flight_tick(SourceTrial& trial, std::uintptr_t client, bool ready, bo
         }
     } else {
         if (drone::is_enabled()) {
+            // The game's own collision query (the Park Editor's ray), so the drone hits ground, walls and ramps.
+            static const drone::World world{[](const std::array<float, 3>& from, const std::array<float, 3>& to,
+                                              std::array<float, 3>& hit) {
+                const auto found = local_surface_hit(from, to);
+                if (!found) return false;
+                hit = *found;
+                return true;
+            }};
             bool flown_by_radio = false;
             if (drone::radio::config().enabled.load(std::memory_order_acquire) && drone::radio::game_in_foreground()) {
                 const auto sample = drone::radio::poll();
                 if (sample.valid) {
                     next = drone::step_drone_radio(debug.flight_matrix, debug.drone_state,
-                        drone::radio::map_axes(sample.axes, drone::radio::mapping_snapshot()), seconds, debug.flight_speed);
+                        drone::radio::map_axes(sample.axes, drone::radio::mapping_snapshot()), seconds, debug.flight_speed,
+                        drone::live_settings(), &world);
                     flown_by_radio = true;
                 }
             }
             if (!flown_by_radio)
-                next = drone::step_drone_flight(debug.flight_matrix, debug.drone_state, input ? *input : idle, seconds, debug.flight_speed);
+                next = drone::step_drone_flight(debug.flight_matrix, debug.drone_state, input ? *input : idle, seconds, debug.flight_speed,
+                    drone::live_settings(), &world);
         } else {
             debug.drone_state.valid = false; // restart from the current view next time drone mode turns on
             next = step_free_flight(debug.flight_matrix, input ? *input : idle, seconds, debug.flight_speed);
@@ -342,6 +352,11 @@ void load_saved_debug(InteractiveDebug& debug) noexcept {
         if (const auto fov = saved::number(saved::free_camera_fov);
             fov && (*fov == 0.0f || (*fov >= first_person_fov_min && *fov <= first_person_fov_max)))
             debug.free_camera_fov = *fov;
+        // Drone tuning saved by `dronetune`.
+        for (std::size_t i = 0; i < drone::knob_count; ++i) {
+            const auto tuned = saved::number(std::format("Drone.Tune.{}", drone::knob_info[i].name).c_str());
+            if (tuned && *tuned >= drone::knob_info[i].lo && *tuned <= drone::knob_info[i].hi) drone::knobs().value[i] = *tuned;
+        }
         // Drone radio: on/off and which axis is which (signed 1..6), saved by the console commands.
         if (const auto radio_on = saved::number("Drone.Radio")) drone::radio::config().enabled = *radio_on != 0.0f;
         for (int i = 0; i < 4; ++i) {
