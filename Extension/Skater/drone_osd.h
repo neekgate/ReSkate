@@ -18,7 +18,7 @@ inline float battery_volts(float seconds, float throttle) {
 
 // Appends the OSD to `text` when the drone is flying and the OSD is on.
 inline void append(overlay::GameText& text) {
-    if (!flying() || knobs().value[12].load(std::memory_order_relaxed) < 0.5f) return;
+    if (!flying() || knobs().value[kOsd].load(std::memory_order_relaxed) < 0.5f) return;
     const auto& t = telemetry();
     const float throttle = t.throttle.load(std::memory_order_relaxed);
     const float speed = t.speed.load(std::memory_order_relaxed);

@@ -64,7 +64,7 @@ inline void run() {
     bool open = false;
     long long idle_since = 0;
     for (;;) {
-        const bool active = flying() && knobs().value[13].load(std::memory_order_relaxed) > 0.001f;
+        const bool active = flying() && knobs().value[kVolume].load(std::memory_order_relaxed) > 0.001f;
         const long long now = now_ms();
         if (!active) {
             if (open && now - idle_since > 600) {
@@ -98,7 +98,7 @@ inline void run() {
             if (header[b].dwFlags & WHDR_INQUEUE) continue;
             auto& t = telemetry();
             synth.render(data[b], frames, t.throttle.load(std::memory_order_relaxed), t.speed.load(std::memory_order_relaxed),
-                         knobs().value[13].load(std::memory_order_relaxed));
+                         knobs().value[kVolume].load(std::memory_order_relaxed));
             waveOutWrite(device, &header[b], sizeof(header[b]));
         }
         Sleep(4);

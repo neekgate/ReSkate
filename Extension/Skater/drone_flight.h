@@ -21,12 +21,14 @@
 
 namespace dingosdk::drone {
 
+// Betaflight "Actual" rates for one axis: deg/s near the stick centre, deg/s at full stick, expo 0-1.
+struct Rate { float center, max, expo; };
+
 struct Settings {
-    float pitch_rate_deg = 600.0f;  // deg/s at full deflection
-    float roll_rate_deg = 600.0f;
+    Rate roll{80.0f, 700.0f, 0.15f};
+    Rate pitch{80.0f, 700.0f, 0.15f};
+    Rate yaw{130.0f, 780.0f, 0.30f};
     float yaw_look_scale = 0.0025f; // rad per unit of mouse delta (matches freecam look)
-    float yaw_rate_deg = 250.0f;    // deg/s from stick yaw (unused by keyboard/mouse)
-    float expo = 0.55f;             // 0 = linear, 1 = soft around centre
     float hover_throttle = 0.35f;   // throttle at which thrust equals gravity
     float gravity = 9.81f;
     float lin_drag = 0.15f;         // 1/s
@@ -70,14 +72,21 @@ inline void set_enabled(bool on) { enabled().store(on, std::memory_order_release
 
 // Settings you can change while flying (`dronetune`). The index order matters: live_settings() uses it.
 struct KnobInfo { const char* name; const char* help; float lo, hi, def; };
+enum Knob : std::size_t { kGravity, kDrag, kHover, kRollCenter, kRollMax, kRollExpo, kPitchCenter, kPitchMax, kPitchExpo,
+    kYawCenter, kYawMax, kYawExpo, kUptilt, kFloor, kPark, kCollide, kRadius, kOsd, kVolume };
 inline constexpr KnobInfo knob_info[] = {
     {"gravity", "downward pull", 0.0f, 50.0f, 9.81f},
     {"drag", "air drag: higher stops you sooner", 0.0f, 3.0f, 0.15f},
-    {"hover", "throttle (0.1-0.9) that holds altitude", 0.1f, 0.9f, 0.35f},
-    {"pitchrate", "pitch speed in deg/s at full stick", 30.0f, 1500.0f, 600.0f},
-    {"rollrate", "roll speed in deg/s at full stick", 30.0f, 1500.0f, 600.0f},
-    {"yawrate", "radio yaw speed in deg/s", 20.0f, 1000.0f, 250.0f},
-    {"expo", "stick softness near the centre, 0-1", 0.0f, 1.0f, 0.55f},
+    {"hover", "throttle (0.1-0.9) that holds altitude; lower = more thrust", 0.1f, 0.9f, 0.35f},
+    {"rollcenter", "Betaflight actual rates: roll centre sensitivity, deg/s", 1.0f, 1000.0f, 80.0f},
+    {"rollmax", "roll max rate, deg/s", 30.0f, 2000.0f, 700.0f},
+    {"rollexpo", "roll expo, 0-1", 0.0f, 1.0f, 0.15f},
+    {"pitchcenter", "pitch centre sensitivity, deg/s", 1.0f, 1000.0f, 80.0f},
+    {"pitchmax", "pitch max rate, deg/s", 30.0f, 2000.0f, 700.0f},
+    {"pitchexpo", "pitch expo, 0-1", 0.0f, 1.0f, 0.15f},
+    {"yawcenter", "yaw centre sensitivity, deg/s", 1.0f, 1000.0f, 130.0f},
+    {"yawmax", "yaw max rate, deg/s", 30.0f, 2000.0f, 780.0f},
+    {"yawexpo", "yaw expo, 0-1", 0.0f, 1.0f, 0.30f},
     {"uptilt", "camera tilt up in degrees (FPV cameras are about 25-40)", -30.0f, 70.0f, 25.0f},
     {"floor", "invisible floor, units below your start height; 0 = none", 0.0f, 1000.0f, 1.5f},
     {"park", "1 = radio throttle at the bottom freezes the drone, 0 = it falls", 0.0f, 1.0f, 0.0f},
@@ -87,6 +96,7 @@ inline constexpr KnobInfo knob_info[] = {
     {"volume", "motor sound volume, 0 = silent", 0.0f, 1.0f, 0.5f},
 };
 inline constexpr std::size_t knob_count = std::size(knob_info);
+static_assert(knob_count == kVolume + 1, "knob enum and table must match");
 struct KnobValues {
     std::atomic<float> value[knob_count];
     KnobValues() { for (std::size_t i = 0; i < knob_count; ++i) value[i] = knob_info[i].def; }
@@ -98,11 +108,13 @@ inline int find_knob(std::string_view name) {
 }
 inline Settings live_settings() {
     Settings s;
-    auto get = [](std::size_t i) { return knobs().value[i].load(std::memory_order_relaxed); };
-    s.gravity = get(0); s.lin_drag = get(1); s.hover_throttle = get(2);
-    s.pitch_rate_deg = get(3); s.roll_rate_deg = get(4); s.yaw_rate_deg = get(5);
-    s.expo = get(6); s.camera_uptilt_deg = get(7); s.floor_depth = get(8); s.park_at_zero = get(9) >= 0.5f;
-    s.collide = get(10) >= 0.5f; s.body_radius = get(11);
+    auto get = [](Knob k) { return knobs().value[k].load(std::memory_order_relaxed); };
+    s.gravity = get(kGravity); s.lin_drag = get(kDrag); s.hover_throttle = get(kHover);
+    s.roll = {get(kRollCenter), get(kRollMax), get(kRollExpo)};
+    s.pitch = {get(kPitchCenter), get(kPitchMax), get(kPitchExpo)};
+    s.yaw = {get(kYawCenter), get(kYawMax), get(kYawExpo)};
+    s.camera_uptilt_deg = get(kUptilt); s.floor_depth = get(kFloor); s.park_at_zero = get(kPark) >= 0.5f;
+    s.collide = get(kCollide) >= 0.5f; s.body_radius = get(kRadius);
     return s;
 }
 
@@ -137,7 +149,14 @@ inline void rotate_basis(std::array<float, 16>& m, const Vec3& axis, float angle
     Vec3 up = cross(back, right);
     set_row(m, 0, right); set_row(m, 1, up); set_row(m, 2, back);
 }
-inline float expo_curve(float s, float e) { return e * s * s * s + (1 - e) * s; }
+// Betaflight's actual-rates curve: deg/s for a stick position -1..1.
+inline float actual_rate(float stick, const Rate& r) {
+    const float a = std::min(std::abs(stick), 1.0f);
+    const float expo = std::clamp(r.expo, 0.0f, 1.0f);
+    const float curve = a * (a * a * a * a * a * expo + a * (1.0f - expo));
+    const float movement = std::max(0.0f, r.max - r.center);
+    return std::copysign(r.center * a + movement * curve, stick);
+}
 inline float clamp1(float v) { return std::clamp(std::isfinite(v) ? v : 0.0f, -1.0f, 1.0f); }
 inline std::array<float, 16> camera_from_body(const std::array<float, 16>& body, const std::array<float, 3>& position,
     float uptilt_rad) {
@@ -192,8 +211,8 @@ inline std::array<float, 16> step_drone_cmd(const std::array<float, 16>& camera,
 
     // Attitude
     if (!cfg.angle_mode) {
-        const float dp = (cfg.pitch_rate_deg * kDegToRad * expo_curve(pitch_in, cfg.expo)) * dt - look_pitch;
-        const float dr = (cfg.roll_rate_deg * kDegToRad * expo_curve(roll_in, cfg.expo)) * dt;
+        const float dp = (actual_rate(pitch_in, cfg.pitch) * kDegToRad) * dt - look_pitch;
+        const float dr = (actual_rate(roll_in, cfg.roll) * kDegToRad) * dt;
         rotate_basis(state.body, row(state.body, 1), yaw_delta);        // yaw about body up
         rotate_basis(state.body, row(state.body, 0), dp);               // pitch about body right
         rotate_basis(state.body, scale(row(state.body, 2), -1.0f), dr); // roll about body forward
@@ -323,7 +342,7 @@ inline std::array<float, 16> step_drone_radio(const std::array<float, 16>& camer
     Cmd cmd;
     cmd.pitch = clamp1(-sticks.pitch);    // stick forward = nose down
     cmd.roll = clamp1(sticks.roll);
-    cmd.yaw_rad = -expo_curve(clamp1(sticks.yaw), cfg.expo) * cfg.yaw_rate_deg * kDegToRad * dt;
+    cmd.yaw_rad = -actual_rate(clamp1(sticks.yaw), cfg.yaw) * kDegToRad * dt;
     cmd.throttle = std::clamp(sticks.throttle, 0.0f, 1.0f);
     cmd.park = cfg.park_at_zero && sticks.throttle <= 0.03f;
     return step_drone_cmd(camera, state, cmd, seconds, speed, cfg, world);
