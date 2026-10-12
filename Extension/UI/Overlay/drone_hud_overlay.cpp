@@ -1,4 +1,5 @@
 #include "overlay_internal.h"
+#include <cstdint>
 #include "Extension/Skater/drone_font.h"
 #include "Extension/Skater/drone_osd.h"
 #include "Extension/Skater/drone_beacon.h"
@@ -70,6 +71,92 @@ std::string metres_text(float metres) {
     if (metres < 1000.0f) std::snprintf(text, sizeof text, "%.0f m", std::floor(metres));
     else std::snprintf(text, sizeof text, "%.1f km", metres / 1000.0f);
     return text;
+}
+
+// An analogue FPV video look drawn over the game: scanlines, static, dark corners and rolling glitches.
+// It is an overlay, so it adds texture and darkening; it cannot blur or smear the game picture itself.
+float analog_knob(dingosdk::drone::Knob k) { return dingosdk::drone::knobs().value[k].load(std::memory_order_relaxed); }
+std::uint32_t next_random(std::uint32_t& state) {
+    state ^= state << 13; state ^= state >> 17; state ^= state << 5;
+    return state;
+}
+float unit_random(std::uint32_t& state) { return static_cast<float>(next_random(state) & 0xffffff) / 16777216.0f; }
+
+void draw_analog(ImDrawList* draw, const ImVec2& display) {
+    using namespace dingosdk::drone;
+    if (analog_knob(kAnalog) < 0.5f) return;
+    const float noise = std::clamp(analog_knob(kAnalogNoise), 0.0f, 1.0f);
+    const float scan = std::clamp(analog_knob(kAnalogScan), 0.0f, 1.0f);
+    const float vignette = std::clamp(analog_knob(kAnalogVignette), 0.0f, 1.0f);
+    const float glitch = std::clamp(analog_knob(kAnalogGlitch), 0.0f, 1.0f);
+    const float time = static_cast<float>(ImGui::GetTime());
+    const float unit = display.y / 1080.0f;
+    static std::uint32_t frame = 1;
+    std::uint32_t rng = 0x9e3779b9u ^ (++frame * 2654435761u);
+    const auto alpha = [](float a) { return static_cast<int>(std::clamp(a, 0.0f, 1.0f) * 255.0f); };
+
+    // A cold, slightly washed-out cast, and a faint brightness flicker.
+    const float flicker = 0.02f + 0.02f * std::sin(time * 37.0f) + 0.02f * unit_random(rng);
+    draw->AddRectFilled(ImVec2(0, 0), display, IM_COL32(40, 70, 70, alpha(0.05f + 0.07f * scan)));
+    draw->AddRectFilled(ImVec2(0, 0), display, IM_COL32(0, 0, 0, alpha(flicker * (0.4f + noise))));
+
+    // Scanlines: a dark line every other row of a 540-line picture.
+    if (scan > 0.0f) {
+        const float gap = std::max(2.0f, 2.0f * unit);
+        const float thickness = std::max(1.0f, gap * 0.5f);
+        const ImU32 line = IM_COL32(0, 0, 0, alpha(0.10f + 0.35f * scan));
+        for (float y = 0.0f; y < display.y; y += gap) draw->AddRectFilled(ImVec2(0, y), ImVec2(display.x, y + thickness), line);
+    }
+
+    // Dark corners, as soft bands in from each edge.
+    if (vignette > 0.0f) {
+        const int edge = alpha(0.65f * vignette), clear = 0;
+        const float bx = display.x * 0.20f, by = display.y * 0.24f;
+        const ImU32 dark = IM_COL32(0, 0, 0, edge), none = IM_COL32(0, 0, 0, clear);
+        draw->AddRectFilledMultiColor(ImVec2(0, 0), ImVec2(bx, display.y), dark, none, none, dark);
+        draw->AddRectFilledMultiColor(ImVec2(display.x - bx, 0), ImVec2(display.x, display.y), none, dark, dark, none);
+        draw->AddRectFilledMultiColor(ImVec2(0, 0), ImVec2(display.x, by), dark, dark, none, none);
+        draw->AddRectFilledMultiColor(ImVec2(0, display.y - by), ImVec2(display.x, display.y), none, none, dark, dark);
+    }
+
+    // Static: random grey specks and short horizontal streaks.
+    if (noise > 0.0f) {
+        const int specks = static_cast<int>(2200.0f * noise);
+        const float speck = std::max(1.0f, 1.5f * unit);
+        for (int i = 0; i < specks; ++i) {
+            const float x = unit_random(rng) * display.x, y = unit_random(rng) * display.y;
+            const int v = 150 + static_cast<int>(unit_random(rng) * 105.0f);
+            draw->AddRectFilled(ImVec2(x, y), ImVec2(x + speck, y + speck), IM_COL32(v, v, v, alpha(0.12f + 0.35f * noise * unit_random(rng))));
+        }
+        const int streaks = static_cast<int>(14.0f * noise);
+        for (int i = 0; i < streaks; ++i) {
+            const float x = unit_random(rng) * display.x, y = unit_random(rng) * display.y;
+            const float length = (20.0f + unit_random(rng) * 160.0f) * unit;
+            draw->AddRectFilled(ImVec2(x, y), ImVec2(x + length, y + std::max(1.0f, unit)), IM_COL32(220, 235, 235, alpha(0.10f + 0.2f * noise)));
+        }
+    }
+
+    // Glitches: a pale band that rolls down the picture, and now and then a burst of torn lines.
+    if (glitch > 0.0f) {
+        const float cycle = 5.0f;
+        const float t = std::fmod(time, cycle) / cycle;
+        const float band_height = display.y * 0.09f;
+        const float y = -band_height + t * (display.y + band_height * 2.0f);
+        draw->AddRectFilled(ImVec2(0, y), ImVec2(display.x, y + band_height), IM_COL32(200, 230, 230, alpha(0.05f + 0.07f * glitch)));
+        draw->AddRectFilled(ImVec2(0, y + band_height * 0.45f), ImVec2(display.x, y + band_height * 0.55f), IM_COL32(255, 255, 255, alpha(0.04f + 0.06f * glitch)));
+        const float burst = std::fmod(time, 7.0f);
+        if (burst < 0.25f * (0.4f + glitch)) {
+            const int tears = 3 + static_cast<int>(8.0f * glitch);
+            for (int i = 0; i < tears; ++i) {
+                const float ty = unit_random(rng) * display.y;
+                const float h = (2.0f + unit_random(rng) * 10.0f) * unit;
+                const float shift = (unit_random(rng) - 0.5f) * display.x * 0.08f * glitch;
+                draw->AddRectFilled(ImVec2(std::max(0.0f, shift), ty), ImVec2(display.x + std::min(0.0f, shift), ty + h),
+                                    IM_COL32(230, 240, 240, alpha(0.10f + 0.18f * glitch)));
+                draw->AddRectFilled(ImVec2(0, ty + h), ImVec2(display.x, ty + h + std::max(1.0f, unit)), IM_COL32(0, 0, 0, alpha(0.35f * glitch)));
+            }
+        }
+    }
 }
 
 // A little quadcopter: an X with a propeller circle at each end, drawn around `at`.
@@ -171,8 +258,12 @@ bool drone_hud_pending() {
 }
 
 void draw_drone_hud() {
-    draw_beacons(beacons());
     const auto& layout = hud();
+    {   // The analogue look goes under everything else, so markers and the OSD stay crisp.
+        const auto size = ImGui::GetIO().DisplaySize;
+        if (layout.active && size.x > 0 && size.y > 0) draw_analog(ImGui::GetBackgroundDrawList(), size);
+    }
+    draw_beacons(beacons());
     if (!layout.active) return;
     const auto display = ImGui::GetIO().DisplaySize;
     if (display.x <= 0 || display.y <= 0) return;
