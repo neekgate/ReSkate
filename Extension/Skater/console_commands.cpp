@@ -70,6 +70,7 @@ void register_movement_commands(Commands &registry) {
     drone_mode.run = [](const Model &, const Values &args, const Output &out) {
         const bool on = std::get<bool>(args[0]);
         drone::set_enabled(on);
+        if (on) { drone::set_armed(true); drone::reset_flag().store(false); }
         out(on ? "Drone mode on. Use 'freecam 1' and fly: forward = nose down, Q/E = throttle, mouse = yaw."
                : "Drone mode off. Freecam flies normally.");
     };
@@ -123,6 +124,29 @@ void register_movement_commands(Commands &registry) {
                             : std::format("{} = {:g} (limited to the allowed range)", name, value));
     };
     registry.add(std::move(tune));
+    auto arm_command = action("dronearm", "Arm the drone: motors on, sound on, timer running", Group::movement);
+    arm_command.inspect = [](const Model &) { return State{true, {}, {}, {}, false}; };
+    arm_command.run = [](const Model &, const Values &, const Output &out) {
+        drone::set_armed(true);
+        out("Armed.");
+    };
+    registry.add(std::move(arm_command));
+    auto disarm_command = action("dronedisarm",
+        "Disarm the drone: motors and sound off, controls dead (it falls, or hangs with dronetune disarmfreeze 1)", Group::movement);
+    disarm_command.inspect = [](const Model &) { return State{true, {}, {}, {}, false}; };
+    disarm_command.run = [](const Model &, const Values &, const Output &out) {
+        drone::set_armed(false);
+        out("Disarmed.");
+    };
+    registry.add(std::move(disarm_command));
+    auto reset_command = action("dronereset",
+        "Put the drone back where this flight started, and restart the OSD timer and battery", Group::movement);
+    reset_command.inspect = [](const Model &) { return State{true, {}, {}, {}, false}; };
+    reset_command.run = [](const Model &, const Values &, const Output &out) {
+        drone::request_reset();
+        out("Reset. The drone returns to its starting point on the next frame.");
+    };
+    registry.add(std::move(reset_command));
     auto radio_mode = variable("droneradio",
         "Fly the drone with a USB radio controller (set the radio's USB mode to Joystick). Needs dronemode 1",
         Group::movement, argument("0|1", Type::boolean));

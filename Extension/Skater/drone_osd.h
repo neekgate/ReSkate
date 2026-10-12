@@ -1,13 +1,15 @@
 #pragma once
-// Betaflight-style on-screen display for the drone: battery, flight timer, crosshair, throttle,
-// altitude, speed. Drawn through the overlay's game-text feed (text lines on a 1920x1080 screen).
+// Goggle-style on-screen display and stick overlay for the drone. This file only decides WHAT to
+// show and where (so it can be tested anywhere); the overlay draws it (UI/Overlay/drone_hud_overlay.cpp).
 #include "drone_flight.h"
-#include "Extension/UI/Overlay/overlay.h"
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <format>
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace dingosdk::drone::osd {
 
@@ -16,31 +18,76 @@ inline float battery_volts(float seconds, float throttle) {
     return std::max(13.2f, 16.8f - 0.0045f * seconds - 0.7f * throttle);
 }
 
-// Appends the OSD to `text` when the drone is flying and the OSD is on.
-inline void append(overlay::GameText& text) {
-    if (!flying() || knobs().value[kOsd].load(std::memory_order_relaxed) < 0.5f) return;
+// RGB for the `osdcolor` presets: white, green, yellow, cyan, orange, pink.
+inline std::array<std::uint8_t, 3> preset_colour(int index) {
+    static constexpr std::array<std::array<std::uint8_t, 3>, 6> table{{
+        {255, 255, 255}, {90, 255, 90}, {255, 232, 70}, {90, 232, 255}, {255, 150, 50}, {255, 100, 220}}};
+    return table[static_cast<std::size_t>(std::clamp(index, 0, 5))];
+}
+
+enum class Align { left, centre, right };
+struct Item {
+    float x = 0, y = 0;        // fractions of the screen; y is the top of the text, or its bottom when `bottom`
+    Align align = Align::left;
+    bool bottom = false;
+    bool warn = false;         // drawn red
+    std::string text;
+};
+struct Sticks {
+    bool show = false;
+    float size = 1;
+    float yaw = 0, throttle = 0, roll = 0, pitch = 0;   // each -1..1 (throttle: -1 bottom, 1 top; pitch: + = forward = up)
+};
+struct Layout {
+    bool active = false;
+    float scale = 1.5f;
+    int font = 0;
+    int colour = 0;
+    float margin = 0.06f;
+    bool crosshair = false;
+    std::vector<Item> items;
+    Sticks sticks;
+};
+
+inline Layout build() {
+    Layout out;
+    if (!flying()) return out;
+    out.active = true;
+    auto knob = [](Knob k) { return knobs().value[k].load(std::memory_order_relaxed); };
     const auto& t = telemetry();
     const float throttle = t.throttle.load(std::memory_order_relaxed);
     const float speed = t.speed.load(std::memory_order_relaxed);
     const float altitude = t.altitude.load(std::memory_order_relaxed);
     const float seconds = t.seconds.load(std::memory_order_relaxed);
-    if (text.width <= 0 || text.height <= 0) { text.width = 1920; text.height = 1080; }
-    constexpr std::uint32_t white = 0xffffffffU, red = 0xff3030ffU;
+    out.scale = knob(kOsdScale);
+    out.font = knob(kOsdFont) >= 0.5f ? 1 : 0;
+    out.colour = static_cast<int>(knob(kOsdColor) + 0.5f);
+    out.margin = std::clamp(knob(kOsdMargin), 0.0f, 0.3f);
+    out.crosshair = knob(kCrosshair) >= 0.5f;
+    const float m = out.margin;
+    auto add = [&](bool on, float x, float y, Align a, bool bottom, std::string text, bool warn = false) {
+        if (!on) return;
+        Item item;
+        item.x = x; item.y = y; item.align = a; item.bottom = bottom; item.warn = warn; item.text = std::move(text);
+        out.items.push_back(std::move(item));
+    };
     const float volts = battery_volts(seconds, throttle);
     const bool low = volts < 14.0f;
     const bool blink = (static_cast<long long>(seconds * 2.0f) & 1) != 0;
-    auto line = [&](float x, float y, float scale, std::uint32_t colour, bool centered, std::string s) {
-        overlay::GameTextLine l;
-        l.x = x; l.y = y; l.scale = scale; l.color = colour; l.centered = centered; l.text = std::move(s);
-        text.lines.push_back(std::move(l));
-    };
     const int total = static_cast<int>(seconds);
-    line(220, 90, 2.2f, low && blink ? red : white, true, std::format("{:.1f}V", volts));
-    line(960, 90, 2.0f, white, true, "ARMED");
-    line(1700, 90, 2.2f, white, true, std::format("{:02}:{:02}", total / 60, total % 60));
-    line(960, 510, 3.0f, white, true, "-  +  -");
-    line(220, 930, 2.2f, white, true, std::format("THR {:3.0f}%", throttle * 100.0f));
-    line(960, 930, 2.2f, white, true, std::format("ALT {:.1f}M", altitude));
-    line(1700, 930, 2.2f, white, true, std::format("{:.0f} KM/H", speed * 3.6f));
+    add(knob(kShowBattery) >= 0.5f, m, m, Align::left, false, std::format("{:.1f}V", volts), low && blink);
+    const bool armed_now = t.armed.load(std::memory_order_relaxed);
+    add(knob(kShowArmed) >= 0.5f, 0.5f, m, Align::centre, false, armed_now ? "ARMED" : "DISARMED", !armed_now);
+    add(knob(kShowTimer) >= 0.5f, 1.0f - m, m, Align::right, false, std::format("{:02}:{:02}", total / 60, total % 60));
+    add(knob(kShowThrottle) >= 0.5f, m, 1.0f - m, Align::left, true, std::format("THR {:.0f}%", throttle * 100.0f));
+    add(knob(kShowAlt) >= 0.5f, 0.5f, 1.0f - m, Align::centre, true, std::format("ALT {:.1f}M", altitude));
+    add(knob(kShowSpeed) >= 0.5f, 1.0f - m, 1.0f - m, Align::right, true, std::format("{:.0f}KM/H", speed * 3.6f));
+    out.sticks.show = knob(kSticks) >= 0.5f;
+    out.sticks.size = knob(kStickSize);
+    out.sticks.yaw = t.stick_yaw.load(std::memory_order_relaxed);
+    out.sticks.roll = t.stick_roll.load(std::memory_order_relaxed);
+    out.sticks.pitch = t.stick_pitch.load(std::memory_order_relaxed);
+    out.sticks.throttle = std::clamp(throttle, 0.0f, 1.0f) * 2.0f - 1.0f;
+    return out;
 }
 } // namespace dingosdk::drone::osd

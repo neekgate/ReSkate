@@ -64,7 +64,7 @@ inline void run() {
     bool open = false;
     long long idle_since = 0;
     for (;;) {
-        const bool active = flying() && knobs().value[kVolume].load(std::memory_order_relaxed) > 0.001f;
+        const bool active = flying() && telemetry().armed.load(std::memory_order_relaxed) && knobs().value[kVolume].load(std::memory_order_relaxed) > 0.001f;
         const long long now = now_ms();
         if (!active) {
             if (open && now - idle_since > 600) {

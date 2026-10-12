@@ -14,6 +14,7 @@
 #include "free_flight.h"
 #include "drone_radio.h"
 #include <atomic>
+#include <cstdlib>
 #include <chrono>
 #include <functional>
 #include <iterator>
@@ -41,6 +42,8 @@ struct Settings {
     float body_radius = 0.3f;       // how close it gets to a surface before stopping
     float floor_depth = 1.5f;       // invisible floor this far below the start height (only without collisions); 0 = none
     bool park_at_zero = false;      // radio: throttle at the bottom freezes the drone instead of falling
+    bool armed = true;              // false = motors off: no control, no thrust (the drone falls)
+    bool disarm_freeze = false;     // true = a disarmed drone hangs in place instead of falling
 };
 
 struct State {
@@ -48,12 +51,16 @@ struct State {
     std::array<float, 16> body{};   // body orientation (translation unused); camera = body tilted up
     std::array<float, 3> velocity{};
     float start_y = 0;              // height the flight began at; the invisible floor hangs below it
-    float flight_time = 0;          // seconds since this flight began (the OSD timer)
+    float flight_time = 0;          // seconds the motors have been armed since the flight began (the OSD timer)
+    std::array<float, 3> start_pos{};   // where the flight began (`dronereset` returns here)
+    std::array<float, 16> start_body{};
 };
 
 // What the OSD and the motor sound read (written by the flight tick, read from other threads).
 struct Telemetry {
     std::atomic<float> throttle{0}, speed{0}, altitude{0}, seconds{0};
+    std::atomic<bool> armed{true};
+    std::atomic<float> stick_roll{0}, stick_pitch{0}, stick_yaw{0};   // -1..1, + = right / forward / right
     std::atomic<long long> last_ms{0};   // steady-clock milliseconds of the last flight tick
 };
 inline Telemetry& telemetry() { static Telemetry value; return value; }
@@ -68,12 +75,26 @@ inline std::atomic<bool>& enabled() {
     return value;
 }
 inline bool is_enabled() { return enabled().load(std::memory_order_acquire); }
+inline std::atomic<bool>& armed_flag() {
+    static std::atomic<bool> value{true};
+    return value;
+}
+inline bool armed() { return armed_flag().load(std::memory_order_acquire); }
+inline void set_armed(bool on) { armed_flag().store(on, std::memory_order_release); }
+// Asks the flight tick to put the drone back at its starting point and restart the timer and battery.
+inline std::atomic<bool>& reset_flag() {
+    static std::atomic<bool> value{false};
+    return value;
+}
+inline void request_reset() { reset_flag().store(true, std::memory_order_release); }
 inline void set_enabled(bool on) { enabled().store(on, std::memory_order_release); }
 
 // Settings you can change while flying (`dronetune`). The index order matters: live_settings() uses it.
 struct KnobInfo { const char* name; const char* help; float lo, hi, def; };
 enum Knob : std::size_t { kGravity, kDrag, kHover, kRollCenter, kRollMax, kRollExpo, kPitchCenter, kPitchMax, kPitchExpo,
-    kYawCenter, kYawMax, kYawExpo, kUptilt, kFloor, kPark, kCollide, kRadius, kOsd, kVolume };
+    kYawCenter, kYawMax, kYawExpo, kUptilt, kFloor, kPark, kCollide, kRadius, kOsd, kVolume,
+    kOsdScale, kOsdColor, kOsdFont, kOsdMargin, kCrosshair, kShowArmed, kShowBattery, kShowTimer, kShowThrottle, kShowAlt,
+    kShowSpeed, kSticks, kStickSize, kArmAxis, kResetAxis, kDisarmFreeze };
 inline constexpr KnobInfo knob_info[] = {
     {"gravity", "downward pull", 0.0f, 50.0f, 9.81f},
     {"drag", "air drag: higher stops you sooner", 0.0f, 3.0f, 0.15f},
@@ -94,9 +115,25 @@ inline constexpr KnobInfo knob_info[] = {
     {"radius", "how close it gets to a surface before stopping", 0.05f, 3.0f, 0.3f},
     {"osd", "1 = show the flight display (battery, timer, throttle, altitude, speed)", 0.0f, 1.0f, 1.0f},
     {"volume", "motor sound volume, 0 = silent", 0.0f, 1.0f, 0.5f},
+    {"osdscale", "OSD text size (1 = normal, 2 = double)", 0.4f, 5.0f, 1.5f},
+    {"osdcolor", "OSD colour: 0 white, 1 green, 2 yellow, 3 cyan, 4 orange, 5 pink", 0.0f, 5.0f, 0.0f},
+    {"osdfont", "OSD font: 0 = pixel (goggles style), 1 = smooth", 0.0f, 1.0f, 0.0f},
+    {"osdmargin", "OSD distance from the screen edge, 0-0.3 of the screen", 0.0f, 0.3f, 0.06f},
+    {"crosshair", "1 = centre crosshair", 0.0f, 1.0f, 0.0f},
+    {"osdarmed", "1 = show ARMED", 0.0f, 1.0f, 1.0f},
+    {"osdbattery", "1 = show battery voltage", 0.0f, 1.0f, 1.0f},
+    {"osdtimer", "1 = show flight timer", 0.0f, 1.0f, 1.0f},
+    {"osdthrottle", "1 = show throttle", 0.0f, 1.0f, 1.0f},
+    {"osdalt", "1 = show altitude", 0.0f, 1.0f, 1.0f},
+    {"osdspeed", "1 = show speed", 0.0f, 1.0f, 1.0f},
+    {"sticks", "1 = show the stick overlay (mode 2 layout)", 0.0f, 1.0f, 1.0f},
+    {"sticksize", "stick overlay size (1 = normal)", 0.4f, 3.0f, 1.0f},
+    {"armaxis", "radio axis 1-6 for an arm switch (high = armed; minus flips it; 0 = none, use dronearm)", -6.0f, 6.0f, 0.0f},
+    {"resetaxis", "radio axis 1-6 for a reset switch/button (flick it high to reset; 0 = none)", -6.0f, 6.0f, 0.0f},
+    {"disarmfreeze", "1 = a disarmed drone hangs in place, 0 = it falls", 0.0f, 1.0f, 0.0f},
 };
 inline constexpr std::size_t knob_count = std::size(knob_info);
-static_assert(knob_count == kVolume + 1, "knob enum and table must match");
+static_assert(knob_count == kDisarmFreeze + 1, "knob enum and table must match");
 struct KnobValues {
     std::atomic<float> value[knob_count];
     KnobValues() { for (std::size_t i = 0; i < knob_count; ++i) value[i] = knob_info[i].def; }
@@ -115,6 +152,7 @@ inline Settings live_settings() {
     s.yaw = {get(kYawCenter), get(kYawMax), get(kYawExpo)};
     s.camera_uptilt_deg = get(kUptilt); s.floor_depth = get(kFloor); s.park_at_zero = get(kPark) >= 0.5f;
     s.collide = get(kCollide) >= 0.5f; s.body_radius = get(kRadius);
+    s.armed = armed(); s.disarm_freeze = get(kDisarmFreeze) >= 0.5f;
     return s;
 }
 
@@ -167,6 +205,22 @@ inline std::array<float, 16> camera_from_body(const std::array<float, 16>& body,
 }
 }
 
+// Radio switches: an arm switch (high = armed) and a reset switch (flick high to reset), if mapped.
+// Call once per tick with the raw axes (-1..1).
+inline void apply_switches(const std::array<float, 6>& axes) {
+    static bool reset_was_high = false;
+    const auto axis = [&axes](Knob k) {
+        const int a = static_cast<int>(std::lround(knobs().value[k].load(std::memory_order_relaxed)));
+        return (a == 0 || std::abs(a) > 6) ? 0 : a;
+    };
+    if (const int a = axis(kArmAxis)) set_armed(radio::pick_axis(axes, a) > 0.0f);
+    if (const int a = axis(kResetAxis)) {
+        const bool high = radio::pick_axis(axes, a) > 0.0f;
+        if (high && !reset_was_high) request_reset();
+        reset_was_high = high;
+    }
+}
+
 // The world the drone can bump into. `cast(from, to, hit)` returns true and the hit point when
 // something solid lies on the line. Without it (or with collide off) the drone flies through everything.
 struct World {
@@ -186,13 +240,13 @@ struct Cmd {
 
 // One step of the flight model. `camera` is the pose published last tick (its translation is
 // the drone position).
-inline std::array<float, 16> step_drone_cmd(const std::array<float, 16>& camera, State& state, const Cmd& cmd,
+inline std::array<float, 16> step_drone_cmd(const std::array<float, 16>& camera, State& state, const Cmd& cmd_in,
     float seconds, float speed, const Settings& cfg = {}, const World* world = nullptr) {
     using namespace detail;
     if (!valid_flight_transform(camera) || !std::isfinite(seconds) || !std::isfinite(speed)) return camera;
     const float dt = std::clamp(seconds, 0.0f, 0.05f);
     const float uptilt = cfg.camera_uptilt_deg * kDegToRad;
-    const Vec3 position{camera[12], camera[13], camera[14]};
+    Vec3 position{camera[12], camera[13], camera[14]};
 
     if (!state.valid) {
         // Start from the current view with the FPV tilt removed, at rest.
@@ -201,7 +255,23 @@ inline std::array<float, 16> step_drone_cmd(const std::array<float, 16>& camera,
         state.velocity = {0, 0, 0};
         state.start_y = position[1];
         state.flight_time = 0;
+        state.start_pos = position;
+        state.start_body = state.body;
         state.valid = true;
+        reset_flag().store(false, std::memory_order_relaxed);
+    }
+    if (reset_flag().exchange(false, std::memory_order_acq_rel)) {
+        state.body = state.start_body;
+        state.velocity = {0, 0, 0};
+        state.flight_time = 0;
+        position = state.start_pos;
+    }
+    // Disarmed: the pilot's inputs and the motors are off.
+    Cmd cmd = cmd_in;
+    if (!cfg.armed) {
+        cmd = Cmd{};
+        cmd.throttle = 0.0f;
+        cmd.park = cfg.disarm_freeze;
     }
 
     const float pitch_in = clamp1(cmd.pitch);
@@ -302,12 +372,13 @@ inline std::array<float, 16> step_drone_cmd(const std::array<float, 16>& camera,
 
     const auto out = camera_from_body(state.body, next_pos, uptilt);
     if (!valid_flight_transform(out)) { state.valid = false; return camera; }
-    state.flight_time += dt;
+    if (cfg.armed) state.flight_time += dt;
     auto& t = telemetry();
     t.throttle.store(cmd.park ? 0.0f : std::clamp(cmd.throttle, 0.0f, 1.0f), std::memory_order_relaxed);
     t.speed.store(std::sqrt(dot(state.velocity, state.velocity)), std::memory_order_relaxed);
     t.altitude.store(next_pos[1] - state.start_y, std::memory_order_relaxed);
     t.seconds.store(state.flight_time, std::memory_order_relaxed);
+    t.armed.store(cfg.armed, std::memory_order_relaxed);
     t.last_ms.store(now_ms(), std::memory_order_relaxed);
     return out;
 }
@@ -328,6 +399,12 @@ inline std::array<float, 16> step_drone_flight(const std::array<float, 16>& came
     cmd.throttle = up_in >= 0 ? cfg.hover_throttle + up_in * (1.0f - cfg.hover_throttle)
                               : cfg.hover_throttle + up_in * cfg.hover_throttle;
     cmd.boost = input.boost;
+    {
+        auto& t = telemetry();
+        t.stick_roll.store(clamp1(input.right), std::memory_order_relaxed);
+        t.stick_pitch.store(clamp1(input.forward), std::memory_order_relaxed);
+        t.stick_yaw.store(clamp1(input.look_x / 40.0f), std::memory_order_relaxed);
+    }
     return step_drone_cmd(camera, state, cmd, seconds, speed, cfg, world);
 }
 
@@ -345,6 +422,12 @@ inline std::array<float, 16> step_drone_radio(const std::array<float, 16>& camer
     cmd.yaw_rad = -actual_rate(clamp1(sticks.yaw), cfg.yaw) * kDegToRad * dt;
     cmd.throttle = std::clamp(sticks.throttle, 0.0f, 1.0f);
     cmd.park = cfg.park_at_zero && sticks.throttle <= 0.03f;
+    {
+        auto& t = telemetry();
+        t.stick_roll.store(clamp1(sticks.roll), std::memory_order_relaxed);
+        t.stick_pitch.store(clamp1(sticks.pitch), std::memory_order_relaxed);
+        t.stick_yaw.store(clamp1(sticks.yaw), std::memory_order_relaxed);
+    }
     return step_drone_cmd(camera, state, cmd, seconds, speed, cfg, world);
 }
 }
