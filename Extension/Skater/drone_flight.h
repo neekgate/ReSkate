@@ -83,6 +83,12 @@ inline std::atomic<bool>& armed_flag() {
 }
 inline bool armed() { return armed_flag().load(std::memory_order_acquire); }
 inline void set_armed(bool on) { armed_flag().store(on, std::memory_order_release); }
+// The drone's settings window in the overlay (UI/Overlay/drone_menu_overlay.cpp): shown while the
+// overlay is open; the X closes it and `dronemenu` brings it back.
+inline std::atomic<bool>& menu_flag() {
+    static std::atomic<bool> value{true};
+    return value;
+}
 // Asks the flight tick to put the drone back at its starting point and restart the timer and battery.
 inline std::atomic<bool>& reset_flag() {
     static std::atomic<bool> value{false};
@@ -96,7 +102,7 @@ struct KnobInfo { const char* name; const char* help; float lo, hi, def; };
 enum Knob : std::size_t { kGravity, kDrag, kHover, kRollCenter, kRollMax, kRollExpo, kPitchCenter, kPitchMax, kPitchExpo,
     kYawCenter, kYawMax, kYawExpo, kUptilt, kFloor, kPark, kCollide, kRadius, kOsd, kVolume,
     kOsdScale, kOsdColor, kOsdFont, kOsdMargin, kCrosshair, kShowArmed, kShowBattery, kShowTimer, kShowThrottle, kShowAlt,
-    kShowSpeed, kSticks, kStickSize, kArmAxis, kResetAxis, kDisarmFreeze, kBeacon, kShowBeacons };
+    kShowSpeed, kSticks, kStickSize, kArmAxis, kResetAxis, kDisarmFreeze, kBeacon, kShowBeacons, kArmButton, kResetButton };
 inline constexpr KnobInfo knob_info[] = {
     {"gravity", "downward pull", 0.0f, 50.0f, 9.81f},
     {"drag", "air drag: higher stops you sooner", 0.0f, 3.0f, 0.15f},
@@ -130,14 +136,16 @@ inline constexpr KnobInfo knob_info[] = {
     {"osdspeed", "1 = show speed", 0.0f, 1.0f, 1.0f},
     {"sticks", "1 = show the stick overlay (mode 2 layout)", 0.0f, 1.0f, 1.0f},
     {"sticksize", "stick overlay size (1 = normal)", 0.4f, 3.0f, 1.0f},
-    {"armaxis", "radio axis 1-6 for an arm switch (high = armed; minus flips it; 0 = none, use dronearm)", -6.0f, 6.0f, 0.0f},
-    {"resetaxis", "radio axis 1-6 for a reset switch/button (flick it high to reset; 0 = none)", -6.0f, 6.0f, 0.0f},
+    {"armaxis", "radio axis 1-6 for an arm switch (high = armed; minus flips it; 0 = none). Not an axis a stick uses", -6.0f, 6.0f, 0.0f},
+    {"resetaxis", "radio axis 1-6 for a reset switch (flick it high to reset; 0 = none). Not an axis a stick uses", -6.0f, 6.0f, 0.0f},
     {"disarmfreeze", "1 = a disarmed drone hangs in place, 0 = it falls", 0.0f, 1.0f, 0.0f},
     {"beacon", "1 = other players in the lobby (running this build) see a marker where your drone is", 0.0f, 1.0f, 0.0f},
     {"showbeacons", "1 = show markers for other players' drones", 0.0f, 1.0f, 1.0f},
+    {"armbutton", "radio button 1-32 for arming (held = armed; 0 = none)", 0.0f, 32.0f, 0.0f},
+    {"resetbutton", "radio button 1-32 for reset (press = reset; 0 = none)", 0.0f, 32.0f, 0.0f},
 };
 inline constexpr std::size_t knob_count = std::size(knob_info);
-static_assert(knob_count == kShowBeacons + 1, "knob enum and table must match");
+static_assert(knob_count == kResetButton + 1, "knob enum and table must match");
 struct KnobValues {
     std::atomic<float> value[knob_count];
     KnobValues() { for (std::size_t i = 0; i < knob_count; ++i) value[i] = knob_info[i].def; }
@@ -209,19 +217,31 @@ inline std::array<float, 16> camera_from_body(const std::array<float, 16>& body,
 }
 }
 
-// Radio switches: an arm switch (high = armed) and a reset switch (flick high to reset), if mapped.
-// Call once per tick with the raw axes (-1..1).
-inline void apply_switches(const std::array<float, 6>& axes) {
-    static bool reset_was_high = false;
-    const auto axis = [&axes](Knob k) {
-        const int a = static_cast<int>(std::lround(knobs().value[k].load(std::memory_order_relaxed)));
-        return (a == 0 || std::abs(a) > 6) ? 0 : a;
+// Radio switches: an arm switch and a reset switch, each an axis (-6..6) or a button (1..32), if mapped.
+// Call once per tick with the raw axes (-1..1) and the pressed buttons. An axis has to go well past
+// the middle to count (above +0.5 = on, below -0.5 = off for arming; +0.5 then back under +0.2 for
+// reset), so a stick that drifts a little never triggers them. Do not use an axis a stick is on.
+inline void apply_switches(const std::array<float, 6>& axes, std::uint32_t buttons = 0) {
+    static bool reset_axis_high = false, reset_button_down = false;
+    const auto number = [](Knob k) {
+        return static_cast<int>(std::lround(knobs().value[k].load(std::memory_order_relaxed)));
     };
-    if (const int a = axis(kArmAxis)) set_armed(radio::pick_axis(axes, a) > 0.0f);
-    if (const int a = axis(kResetAxis)) {
-        const bool high = radio::pick_axis(axes, a) > 0.0f;
-        if (high && !reset_was_high) request_reset();
-        reset_was_high = high;
+    const auto pressed = [buttons](int n) { return n >= 1 && n <= 32 && (buttons & (1u << (n - 1))) != 0; };
+    if (const int a = number(kArmAxis); a != 0 && std::abs(a) <= 6) {
+        const float v = radio::pick_axis(axes, a);
+        if (v > 0.5f) set_armed(true);
+        else if (v < -0.5f) set_armed(false);
+    }
+    if (const int n = number(kArmButton); n != 0) set_armed(pressed(n));
+    if (const int a = number(kResetAxis); a != 0 && std::abs(a) <= 6) {
+        const float v = radio::pick_axis(axes, a);
+        if (v > 0.5f && !reset_axis_high) { request_reset(); reset_axis_high = true; }
+        else if (v < 0.2f) reset_axis_high = false;
+    }
+    if (const int n = number(kResetButton); n != 0) {
+        const bool down = pressed(n);
+        if (down && !reset_button_down) request_reset();
+        reset_button_down = down;
     }
 }
 

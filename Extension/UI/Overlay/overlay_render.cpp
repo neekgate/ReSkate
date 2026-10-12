@@ -660,6 +660,7 @@ void render(IDXGISwapChain* presented, UINT flags) {
         draw_menu();
         draw_console();
         draw_perf_window();
+        draw_drone_window();
     }
     draw_hub_page();
     draw_hall_of_meat();

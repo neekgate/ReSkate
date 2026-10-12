@@ -236,7 +236,7 @@ void debug_flight_tick(SourceTrial& trial, std::uintptr_t client, bool ready, bo
             if (drone::radio::config().enabled.load(std::memory_order_acquire) && drone::radio::game_in_foreground()) {
                 const auto sample = drone::radio::poll();
                 if (sample.valid) {
-                    drone::apply_switches(sample.axes);
+                    drone::apply_switches(sample.axes, sample.buttons);
                     next = drone::step_drone_radio(debug.flight_matrix, debug.drone_state,
                         drone::radio::map_axes(sample.axes, drone::radio::mapping_snapshot()), seconds, debug.flight_speed,
                         drone::live_settings(), &world);

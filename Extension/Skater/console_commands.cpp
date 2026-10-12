@@ -124,6 +124,14 @@ void register_movement_commands(Commands &registry) {
                             : std::format("{} = {:g} (limited to the allowed range)", name, value));
     };
     registry.add(std::move(tune));
+    auto menu_command = action("dronemenu", "Show or hide the drone settings window (it appears while this overlay is open)", Group::movement);
+    menu_command.inspect = [](const Model &) { return State{true, {}, {}, {}, false}; };
+    menu_command.run = [](const Model &, const Values &, const Output &out) {
+        const bool now_open = !drone::menu_flag().load();
+        drone::menu_flag().store(now_open);
+        out(now_open ? "Drone window shown." : "Drone window hidden.");
+    };
+    registry.add(std::move(menu_command));
     auto arm_command = action("dronearm", "Arm the drone: motors on, sound on, timer running", Group::movement);
     arm_command.inspect = [](const Model &) { return State{true, {}, {}, {}, false}; };
     arm_command.run = [](const Model &, const Values &, const Output &out) {
@@ -177,12 +185,17 @@ void register_movement_commands(Commands &registry) {
         out(std::format("Controller: {}", sample.name));
         out(std::format("Raw axes 1-6: {:+.2f} {:+.2f} {:+.2f} {:+.2f} {:+.2f} {:+.2f}", sample.axes[0], sample.axes[1],
                         sample.axes[2], sample.axes[3], sample.axes[4], sample.axes[5]));
+        std::string pressed;
+        for (int n = 1; n <= 32; ++n)
+            if (sample.buttons & (1u << (n - 1))) pressed += (pressed.empty() ? "" : " ") + std::to_string(n);
+        out(std::format("Buttons pressed: {}", pressed.empty() ? "none" : pressed));
         const auto map = drone::radio::mapping_snapshot();
         const auto cmd = drone::radio::map_axes(sample.axes, map);
         out(std::format("Mapping (roll pitch throttle yaw): {} {} {} {}", map[0], map[1], map[2], map[3]));
         out(std::format("Drone reads: roll {:+.2f} (right +)  pitch {:+.2f} (forward +)  throttle {:.2f}  yaw {:+.2f} (right +)",
                         cmd.roll, cmd.pitch, cmd.throttle, cmd.yaw));
         out("Hold a stick over and run this again to see which axis moves. Use droneaxes to remap; a minus sign flips an axis.");
+        out("For arm/reset switches, use an axis or button no stick uses: flip the switch, run this again, then dronetune armaxis/resetaxis N or armbutton/resetbutton N.");
     };
     registry.add(std::move(radio_check));
     const auto axis_argument = [](const char *name) {

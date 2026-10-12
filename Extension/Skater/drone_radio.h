@@ -72,6 +72,7 @@ inline Command map_axes(const std::array<float, 6>& axes, const std::array<int, 
 struct Sample {
     bool valid = false;
     std::array<float, 6> axes{};
+    std::uint32_t buttons = 0;   // bit n-1 set = button n pressed
     std::string name;
     int device = -1;
 };
@@ -92,7 +93,7 @@ inline bool read_device(UINT id, Sample& out) {
     if (joyGetDevCapsW(id, &caps, sizeof(caps)) != JOYERR_NOERROR) return false;
     JOYINFOEX info{};
     info.dwSize = sizeof(info);
-    info.dwFlags = JOY_RETURNX | JOY_RETURNY | JOY_RETURNZ | JOY_RETURNR | JOY_RETURNU | JOY_RETURNV;
+    info.dwFlags = JOY_RETURNX | JOY_RETURNY | JOY_RETURNZ | JOY_RETURNR | JOY_RETURNU | JOY_RETURNV | JOY_RETURNBUTTONS;
     if (joyGetPosEx(id, &info) != JOYERR_NOERROR) return false;
     const UINT n = caps.wNumAxes;
     out.axes = {};
@@ -102,6 +103,7 @@ inline bool read_device(UINT id, Sample& out) {
     if (n > 3) out.axes[3] = normalize_axis(info.dwRpos, caps.wRmin, caps.wRmax);
     if (n > 4) out.axes[4] = normalize_axis(info.dwUpos, caps.wUmin, caps.wUmax);
     if (n > 5) out.axes[5] = normalize_axis(info.dwVpos, caps.wVmin, caps.wVmax);
+    out.buttons = info.dwButtons;
     out.name = narrow(caps.szPname);
     out.device = static_cast<int>(id);
     out.valid = true;

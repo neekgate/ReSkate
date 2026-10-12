@@ -310,6 +310,8 @@ void draw_nametags();
 bool perf_hud_pending();
 void draw_perf_hud();
 void draw_perf_window();
+// The FPV drone settings window (drone_menu_overlay.cpp): drawn while the menu or console is open.
+void draw_drone_window();
 // The skater item grids' search bar and prompts (item_browser_overlay.cpp): polled every presented frame.
 enum class ItemBrowserKey { favorite, filter };
 bool item_browser_pending();
