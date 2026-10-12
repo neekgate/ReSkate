@@ -119,8 +119,18 @@ enum class PacketKind : std::uint16_t {
     physics_extras = 30,
     // A player's skater touching the world (effects.h): the game's sparks, dust and puffs for
     // it, shown on that player's skater by everyone near. Unreliable, relayed like voice.
-    effects = 31
+    effects = 31,
+    // Where a player's FPV drone is (drone_beacon.h), for the marker others see. Unreliable,
+    // relayed like effects. Only sent when the player turns `dronetune beacon` on.
+    drone = 32
 };
+// A drone packet: a flag byte (1 = flying) and the drone's position as three floats.
+inline constexpr std::size_t drone_wire_size = 1 + 12;
+inline bool valid_drone_position(const std::array<float, 3> &p) noexcept {
+    for (const float v : p)
+        if (!(v > -1.0e6f && v < 1.0e6f)) return false; // also false for NaN
+    return true;
+}
 // Packet::party_action. Requests go from a player to whoever hosts, a dedicated server or a
 // lobby's host (party_player = the other player involved, 0 for leave/open/close); invited
 // and withdrawn go from the host to the invitee (party_player = the inviter). The host
@@ -280,6 +290,8 @@ struct Packet {
     std::vector<std::uint8_t> tuning;         // physics_tuning: 0..max_physics_tuning bytes
     std::vector<std::uint8_t> extras;         // physics_extras: 0..max_physics_extras bytes
     std::vector<Impact> impacts;              // effects: 1..max_impacts contacts
+    std::array<float, 3> drone_position{};    // drone: where the drone is (finite, within 1e6)
+    bool drone_active{};                      // drone: flying now (false = it stopped)
     PartyAction party_action = PartyAction::leave; // party: what is asked or told
     std::uint64_t party_player{};                   // party: the other player (see PartyAction)
     // scoring: the sender's scoring fingerprint, 0 for the game's own; `text` names the mods

@@ -13,6 +13,7 @@
 //   input.boost    -> doubles the speed cap
 #include "free_flight.h"
 #include "drone_radio.h"
+#include "drone_beacon.h"
 #include <atomic>
 #include <cstdlib>
 #include <chrono>
@@ -44,6 +45,7 @@ struct Settings {
     bool park_at_zero = false;      // radio: throttle at the bottom freezes the drone instead of falling
     bool armed = true;              // false = motors off: no control, no thrust (the drone falls)
     bool disarm_freeze = false;     // true = a disarmed drone hangs in place instead of falling
+    bool beacon = false;            // tell other players in the lobby where the drone is
 };
 
 struct State {
@@ -94,7 +96,7 @@ struct KnobInfo { const char* name; const char* help; float lo, hi, def; };
 enum Knob : std::size_t { kGravity, kDrag, kHover, kRollCenter, kRollMax, kRollExpo, kPitchCenter, kPitchMax, kPitchExpo,
     kYawCenter, kYawMax, kYawExpo, kUptilt, kFloor, kPark, kCollide, kRadius, kOsd, kVolume,
     kOsdScale, kOsdColor, kOsdFont, kOsdMargin, kCrosshair, kShowArmed, kShowBattery, kShowTimer, kShowThrottle, kShowAlt,
-    kShowSpeed, kSticks, kStickSize, kArmAxis, kResetAxis, kDisarmFreeze };
+    kShowSpeed, kSticks, kStickSize, kArmAxis, kResetAxis, kDisarmFreeze, kBeacon, kShowBeacons };
 inline constexpr KnobInfo knob_info[] = {
     {"gravity", "downward pull", 0.0f, 50.0f, 9.81f},
     {"drag", "air drag: higher stops you sooner", 0.0f, 3.0f, 0.15f},
@@ -131,9 +133,11 @@ inline constexpr KnobInfo knob_info[] = {
     {"armaxis", "radio axis 1-6 for an arm switch (high = armed; minus flips it; 0 = none, use dronearm)", -6.0f, 6.0f, 0.0f},
     {"resetaxis", "radio axis 1-6 for a reset switch/button (flick it high to reset; 0 = none)", -6.0f, 6.0f, 0.0f},
     {"disarmfreeze", "1 = a disarmed drone hangs in place, 0 = it falls", 0.0f, 1.0f, 0.0f},
+    {"beacon", "1 = other players in the lobby (running this build) see a marker where your drone is", 0.0f, 1.0f, 0.0f},
+    {"showbeacons", "1 = show markers for other players' drones", 0.0f, 1.0f, 1.0f},
 };
 inline constexpr std::size_t knob_count = std::size(knob_info);
-static_assert(knob_count == kDisarmFreeze + 1, "knob enum and table must match");
+static_assert(knob_count == kShowBeacons + 1, "knob enum and table must match");
 struct KnobValues {
     std::atomic<float> value[knob_count];
     KnobValues() { for (std::size_t i = 0; i < knob_count; ++i) value[i] = knob_info[i].def; }
@@ -152,7 +156,7 @@ inline Settings live_settings() {
     s.yaw = {get(kYawCenter), get(kYawMax), get(kYawExpo)};
     s.camera_uptilt_deg = get(kUptilt); s.floor_depth = get(kFloor); s.park_at_zero = get(kPark) >= 0.5f;
     s.collide = get(kCollide) >= 0.5f; s.body_radius = get(kRadius);
-    s.armed = armed(); s.disarm_freeze = get(kDisarmFreeze) >= 0.5f;
+    s.armed = armed(); s.disarm_freeze = get(kDisarmFreeze) >= 0.5f; s.beacon = get(kBeacon) >= 0.5f;
     return s;
 }
 
@@ -379,6 +383,7 @@ inline std::array<float, 16> step_drone_cmd(const std::array<float, 16>& camera,
     t.altitude.store(next_pos[1] - state.start_y, std::memory_order_relaxed);
     t.seconds.store(state.flight_time, std::memory_order_relaxed);
     t.armed.store(cfg.armed, std::memory_order_relaxed);
+    beacon::publish_local(next_pos, cfg.beacon);
     t.last_ms.store(now_ms(), std::memory_order_relaxed);
     return out;
 }

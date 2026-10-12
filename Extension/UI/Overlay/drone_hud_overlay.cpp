@@ -1,6 +1,8 @@
 #include "overlay_internal.h"
 #include "Extension/Skater/drone_font.h"
 #include "Extension/Skater/drone_osd.h"
+#include "Extension/Skater/drone_beacon.h"
+#include "Engine/Game/UI/game_view.h"
 
 // The FPV drone's goggle-style display and stick overlay. What to show comes from drone_osd.h;
 // this draws it over the game (pixel font, drawn rectangle by rectangle, so no font file is needed).
@@ -57,14 +59,119 @@ void draw_stick(ImDrawList* draw, ImVec2 centre, float half, float x, float y, I
     draw->AddCircleFilled(dot, radius + t, shadow);
     draw->AddCircleFilled(dot, radius, colour);
 }
+
+std::vector<dingosdk::drone::beacon::Remote>& beacons() {
+    static std::vector<dingosdk::drone::beacon::Remote> value;
+    return value;
+}
+
+std::string metres_text(float metres) {
+    char text[32]{};
+    if (metres < 1000.0f) std::snprintf(text, sizeof text, "%.0f m", std::floor(metres));
+    else std::snprintf(text, sizeof text, "%.1f km", metres / 1000.0f);
+    return text;
+}
+
+// A little quadcopter: an X with a propeller circle at each end, drawn around `at`.
+void drone_icon(ImDrawList* draw, ImVec2 at, float size, ImU32 colour, ImU32 shadow) {
+    const float arm = size * 0.5f, prop = size * 0.2f, t = std::max(1.5f, size * 0.09f);
+    const ImVec2 ends[4] = {{-arm, -arm}, {arm, -arm}, {arm, arm}, {-arm, arm}};
+    for (int pass = 0; pass < 2; ++pass) {
+        const ImU32 c = pass == 0 ? shadow : colour;
+        const float w = pass == 0 ? t * 2.4f : t;
+        draw->AddLine(ImVec2(at.x + ends[0].x, at.y + ends[0].y), ImVec2(at.x + ends[2].x, at.y + ends[2].y), c, w);
+        draw->AddLine(ImVec2(at.x + ends[1].x, at.y + ends[1].y), ImVec2(at.x + ends[3].x, at.y + ends[3].y), c, w);
+        for (const auto& e : ends) draw->AddCircle(ImVec2(at.x + e.x, at.y + e.y), prop, c, 14, w);
+    }
+    draw->AddCircleFilled(at, size * 0.1f, colour);
+}
+
+// Markers for other players' drones, placed over the world with the camera the client last used.
+void draw_beacons(const std::vector<dingosdk::drone::beacon::Remote>& list) {
+    if (list.empty()) return;
+    const auto view = dingosdk::latest_game_view();
+    if (!view || !(view->vertical_fov > 1 && view->vertical_fov < 175)) return;
+    const auto display = ImGui::GetIO().DisplaySize;
+    if (display.x <= 0 || display.y <= 0) return;
+    const auto& m = view->world;
+    const float k = display.y / 1080.0f;
+    const float focal = display.y / (2.0f * std::tan(view->vertical_fov * 3.14159265f / 360.0f));
+    const ImVec2 centre(display.x * 0.5f, display.y * 0.5f);
+    const float margin = 40.0f * k;
+    auto& s = state();
+    auto* font = s.menu.bold ? s.menu.bold : ImGui::GetFont();
+    auto* draw = ImGui::GetBackgroundDrawList();
+    const float pulse = 0.78f + 0.22f * std::sin(static_cast<float>(ImGui::GetTime()) * 5.0f);
+    const ImU32 colour = IM_COL32(90, 232, 255, static_cast<int>(255 * pulse));
+    const ImU32 shadow = IM_COL32(0, 0, 0, 200);
+    for (const auto& other : list) {
+        const float dx = other.position[0] - m[12], dy = other.position[1] - m[13], dz = other.position[2] - m[14];
+        const float depth = -(dx * m[8] + dy * m[9] + dz * m[10]);
+        const float side = dx * m[0] + dy * m[1] + dz * m[2];
+        const float height = dx * m[4] + dy * m[5] + dz * m[6];
+        const float distance = std::sqrt(dx * dx + dy * dy + dz * dz);
+        const std::string label = (other.name.empty() ? std::string("Player") : other.name) + "'s drone";
+        const std::string metres = metres_text(distance);
+        const float size = std::clamp(14.0f * k, 10.0f, 30.0f);
+        ImVec2 at;
+        bool on_screen = false;
+        if (depth > 0.1f) {
+            at = ImVec2(centre.x + side * focal / depth, centre.y - height * focal / depth);
+            on_screen = at.x >= margin && at.x <= display.x - margin && at.y >= margin && at.y <= display.y - margin;
+        }
+        if (on_screen) {
+            drone_icon(draw, at, std::clamp(34.0f * k, 22.0f, 60.0f), colour, shadow);
+            const auto text_size = font->CalcTextSizeA(size, FLT_MAX, 0.0f, label.c_str());
+            const ImVec2 text_at(at.x - text_size.x * 0.5f, at.y - 34.0f * k - text_size.y);
+            const float offset = std::max(1.0f, size / 14.0f);
+            draw->AddText(font, size, ImVec2(text_at.x + offset, text_at.y + offset), shadow, label.c_str());
+            draw->AddText(font, size, text_at, colour, label.c_str());
+            const float fine_size = size * 0.78f;
+            const auto metres_size = font->CalcTextSizeA(fine_size, FLT_MAX, 0.0f, metres.c_str());
+            const ImVec2 metres_at(at.x - metres_size.x * 0.5f, at.y + 30.0f * k);
+            draw->AddText(font, fine_size, ImVec2(metres_at.x + offset, metres_at.y + offset), shadow, metres.c_str());
+            draw->AddText(font, fine_size, metres_at, IM_COL32(235, 235, 235, 230), metres.c_str());
+        } else {
+            // Off screen: an arrow at the screen's edge pointing to it, with the distance.
+            float ex = depth > 0.1f ? at.x - centre.x : side, ey = depth > 0.1f ? at.y - centre.y : -height;
+            if (depth <= 0.1f && std::abs(ex) < 1e-3f && std::abs(ey) < 1e-3f) ey = 1.0f; // straight behind
+            const float hx = centre.x - margin, hy = centre.y - margin;
+            const float scale = std::min(std::abs(ex) > 1e-6f ? hx / std::abs(ex) : FLT_MAX,
+                                         std::abs(ey) > 1e-6f ? hy / std::abs(ey) : FLT_MAX);
+            const ImVec2 edge(centre.x + ex * scale, centre.y + ey * scale);
+            const float length = std::sqrt(ex * ex + ey * ey);
+            const ImVec2 dir(length > 1e-6f ? ex / length : 0.0f, length > 1e-6f ? ey / length : 1.0f);
+            const ImVec2 perp(-dir.y, dir.x);
+            const float a = 13.0f * k;
+            const ImVec2 tip(edge.x + dir.x * a, edge.y + dir.y * a);
+            const ImVec2 b1(edge.x - dir.x * a * 0.5f + perp.x * a * 0.8f, edge.y - dir.y * a * 0.5f + perp.y * a * 0.8f);
+            const ImVec2 b2(edge.x - dir.x * a * 0.5f - perp.x * a * 0.8f, edge.y - dir.y * a * 0.5f - perp.y * a * 0.8f);
+            draw->AddTriangleFilled(ImVec2(tip.x + 2.0f * k, tip.y + 2.0f * k), ImVec2(b1.x + 2.0f * k, b1.y + 2.0f * k),
+                                    ImVec2(b2.x + 2.0f * k, b2.y + 2.0f * k), shadow);
+            draw->AddTriangleFilled(tip, b1, b2, colour);
+            const float fine_size = size * 0.78f;
+            const auto metres_size = font->CalcTextSizeA(fine_size, FLT_MAX, 0.0f, metres.c_str());
+            ImVec2 text_at(edge.x - dir.x * a * 2.2f - metres_size.x * 0.5f, edge.y - dir.y * a * 2.2f - metres_size.y * 0.5f);
+            text_at.x = std::clamp(text_at.x, 4.0f * k, display.x - metres_size.x - 4.0f * k);
+            text_at.y = std::clamp(text_at.y, 4.0f * k, display.y - metres_size.y - 4.0f * k);
+            const float offset = std::max(1.0f, fine_size / 14.0f);
+            draw->AddText(font, fine_size, ImVec2(text_at.x + offset, text_at.y + offset), shadow, metres.c_str());
+            draw->AddText(font, fine_size, text_at, colour, metres.c_str());
+        }
+    }
+}
 } // namespace
 
 bool drone_hud_pending() {
     hud() = dingosdk::drone::osd::build();
-    return hud().active;
+    beacons().clear();
+    if (dingosdk::drone::knobs().value[dingosdk::drone::kShowBeacons].load(std::memory_order_relaxed) >= 0.5f)
+        beacons() = dingosdk::drone::beacon::snapshot();
+    return hud().active || !beacons().empty();
 }
 
 void draw_drone_hud() {
+    draw_beacons(beacons());
     const auto& layout = hud();
     if (!layout.active) return;
     const auto display = ImGui::GetIO().DisplaySize;

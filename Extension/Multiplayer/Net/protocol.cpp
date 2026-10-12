@@ -400,6 +400,8 @@ std::vector<std::uint8_t> encode(const Packet &p, bool compact_pose, std::uint32
         throw std::invalid_argument("Invalid voice packet");
     if (p.kind == PacketKind::effects && (!p.map || !p.source || !valid_impacts(p.impacts)))
         throw std::invalid_argument("Invalid effects packet");
+    if (p.kind == PacketKind::drone && (!p.map || !p.source || !valid_drone_position(p.drone_position)))
+        throw std::invalid_argument("Invalid drone packet");
     if (p.kind == PacketKind::chat && (!p.source || !valid_chat_text(p.text)))
         throw std::invalid_argument("Invalid chat message");
     if (p.kind == PacketKind::admin && (!p.source || !valid_admin_text(p.text)))
@@ -457,7 +459,7 @@ std::vector<std::uint8_t> encode(const Packet &p, bool compact_pose, std::uint32
         p.kind != PacketKind::admin && p.kind != PacketKind::bans && p.kind != PacketKind::maps &&
         p.kind != PacketKind::throwdown && p.kind != PacketKind::teleport && p.kind != PacketKind::physics_tuning &&
         p.kind != PacketKind::party && p.kind != PacketKind::scoring && p.kind != PacketKind::physics_extras &&
-        p.kind != PacketKind::effects)
+        p.kind != PacketKind::effects && p.kind != PacketKind::drone)
         throw std::invalid_argument("Unknown packet kind");
     const auto payload = greeting ? 72
                          : p.kind == PacketKind::away
@@ -595,6 +597,10 @@ std::vector<std::uint8_t> encode(const Packet &p, bool compact_pose, std::uint32
                 w.integer(static_cast<std::uint8_t>(static_cast<std::int8_t>(std::lround(v * 127.f))), 1);
             w.integer(impact.material, 2);
         }
+    }
+    if (p.kind == PacketKind::drone) {
+        w.integer(p.drone_active ? 1 : 0, 1);
+        for (const auto v : p.drone_position) w.integer(std::bit_cast<std::uint32_t>(v), 4);
     }
     if (p.kind == PacketKind::physics_extras) {
         w.integer(p.extras.size(), 2);
@@ -935,6 +941,13 @@ std::optional<Packet> decode(std::span<const std::uint8_t> bytes) noexcept {
                 impact.material = static_cast<std::uint16_t>(r.integer(2));
             }
             if (!valid_impacts(p.impacts)) return {};
+        } else if (p.kind == PacketKind::drone) {
+            if (!p.map || !p.source || bytes.size() - r.at != drone_wire_size) return {};
+            const auto flag = r.integer(1);
+            if (flag > 1) return {};
+            p.drone_active = flag != 0;
+            for (auto &v : p.drone_position) v = r.number();
+            if (!valid_drone_position(p.drone_position)) return {};
         } else if (p.kind == PacketKind::physics_extras) {
             const auto length = r.integer(2);
             if (!p.source || length > max_physics_extras || length != bytes.size() - r.at)
