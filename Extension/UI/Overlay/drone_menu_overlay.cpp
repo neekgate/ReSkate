@@ -2,6 +2,7 @@
 #include "skate_style.h"
 #include "Extension/Skater/drone_flight.h"
 #include "Extension/Skater/drone_beacon.h"
+#include "Extension/Skater/drone_outfit.h"
 #include <cstdio>
 #include <format>
 
@@ -96,8 +97,19 @@ void tab_fly() {
     else if (enabled) ImGui::TextDisabled("Drone mode is on, but freecam is off: press Start flying.");
     ImGui::BeginDisabled(!s.model.debug.camera_available);
     if (ImGui::Button(enabled && freecam ? "Stop flying" : "Start flying", ImVec2(-FLT_MIN, 0))) {
-        if (enabled && freecam) { run("dronemode 0"); run("freecam 0"); } // back to the skater
-        else { if (!freecam) run("freecam 1"); if (!enabled) run("dronemode 1"); }
+        // The game's interface is hidden for the flight (the `hideui` drone setting) and only
+        // brought back if the drone was what hid it.
+        static bool hid_ui = false;
+        if (enabled && freecam) {
+            run("dronemode 0");
+            run("freecam 0"); // back to the skater
+            if (hid_ui) run("hideui 0");
+            hid_ui = false;
+        } else {
+            if (!freecam) run("freecam 1");
+            if (!enabled) run("dronemode 1");
+            if (get(Knob::kHideUi) >= 0.5f && !s.model.debug.game_ui_hidden) { run("hideui 1"); hid_ui = true; }
+        }
     }
     ImGui::EndDisabled();
     if (!s.model.debug.camera_available) ImGui::TextDisabled("Load into a level to fly.");
@@ -108,6 +120,21 @@ void tab_fly() {
                            "keeps using it for your skater.");
     ImGui::Separator();
     preset_picker();
+    {   // What the pilot's skater wears over their eyes while flying.
+        const int choice = std::clamp(static_cast<int>(std::lround(get(Knob::kGoggles))), 0, static_cast<int>(drone::outfit::eyewear_count));
+        ImGui::SetNextItemWidth(-ImGui::GetFontSize() * 9.0f);
+        if (ImGui::BeginCombo("Goggles", choice ? drone::outfit::eyewear[choice - 1].label : "None")) {
+            if (ImGui::Selectable("None", choice == 0)) { set(Knob::kGoggles, 0.0f); save(Knob::kGoggles); }
+            for (std::size_t i = 0; i < drone::outfit::eyewear_count; ++i)
+                if (ImGui::Selectable(drone::outfit::eyewear[i].label, choice == static_cast<int>(i) + 1)) {
+                    set(Knob::kGoggles, static_cast<float>(i + 1));
+                    save(Knob::kGoggles);
+                }
+            ImGui::EndCombo();
+        }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Your skater wears these while you fly, and other players see them. Your own eyewear comes back when you land.");
+    }
+    toggle(Knob::kHideUi, "Hide the game's interface while flying");
     ImGui::Separator();
     const bool armed = drone::armed();
     ImGui::Text("Motors: %s", armed ? "ARMED" : "DISARMED");

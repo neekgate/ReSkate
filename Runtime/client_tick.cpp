@@ -39,6 +39,7 @@
 #include "Extension/Skater/client_source_spawn.h"
 #include "Extension/Skater/skater_slot_override.h"
 #include "Extension/Skater/drone_flight.h"
+#include "Extension/Skater/drone_outfit.h"
 #include "Extension/Throwdowns/native_throwdowns.h"
 #include "Extension/Trainer/trainer.h"
 #include "Extension/World/level_loading.h"
@@ -818,6 +819,7 @@ void update_model(std::uintptr_t client, TickState& frame) {
     if (r.observer_failed) return; // Keep the bounded restore/telemetry path available after catalog failure.
     dingosdk::hall_of_meat::on_client_tick();
     dingosdk::road_rash::on_client_tick(client);
+    dingosdk::drone::outfit::on_client_tick();
     dingosdk::board_break::on_client_tick(client);
     dingosdk::grind_exit_control::on_client_tick(client);
     if (!has_request && now < r.next_model && state == r.previous_state) return;

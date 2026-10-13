@@ -111,7 +111,7 @@ enum Knob : std::size_t { kGravity, kDrag, kHover, kRollCenter, kRollMax, kRollE
     kYawCenter, kYawMax, kYawExpo, kUptilt, kFloor, kCollide, kRadius, kOsd, kVolume,
     kOsdScale, kOsdColor, kOsdFont, kOsdMargin, kCrosshair, kShowArmed, kShowBattery, kShowTimer, kShowThrottle, kShowAlt,
     kShowSpeed, kSticks, kStickSize, kArmAxis, kResetAxis, kDisarmFreeze, kBeacon, kShowBeacons, kArmButton, kResetButton,
-    kAnalog, kAnalogNoise, kAnalogScan, kAnalogVignette, kAnalogGlitch, kRange, kMotorPitch, kThrottleCentre, kDeadzone };
+    kAnalog, kAnalogNoise, kAnalogScan, kAnalogVignette, kAnalogGlitch, kRange, kMotorPitch, kThrottleCentre, kDeadzone, kGoggles, kHideUi };
 inline constexpr KnobInfo knob_info[] = {
     {"gravity", "How hard the drone is pulled down. 9.8 is Earth; lower is floatier", 0.0f, 50.0f, 9.81f},
     {"drag", "Air resistance. Higher slows the drone down sooner when you let off", 0.0f, 3.0f, 0.15f},
@@ -160,9 +160,11 @@ inline constexpr KnobInfo knob_info[] = {
     {"motorpitch", "Motor sound pitch. Higher sounds like a smaller drone", 0.4f, 2.5f, 1.0f},
     {"throttlecentre", "Your throttle stick springs back to the middle (gamepads): the middle hovers, up climbs, down descends", 0.0f, 1.0f, 0.0f},
     {"deadzone", "How far a stick must move before the drone reacts (0-0.3). Raise it if the drone drifts on its own", 0.0f, 0.3f, 0.03f},
+    {"goggles", "What your skater wears over their eyes while you fly: 0 = nothing, 1-8 = one of the eyewear choices in the drone window", 0.0f, 8.0f, 1.0f},
+    {"hideui", "Hide the game's own interface while you fly (Start flying hides it, Stop flying brings it back)", 0.0f, 1.0f, 1.0f},
 };
 inline constexpr std::size_t knob_count = std::size(knob_info);
-static_assert(knob_count == kDeadzone + 1, "knob enum and table must match");
+static_assert(knob_count == kHideUi + 1, "knob enum and table must match");
 struct KnobValues {
     std::atomic<float> value[knob_count];
     KnobValues() { for (std::size_t i = 0; i < knob_count; ++i) value[i] = knob_info[i].def; }

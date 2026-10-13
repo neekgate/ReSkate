@@ -35,7 +35,10 @@ double source_flight_now() {
     return static_cast<double>(counter.QuadPart) / frequency;
 }
 namespace {
-constexpr std::array<float, 7> debug_speeds{5.0f, 0.6f, 3.0f, 15.0f, 60.0f, 300.0f, 1500.0f};
+// Free-flight speed: any speed between the slowest and fastest the console offers (0.6 to 1500),
+// so the FPV drone's presets and its top speed slider can set their own (drone_flight.h).
+constexpr float min_debug_speed = 0.6f, max_debug_speed = 1500.0f;
+bool valid_debug_speed(float speed) { return std::isfinite(speed) && speed >= min_debug_speed && speed <= max_debug_speed; }
 struct DebugUi { std::uintptr_t object{}; std::uint8_t draw{}; };
 // The UI settings object last verified writable, rechecked once a second: its
 // VirtualQuery otherwise ran on every debug tick. Callers hold SourceState::busy.
@@ -347,7 +350,7 @@ void load_saved_debug(InteractiveDebug& debug) noexcept {
             debug.no_bail_restore_after = GetTickCount64() + 2000;
         }
         if (const auto speed = saved::number(saved::flight_speed);
-            speed && std::find(debug_speeds.begin(), debug_speeds.end(), *speed) != debug_speeds.end())
+            speed && valid_debug_speed(*speed))
             debug.flight_speed = *speed;
         if (const auto speed = saved::number(saved::forward_velocity); speed && *speed >= 1.0f && *speed <= 300.0f)
             debug.forward_velocity_speed = *speed;
@@ -507,9 +510,8 @@ void debug_action(SourceTrial& trial, std::uintptr_t client, bool can_control, b
         return;
     }
     if (request.action == overlay::DebugAction::set_camera_speed) {
-        const auto choice = std::find(debug_speeds.begin(), debug_speeds.end(), request.value);
-        source_require(choice != debug_speeds.end(), "Choose one of the flight speed presets.");
-        debug.flight_speed = *choice;
+        source_require(valid_debug_speed(request.value), "Flight speed must be between 0.6 and 1500.");
+        debug.flight_speed = request.value;
         mark_debug_changed(debug);
         debug.status = "Flight speed updated. Mouse sensitivity is unchanged.";
         return;
