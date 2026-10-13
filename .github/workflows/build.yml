@@ -51,7 +51,7 @@ jobs:
 
       - name: Build
         run: |
-          cmake --build --preset release --parallel 4 *>&1 | Tee-Object -FilePath build.log
+          cmake --build --preset release --parallel 4 --target dingosdk_launcher dingosdk_runtime dingosdk_drone_radio_tests dingosdk_multiplayer_tests *>&1 | Tee-Object -FilePath build.log
           $code = $LASTEXITCODE
           Set-Content -Path build/vs2022-x64/.cached-sha -Value (git rev-parse HEAD)
           if ($code -ne 0) {
