@@ -82,6 +82,14 @@ inline Layout build() {
     add(knob(kShowThrottle) >= 0.5f, m, 1.0f - m, Align::left, true, std::format("THR {:.0f}%", throttle * 100.0f));
     add(knob(kShowAlt) >= 0.5f, 0.5f, 1.0f - m, Align::centre, true, std::format("ALT {:.1f}M", altitude));
     add(knob(kShowSpeed) >= 0.5f, 1.0f - m, 1.0f - m, Align::right, true, std::format("{:.0f}KM/H", speed * 3.6f));
+    // Range: link quality and the way home, and what happens at the edge.
+    if (knob(kRange) > 0.0f) {
+        const float signal = t.signal.load(std::memory_order_relaxed);
+        add(true, 1.0f - m, m + 0.05f, Align::right, false,
+            std::format("RSSI {:.0f}%  {:.0f}M", signal * 100.0f, t.home_distance.load(std::memory_order_relaxed)), signal < 0.35f && blink);
+        if (t.failsafe.load(std::memory_order_relaxed)) add(true, 0.5f, 0.42f, Align::centre, false, "FAILSAFE - RESET TO FLY AGAIN", true);
+        else if (signal <= 0.0f) add(true, 0.5f, 0.42f, Align::centre, false, "NO SIGNAL - TURN BACK", true);
+    }
     out.sticks.show = knob(kSticks) >= 0.5f;
     out.sticks.size = knob(kStickSize);
     out.sticks.yaw = t.stick_yaw.load(std::memory_order_relaxed);

@@ -42,6 +42,7 @@ struct Settings {
     bool collide = true;            // collide with the world (needs the game's collision query)
     float body_radius = 0.3f;       // how close it gets to a surface before stopping
     float floor_depth = 1.5f;       // invisible floor this far below the start height (only without collisions); 0 = none
+    float range = 0.0f;             // radio and video reach from the takeoff point, metres; 0 = unlimited
     bool armed = true;              // false = motors off: no control, no thrust (the drone falls)
     bool disarm_freeze = false;     // true = a disarmed drone hangs in place instead of falling
     bool beacon = false;            // tell other players in the lobby where the drone is
@@ -55,12 +56,16 @@ struct State {
     float flight_time = 0;          // seconds the motors have been armed since the flight began (the OSD timer)
     std::array<float, 3> start_pos{};   // where the flight began (`dronereset` returns here)
     std::array<float, 16> start_body{};
+    bool failsafe = false;          // flew out of range: motors cut until the drone is reset
 };
 
 // What the OSD and the motor sound read (written by the flight tick, read from other threads).
 struct Telemetry {
     std::atomic<float> throttle{0}, speed{0}, altitude{0}, seconds{0};
     std::atomic<bool> armed{true};
+    std::atomic<float> signal{1.0f};       // radio and video link, 1 = perfect, 0 = lost (range)
+    std::atomic<bool> failsafe{false};     // out of range for too long: motors cut until reset
+    std::atomic<float> home_distance{0.0f}; // metres from the takeoff point
     std::atomic<float> stick_roll{0}, stick_pitch{0}, stick_yaw{0};   // -1..1, + = right / forward / right
     std::atomic<long long> last_ms{0};   // steady-clock milliseconds of the last flight tick
 };
@@ -102,7 +107,7 @@ enum Knob : std::size_t { kGravity, kDrag, kHover, kRollCenter, kRollMax, kRollE
     kYawCenter, kYawMax, kYawExpo, kUptilt, kFloor, kCollide, kRadius, kOsd, kVolume,
     kOsdScale, kOsdColor, kOsdFont, kOsdMargin, kCrosshair, kShowArmed, kShowBattery, kShowTimer, kShowThrottle, kShowAlt,
     kShowSpeed, kSticks, kStickSize, kArmAxis, kResetAxis, kDisarmFreeze, kBeacon, kShowBeacons, kArmButton, kResetButton,
-    kAnalog, kAnalogNoise, kAnalogScan, kAnalogVignette, kAnalogGlitch };
+    kAnalog, kAnalogNoise, kAnalogScan, kAnalogVignette, kAnalogGlitch, kRange, kMotorPitch };
 inline constexpr KnobInfo knob_info[] = {
     {"gravity", "downward pull", 0.0f, 50.0f, 9.81f},
     {"drag", "air drag: higher stops you sooner", 0.0f, 3.0f, 0.15f},
@@ -147,9 +152,11 @@ inline constexpr KnobInfo knob_info[] = {
     {"analogscan", "analogue look: scanlines, 0-1", 0.0f, 1.0f, 0.5f},
     {"analogvignette", "analogue look: dark corners, 0-1", 0.0f, 1.0f, 0.5f},
     {"analogglitch", "analogue look: rolling bar and signal tears, 0-1", 0.0f, 1.0f, 0.3f},
+    {"range", "how far the radio and video reach from where you took off, in metres; 0 = unlimited", 0.0f, 5000.0f, 0.0f},
+    {"motorpitch", "motor sound pitch: higher sounds like smaller, faster-spinning motors", 0.4f, 2.5f, 1.0f},
 };
 inline constexpr std::size_t knob_count = std::size(knob_info);
-static_assert(knob_count == kAnalogGlitch + 1, "knob enum and table must match");
+static_assert(knob_count == kMotorPitch + 1, "knob enum and table must match");
 struct KnobValues {
     std::atomic<float> value[knob_count];
     KnobValues() { for (std::size_t i = 0; i < knob_count; ++i) value[i] = knob_info[i].def; }
@@ -167,9 +174,61 @@ inline Settings live_settings() {
     s.pitch = {get(kPitchCenter), get(kPitchMax), get(kPitchExpo)};
     s.yaw = {get(kYawCenter), get(kYawMax), get(kYawExpo)};
     s.camera_uptilt_deg = get(kUptilt); s.floor_depth = get(kFloor);
-    s.collide = get(kCollide) >= 0.5f; s.body_radius = get(kRadius);
+    s.collide = get(kCollide) >= 0.5f; s.body_radius = get(kRadius); s.range = get(kRange);
     s.armed = armed(); s.disarm_freeze = get(kDisarmFreeze) >= 0.5f; s.beacon = get(kBeacon) >= 0.5f;
     return s;
+}
+
+// Range. A real video link stays clean most of the way out, breaks up as it nears its limit and
+// is lost past it; the radio link fails a little further on (failsafe: the motors cut).
+inline constexpr float range_clean = 0.6f;     // up to this fraction of the range the picture is clean
+inline constexpr float range_failsafe = 1.15f; // past this fraction the motors cut
+inline float signal_strength(float distance, float range) {
+    if (!(range > 0.0f) || !std::isfinite(distance)) return 1.0f;
+    const float q = distance / range;
+    if (q <= range_clean) return 1.0f;
+    if (q >= 1.0f) return 0.0f;
+    const float t = (q - range_clean) / (1.0f - range_clean); // 0 at the clean edge, 1 at the limit
+    return std::clamp(1.0f - t * t * (3.0f - 2.0f * t), 0.0f, 1.0f); // smooth fade
+}
+inline bool out_of_failsafe_range(float distance, float range) {
+    return range > 0.0f && std::isfinite(distance) && distance > range * range_failsafe;
+}
+
+// Presets: whole drones in one choice. Each sets the handling, rates, size and motor sound, and
+// the top speed (the `flyspeed` setting). The drone window applies them through the same commands
+// a player could type, so they are saved like any other change, and shows "Custom" once one is changed.
+struct PresetValue { Knob knob; float value; };
+struct Preset {
+    const char* name;
+    const char* description;
+    float top_speed; // flyspeed
+    std::array<PresetValue, 14> values;
+};
+inline constexpr Preset presets[] = {
+    {"Tinywhoop", "A 65 mm ducted whoop: small, slow and forgiving, made for indoors and tight lines.", 3.5f,
+     {{{kHover, 0.45f}, {kDrag, 0.60f}, {kRadius, 0.06f}, {kUptilt, 15.0f},
+       {kRollCenter, 70.0f}, {kRollMax, 600.0f}, {kRollExpo, 0.30f}, {kPitchCenter, 70.0f}, {kPitchMax, 600.0f}, {kPitchExpo, 0.30f},
+       {kYawCenter, 100.0f}, {kYawMax, 500.0f}, {kYawExpo, 0.30f}, {kMotorPitch, 2.0f}}}},
+    {"Toothpick", "A light 3-inch: quick and nimble, faster than a whoop without the punch of a 5-inch.", 6.0f,
+     {{{kHover, 0.30f}, {kDrag, 0.30f}, {kRadius, 0.10f}, {kUptilt, 25.0f},
+       {kRollCenter, 80.0f}, {kRollMax, 700.0f}, {kRollExpo, 0.20f}, {kPitchCenter, 80.0f}, {kPitchMax, 700.0f}, {kPitchExpo, 0.20f},
+       {kYawCenter, 130.0f}, {kYawMax, 650.0f}, {kYawExpo, 0.30f}, {kMotorPitch, 1.5f}}}},
+    {"5 inch", "A 5-inch freestyle quad: lots of power and speed, for big lines across the map.", 10.0f,
+     {{{kHover, 0.22f}, {kDrag, 0.12f}, {kRadius, 0.25f}, {kUptilt, 30.0f},
+       {kRollCenter, 80.0f}, {kRollMax, 720.0f}, {kRollExpo, 0.15f}, {kPitchCenter, 80.0f}, {kPitchMax, 720.0f}, {kPitchExpo, 0.15f},
+       {kYawCenter, 130.0f}, {kYawMax, 780.0f}, {kYawExpo, 0.30f}, {kMotorPitch, 0.85f}}}},
+};
+inline constexpr std::size_t preset_count = std::size(presets);
+// The preset the current settings match, or -1 (custom).
+inline int matching_preset(float top_speed) {
+    for (std::size_t p = 0; p < preset_count; ++p) {
+        bool same = std::abs(top_speed - presets[p].top_speed) < 0.05f;
+        for (const auto& v : presets[p].values)
+            same = same && std::abs(knobs().value[v.knob].load(std::memory_order_relaxed) - v.value) < 0.005f * std::max(1.0f, std::abs(v.value));
+        if (same) return static_cast<int>(p);
+    }
+    return -1;
 }
 
 namespace detail {
@@ -286,6 +345,7 @@ inline std::array<float, 16> step_drone_cmd(const std::array<float, 16>& camera,
         state.start_pos = position;
         state.start_body = state.body;
         state.valid = true;
+        state.failsafe = false;
         reset_flag().store(false, std::memory_order_relaxed);
     }
     if (reset_flag().exchange(false, std::memory_order_acq_rel)) {
@@ -293,10 +353,21 @@ inline std::array<float, 16> step_drone_cmd(const std::array<float, 16>& camera,
         state.velocity = {0, 0, 0};
         state.flight_time = 0;
         position = state.start_pos;
+        state.failsafe = false;
     }
     // Disarmed: the pilot's inputs and the motors are off.
     Cmd cmd = cmd_in;
-    if (!cfg.armed) {
+    // Range: the link weakens with distance from the takeoff point, and past the failsafe
+    // distance the motors cut until the drone is reset (signal_strength above).
+    const float home = std::sqrt(dot(add(position, scale(state.start_pos, -1.0f)), add(position, scale(state.start_pos, -1.0f))));
+    if (out_of_failsafe_range(home, cfg.range)) state.failsafe = true;
+    {
+        auto& link = telemetry();
+        link.signal.store(signal_strength(home, cfg.range), std::memory_order_relaxed);
+        link.failsafe.store(state.failsafe, std::memory_order_relaxed);
+        link.home_distance.store(home, std::memory_order_relaxed);
+    }
+    if (!cfg.armed || state.failsafe) {
         cmd = Cmd{};
         cmd.throttle = 0.0f;
         cmd.park = cfg.disarm_freeze;

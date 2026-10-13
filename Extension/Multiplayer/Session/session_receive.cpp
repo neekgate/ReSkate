@@ -374,7 +374,7 @@ bool accept_data(Peer &peer, const Packet &p, std::uint64_t now) {
             while (peer.impacts.size() > 64) peer.impacts.pop_front();
         }
     } else if (p.kind == PacketKind::drone) {
-        accepted = s.sync_drones && peer.effect_budget.accept(now);
+        accepted = drone::beacon::server_allows().load(std::memory_order_relaxed) && peer.effect_budget.accept(now);
         if (accepted)
             drone::beacon::receive(peer.member.id, peer.member.name, p.drone_position, p.drone_rotation, p.drone_active);
     } else if (p.kind == PacketKind::pose)

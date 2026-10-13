@@ -84,11 +84,18 @@ float unit_random(std::uint32_t& state) { return static_cast<float>(next_random(
 
 void draw_analog(ImDrawList* draw, const ImVec2& display) {
     using namespace dingosdk::drone;
-    if (analog_knob(kAnalog) < 0.5f) return;
-    const float noise = std::clamp(analog_knob(kAnalogNoise), 0.0f, 1.0f);
-    const float scan = std::clamp(analog_knob(kAnalogScan), 0.0f, 1.0f);
-    const float vignette = std::clamp(analog_knob(kAnalogVignette), 0.0f, 1.0f);
-    const float glitch = std::clamp(analog_knob(kAnalogGlitch), 0.0f, 1.0f);
+    // Range breaks the picture up near its limit (drone_flight.h: signal_strength), with or without
+    // the analogue look; past the limit only static is left.
+    const float signal = std::clamp(telemetry().signal.load(std::memory_order_relaxed), 0.0f, 1.0f);
+    const float breakup = 1.0f - signal;
+    const bool look = analog_knob(kAnalog) >= 0.5f;
+    if (!look && breakup <= 0.0f) return;
+    const float noise = std::max(look ? std::clamp(analog_knob(kAnalogNoise), 0.0f, 1.0f) : 0.0f, breakup);
+    const float scan = look ? std::clamp(analog_knob(kAnalogScan), 0.0f, 1.0f) : 0.0f;
+    const float vignette = std::max(look ? std::clamp(analog_knob(kAnalogVignette), 0.0f, 1.0f) : 0.0f, breakup * 0.6f);
+    const float glitch = std::max(look ? std::clamp(analog_knob(kAnalogGlitch), 0.0f, 1.0f) : 0.0f, breakup);
+    if (signal <= 0.0f) // video lost: grey snow over a dark picture
+        draw->AddRectFilled(ImVec2(0, 0), display, IM_COL32(28, 30, 30, 235));
     const float time = static_cast<float>(ImGui::GetTime());
     const float unit = display.y / 1080.0f;
     static std::uint32_t frame = 1;

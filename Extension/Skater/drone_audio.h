@@ -17,8 +17,10 @@ namespace dingosdk::drone::audio {
 class MotorSynth {
 public:
     static constexpr int rate = 44100;
-    // Fills `count` mono 16-bit samples. throttle 0..1, speed in m/s, volume 0..1.
-    void render(std::int16_t* out, int count, float throttle, float speed, float volume) {
+    // Fills `count` mono 16-bit samples. throttle 0..1, speed in m/s, volume 0..1; pitch scales the
+    // motor note (1 = normal; small drones spin faster and sound higher).
+    void render(std::int16_t* out, int count, float throttle, float speed, float volume, float pitch = 1.0f) {
+        const float note = std::isfinite(pitch) ? std::clamp(pitch, 0.25f, 4.0f) : 1.0f;
         const float target = std::isfinite(throttle) ? std::clamp(throttle, 0.0f, 1.0f) : 0.0f;
         const float vol = std::isfinite(volume) ? std::clamp(volume, 0.0f, 1.0f) : 0.0f;
         const float wind = std::isfinite(speed) ? std::clamp(speed / 60.0f, 0.0f, 1.0f) : 0.0f;
@@ -28,7 +30,7 @@ public:
         constexpr float tpi = 6.283185307179586f;
         for (int i = 0; i < count; ++i) {
             rpm_ += (target - rpm_) * k;
-            const float base = 110.0f + 520.0f * rpm_;        // fundamental, Hz
+            const float base = (110.0f + 520.0f * rpm_) * note; // fundamental, Hz
             float sample = 0.0f;
             for (int m = 0; m < 4; ++m) {
                 phase_[m] += base * detune[m] / rate;
@@ -98,7 +100,8 @@ inline void run() {
             if (header[b].dwFlags & WHDR_INQUEUE) continue;
             auto& t = telemetry();
             synth.render(data[b], frames, t.throttle.load(std::memory_order_relaxed), t.speed.load(std::memory_order_relaxed),
-                         knobs().value[kVolume].load(std::memory_order_relaxed));
+                         knobs().value[kVolume].load(std::memory_order_relaxed),
+                         knobs().value[kMotorPitch].load(std::memory_order_relaxed));
             waveOutWrite(device, &header[b], sizeof(header[b]));
         }
         Sleep(4);

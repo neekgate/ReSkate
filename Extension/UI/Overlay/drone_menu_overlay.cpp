@@ -65,6 +65,28 @@ void choice(Knob k, const char* label, const char* const* items, int count) {
     tip(k);
 }
 
+// Presets (drone_flight.h): a whole drone in one choice. "Custom" once anything is changed.
+void preset_picker() {
+    auto& s = state();
+    const int current = drone::matching_preset(s.model.debug.camera_speed);
+    const char* shown = current >= 0 ? drone::presets[current].name : "Custom";
+    ImGui::SetNextItemWidth(-ImGui::GetFontSize() * 9.0f);
+    if (ImGui::BeginCombo("Drone", shown)) {
+        for (std::size_t p = 0; p < drone::preset_count; ++p) {
+            const auto& preset = drone::presets[p];
+            if (ImGui::Selectable(preset.name, static_cast<int>(p) == current)) {
+                for (const auto& v : preset.values) { set(v.knob, v.value); save(v.knob); }
+                s.model.debug.camera_speed = preset.top_speed;
+                run(std::format("flyspeed {}", preset.top_speed));
+            }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", preset.description);
+        }
+        ImGui::EndCombo();
+    }
+    if (current >= 0) ImGui::TextDisabled("%s", drone::presets[current].description);
+    else ImGui::TextDisabled("Your own settings. Pick a drone above to start from one of the presets.");
+}
+
 void tab_fly() {
     auto& s = state();
     const bool enabled = drone::is_enabled();
@@ -81,6 +103,8 @@ void tab_fly() {
     if (!s.model.debug.camera_available) ImGui::TextDisabled("Waiting for the player's controls (load into a level).");
     bool radio = radio_on;
     if (ImGui::Checkbox("Fly with the radio controller", &radio)) run(radio ? "droneradio 1" : "droneradio 0");
+    ImGui::Separator();
+    preset_picker();
     ImGui::Separator();
     const bool armed = drone::armed();
     ImGui::Text("Motors: %s", armed ? "ARMED" : "DISARMED");
@@ -118,6 +142,22 @@ void tab_handling() {
     slider(Knob::kRadius, "Collision size");
     slider(Knob::kFloor, "Invisible floor (when not colliding)", "%.1f");
     toggle(Knob::kDisarmFreeze, "A disarmed drone hangs in place");
+    ImGui::Separator();
+    ImGui::TextUnformatted("Range");
+    bool limited = get(Knob::kRange) > 0.0f;
+    if (ImGui::Checkbox("Limited range", &limited)) { set(Knob::kRange, limited ? 300.0f : 0.0f); save(Knob::kRange); }
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Like a real radio and video link: the picture breaks up as you near the limit, and\n"
+                          "further out the motors cut (failsafe) until you reset. Off = fly anywhere on the map.");
+    if (limited) {
+        float metres = get(Knob::kRange);
+        ImGui::SetNextItemWidth(-ImGui::GetFontSize() * 9.0f);
+        if (ImGui::SliderFloat("Range (metres)", &metres, 50.0f, 5000.0f, "%.0f", ImGuiSliderFlags_Logarithmic)) set(Knob::kRange, metres);
+        if (ImGui::IsItemDeactivatedAfterEdit()) save(Knob::kRange);
+        ImGui::TextDisabled("Measured from where you took off. The picture starts to break up at %.0f m; failsafe at %.0f m.",
+                            static_cast<double>(get(Knob::kRange) * drone::range_clean),
+                            static_cast<double>(get(Knob::kRange) * drone::range_failsafe));
+    }
 }
 
 void rate_row(const char* axis, Knob centre, Knob max, Knob expo) {
@@ -164,6 +204,7 @@ void tab_display() {
     slider(Knob::kAnalogGlitch, "Rolling glitches");
     ImGui::Separator();
     slider(Knob::kVolume, "Motor sound volume");
+    slider(Knob::kMotorPitch, "Motor sound pitch");
 }
 
 const char* axis_text(int signed_axis, char* buffer, std::size_t size) {
