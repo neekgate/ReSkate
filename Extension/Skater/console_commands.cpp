@@ -2,6 +2,7 @@
 #include "Extension/Profile/local_profile_runtime.h"
 #include "ai_skaters.h"
 #include "drone_flight.h"
+#include "drone_outfit.h"
 #include <algorithm>
 #include <cstdlib>
 #include <format>
@@ -203,6 +204,28 @@ void register_movement_commands(Commands &registry) {
         a.maximum = 6;
         return a;
     };
+    // Finding the cosmetics the drone could put on the pilot (goggles while flying): see drone_outfit.h.
+    auto items_command = action("droneitems",
+        "List installed cosmetics whose name contains a word (droneitems goggle), or your skater's outfit slots (droneitems slots)",
+        Group::movement, {argument("word", Type::text)});
+    items_command.inspect = [](const Model &) { return State{true, {}, {}, {}, false}; };
+    items_command.run = [](const Model &, const Values &args, const Output &out) {
+        const auto word = std::get<std::string>(args[0]);
+        try {
+            if (word == "slots") {
+                out("Your skater's outfit slots (number, slot, what it holds now):");
+                for (const auto &line : drone::outfit::slots()) out(line);
+                return;
+            }
+            std::size_t total{};
+            const auto found = drone::outfit::find_items(word, 80, total);
+            out(std::format("{} installed item(s) contain '{}'{}", total, word, total > found.size() ? " (the first 80):" : ":"));
+            for (const auto &name : found) out("  " + name);
+        } catch (const std::exception &error) {
+            out(std::format("error: {}", error.what()));
+        }
+    };
+    registry.add(std::move(items_command));
     auto radio_axes = action("droneaxes", "Map radio axes: roll pitch throttle yaw, each 1-6 (a minus sign flips it). Default: 1 2 3 4",
         Group::movement, {axis_argument("roll"), axis_argument("pitch"), axis_argument("throttle"), axis_argument("yaw")});
     radio_axes.inspect = [](const Model &) {

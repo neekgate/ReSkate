@@ -12,6 +12,7 @@ add_library(dingosdk_runtime SHARED
     Extension/Console/commands.cpp
     Extension/Console/perf_commands.cpp
     Extension/Skater/console_commands.cpp
+    Extension/Skater/drone_outfit.cpp
     Extension/Multiplayer/console_commands.cpp
     Extension/Customization/console_commands.cpp
     Extension/Multiplayer/Session/session.cpp
