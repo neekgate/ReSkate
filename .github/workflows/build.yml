@@ -8,7 +8,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Configure
-        run: cmake --preset vs2022-x64 -DDINGOSDK_CARGO=DINGOSDK_CARGO-NOTFOUND  # skip the Rust Spotify device
+        shell: pwsh
+        run: |
+          cmake --preset vs2022-x64 -DDINGOSDK_CARGO=DINGOSDK_CARGO-NOTFOUND *>&1 | Tee-Object -FilePath configure.log
+          if ($LASTEXITCODE -ne 0) {
+            Get-Content configure.log | Select-Object -Last 25 | ForEach-Object { Write-Output "::error::$_" }
+            exit 1
+          }
       - name: Build
         run: cmake --build --preset release --parallel 4
       - name: Upload
