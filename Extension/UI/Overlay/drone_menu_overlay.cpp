@@ -96,7 +96,7 @@ void tab_fly() {
                         radio_on ? "on" : "off");
     ImGui::BeginDisabled(!s.model.debug.camera_available);
     if (ImGui::Button(enabled ? "Stop flying" : "Start flying", ImVec2(-FLT_MIN, 0))) {
-        if (enabled) { run("dronemode 0"); }
+        if (enabled) { run("dronemode 0"); run("freecam 0"); } // back to the skater
         else { if (!freecam) run("freecam 1"); run("dronemode 1"); }
     }
     ImGui::EndDisabled();
@@ -124,11 +124,16 @@ void tab_fly() {
     } else {
         ImGui::TextDisabled("Not flying right now.");
     }
-    float top = s.model.debug.camera_speed;
+    // The game's value comes back every frame; hold the one being set until the game has it, or
+    // the slider would snap back while it is dragged.
+    static float pending = -1.0f;
+    static double sent_at = 0.0;
+    if (pending >= 0.0f && (std::abs(s.model.debug.camera_speed - pending) < 0.01f ||
+                            (sent_at > 0.0 && ImGui::GetTime() - sent_at > 1.0))) { pending = -1.0f; sent_at = 0.0; }
+    float top = pending >= 0.0f ? pending : s.model.debug.camera_speed;
     ImGui::SetNextItemWidth(-ImGui::GetFontSize() * 9.0f);
-    if (ImGui::SliderFloat("Top speed (fly speed)", &top, 0.6f, 300.0f, "%.0f", ImGuiSliderFlags_Logarithmic) && s.callbacks.queue_console_command)
-        s.model.debug.camera_speed = top;
-    if (ImGui::IsItemDeactivatedAfterEdit()) run(std::format("flyspeed {}", top));
+    if (ImGui::SliderFloat("Top speed (fly speed)", &top, 0.6f, 300.0f, "%.1f", ImGuiSliderFlags_Logarithmic)) pending = top;
+    if (ImGui::IsItemDeactivatedAfterEdit()) { run(std::format("flyspeed {}", top)); sent_at = ImGui::GetTime(); }
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("The drone's speed limit is four times this (eight with boost).");
 }
 
