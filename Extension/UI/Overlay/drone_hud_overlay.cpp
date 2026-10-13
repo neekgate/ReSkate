@@ -94,8 +94,7 @@ void draw_analog(ImDrawList* draw, const ImVec2& display) {
     const float scan = look ? std::clamp(analog_knob(kAnalogScan), 0.0f, 1.0f) : 0.0f;
     const float vignette = std::max(look ? std::clamp(analog_knob(kAnalogVignette), 0.0f, 1.0f) : 0.0f, breakup * 0.6f);
     const float glitch = std::max(look ? std::clamp(analog_knob(kAnalogGlitch), 0.0f, 1.0f) : 0.0f, breakup);
-    if (signal <= 0.0f) // video lost: grey snow over a dark picture
-        draw->AddRectFilled(ImVec2(0, 0), display, IM_COL32(28, 30, 30, 235));
+
     const float time = static_cast<float>(ImGui::GetTime());
     const float unit = display.y / 1080.0f;
     static std::uint32_t frame = 1;
@@ -162,6 +161,28 @@ void draw_analog(ImDrawList* draw, const ImVec2& display) {
                                     IM_COL32(230, 240, 240, alpha(0.10f + 0.18f * glitch)));
                 draw->AddRectFilled(ImVec2(0, ty + h), ImVec2(display.x, ty + h + std::max(1.0f, unit)), IM_COL32(0, 0, 0, alpha(0.35f * glitch)));
             }
+        }
+    }
+    // Range: as the link weakens, the picture sinks under grey snow, smoothly, until only snow is
+    // left where it is lost. Drawn on top of everything above, so it reads the same with or
+    // without the analogue look.
+    if (breakup > 0.0f) {
+        const float b = std::clamp(breakup, 0.0f, 1.0f);
+        const float fade = b * b * (3.0f - 2.0f * b); // smooth in and out
+        draw->AddRectFilled(ImVec2(0, 0), display, IM_COL32(24, 26, 26, alpha(0.92f * fade * fade)));
+        const int flakes = static_cast<int>(9000.0f * std::pow(b, 1.4f));
+        const float flake = std::max(1.0f, 2.0f * unit);
+        for (int i = 0; i < flakes; ++i) {
+            const float x = unit_random(rng) * display.x, y = unit_random(rng) * display.y;
+            const int v = 110 + static_cast<int>(unit_random(rng) * 145.0f);
+            draw->AddRectFilled(ImVec2(x, y), ImVec2(x + flake, y + flake), IM_COL32(v, v, v, alpha(0.25f + 0.6f * b * unit_random(rng))));
+        }
+        // Torn lines of snow across the picture, more of them the weaker it gets.
+        const int lines = static_cast<int>(40.0f * b * b);
+        for (int i = 0; i < lines; ++i) {
+            const float y = unit_random(rng) * display.y, h = (1.0f + unit_random(rng) * 3.0f) * unit;
+            const int v = 150 + static_cast<int>(unit_random(rng) * 100.0f);
+            draw->AddRectFilled(ImVec2(0, y), ImVec2(display.x, y + h), IM_COL32(v, v, v, alpha(0.08f + 0.3f * b * unit_random(rng))));
         }
     }
 }

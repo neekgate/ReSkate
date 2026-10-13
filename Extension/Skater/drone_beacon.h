@@ -194,6 +194,14 @@ inline void forget(std::uint64_t id) {
     std::lock_guard lock(r.mutex);
     std::erase_if(r.list, [id](const Remote& x) { return x.id == id; });
 }
+// Whether the player `id` is flying a drone now, by their beacon.
+inline bool flying(std::uint64_t id, Clock::time_point now = Clock::now()) {
+    auto& r = remotes();
+    std::lock_guard lock(r.mutex);
+    for (const auto& x : r.list)
+        if (x.id == id) return now - x.seen <= stale_after;
+    return false;
+}
 // The drones to show now (stale ones are dropped).
 inline std::vector<Remote> snapshot(Clock::time_point now = Clock::now()) {
     auto& r = remotes();

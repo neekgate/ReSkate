@@ -88,7 +88,10 @@ inline Layout build() {
         add(true, 1.0f - m, m + 0.05f, Align::right, false,
             std::format("RSSI {:.0f}%  {:.0f}M", signal * 100.0f, t.home_distance.load(std::memory_order_relaxed)), signal < 0.35f && blink);
         if (t.failsafe.load(std::memory_order_relaxed)) add(true, 0.5f, 0.42f, Align::centre, false, "FAILSAFE - RESET TO FLY AGAIN", true);
-        else if (signal <= 0.0f) add(true, 0.5f, 0.42f, Align::centre, false, "NO SIGNAL - TURN BACK", true);
+        else if (signal <= 0.0f) {
+            const float left = std::max(0.0f, failsafe_after_seconds - t.signal_lost.load(std::memory_order_relaxed));
+            add(true, 0.5f, 0.42f, Align::centre, false, std::format("NO SIGNAL - TURN BACK ({:.0f})", std::ceil(left)), true);
+        }
     }
     out.sticks.show = knob(kSticks) >= 0.5f;
     out.sticks.size = knob(kStickSize);

@@ -57,6 +57,7 @@ struct State {
     std::array<float, 3> start_pos{};   // where the flight began (`dronereset` returns here)
     std::array<float, 16> start_body{};
     bool failsafe = false;          // flew out of range: motors cut until the drone is reset
+    float signal_lost = 0;          // seconds in a row without a picture (range)
 };
 
 // What the OSD and the motor sound read (written by the flight tick, read from other threads).
@@ -66,6 +67,7 @@ struct Telemetry {
     std::atomic<float> signal{1.0f};       // radio and video link, 1 = perfect, 0 = lost (range)
     std::atomic<bool> failsafe{false};     // out of range for too long: motors cut until reset
     std::atomic<float> home_distance{0.0f}; // metres from the takeoff point
+    std::atomic<float> signal_lost{0.0f};   // seconds in a row without a picture
     std::atomic<float> stick_roll{0}, stick_pitch{0}, stick_yaw{0};   // -1..1, + = right / forward / right
     std::atomic<long long> last_ms{0};   // steady-clock milliseconds of the last flight tick
 };
@@ -113,7 +115,7 @@ enum Knob : std::size_t { kGravity, kDrag, kHover, kRollCenter, kRollMax, kRollE
     kShowSpeed, kSticks, kStickSize, kArmAxis, kResetAxis, kDisarmFreeze, kBeacon, kShowBeacons, kArmButton, kResetButton,
     kAnalog, kAnalogNoise, kAnalogScan, kAnalogVignette, kAnalogGlitch, kRange, kMotorPitch, kThrottleCentre, kDeadzone, kGoggles, kHideUi };
 inline constexpr KnobInfo knob_info[] = {
-    {"gravity", "How hard the drone is pulled down. 9.8 is Earth; lower is floatier", 0.0f, 50.0f, 9.81f},
+    {"gravity", "How hard the drone is pulled down. 9.8 is Earth; higher feels heavier and snappier", 0.0f, 50.0f, 20.0f},
     {"drag", "Air resistance. Higher slows the drone down sooner when you let off", 0.0f, 3.0f, 0.15f},
     {"hover", "The throttle that keeps the drone level in the air (0.1-0.9). Lower means more power to spare", 0.1f, 0.9f, 0.35f},
     {"rollcenter", "Roll speed near the middle of the stick, in degrees per second (Betaflight \"Actual\" rates)", 1.0f, 1000.0f, 80.0f},
@@ -147,7 +149,7 @@ inline constexpr KnobInfo knob_info[] = {
     {"armaxis", "Controller axis (1-6) for an arm switch: switch on = armed. Minus reverses it; 0 = none. Use one no stick is on", -6.0f, 6.0f, 0.0f},
     {"resetaxis", "Controller axis (1-6) for a reset switch: flick it on to put the drone back. 0 = none. Use one no stick is on", -6.0f, 6.0f, 0.0f},
     {"disarmfreeze", "When disarmed, the drone hangs in the air (1) instead of falling (0)", 0.0f, 1.0f, 0.0f},
-    {"beacon", "Let other players see your drone (they need this version of ReSkate too)", 0.0f, 1.0f, 0.0f},
+    {"beacon", "Let other players see your drone (they need this version of ReSkate too)", 0.0f, 1.0f, 1.0f},
     {"showbeacons", "Show other players' drones (0 hides them)", 0.0f, 1.0f, 1.0f},
     {"armbutton", "Controller button (1-32) to arm with: held = armed. 0 = none", 0.0f, 32.0f, 0.0f},
     {"resetbutton", "Controller button (1-32) that puts the drone back where it took off. 0 = none", 0.0f, 32.0f, 0.0f},
@@ -193,9 +195,11 @@ inline Settings live_settings() {
 }
 
 // Range. A real video link stays clean most of the way out, breaks up as it nears its limit and
-// is lost past it; the radio link fails a little further on (failsafe: the motors cut).
-inline constexpr float range_clean = 0.6f;     // up to this fraction of the range the picture is clean
-inline constexpr float range_failsafe = 1.15f; // past this fraction the motors cut
+// is lost past it. The radio link holds on a little longer: only after some seconds without a
+// picture, or far past the limit, do the motors cut (failsafe), so there is time to turn back.
+inline constexpr float range_clean = 0.5f;          // up to this fraction of the range the picture is clean
+inline constexpr float range_failsafe = 1.5f;       // past this fraction the motors cut at once
+inline constexpr float failsafe_after_seconds = 5.0f; // this long without a picture and the motors cut
 inline float signal_strength(float distance, float range) {
     if (!(range > 0.0f) || !std::isfinite(distance)) return 1.0f;
     const float q = distance / range;
@@ -206,6 +210,10 @@ inline float signal_strength(float distance, float range) {
 }
 inline bool out_of_failsafe_range(float distance, float range) {
     return range > 0.0f && std::isfinite(distance) && distance > range * range_failsafe;
+}
+// Whether the motors cut now: too long without a picture, or far past the limit.
+inline bool failsafe_due(float distance, float range, float seconds_lost) {
+    return out_of_failsafe_range(distance, range) || (range > 0.0f && seconds_lost >= failsafe_after_seconds);
 }
 
 // Presets: whole drones in one choice. Each sets the handling, rates, size and motor sound, and
@@ -367,16 +375,20 @@ inline std::array<float, 16> step_drone_cmd(const std::array<float, 16>& camera,
         state.flight_time = 0;
         position = state.start_pos;
         state.failsafe = false;
+        state.signal_lost = 0;
     }
     // Disarmed: the pilot's inputs and the motors are off.
     Cmd cmd = cmd_in;
     // Range: the link weakens with distance from the takeoff point, and past the failsafe
     // distance the motors cut until the drone is reset (signal_strength above).
     const float home = std::sqrt(dot(add(position, scale(state.start_pos, -1.0f)), add(position, scale(state.start_pos, -1.0f))));
-    if (out_of_failsafe_range(home, cfg.range)) state.failsafe = true;
+    const float quality = signal_strength(home, cfg.range);
+    state.signal_lost = quality <= 0.0f ? state.signal_lost + dt : 0.0f;
+    if (failsafe_due(home, cfg.range, state.signal_lost)) state.failsafe = true;
     {
         auto& link = telemetry();
-        link.signal.store(signal_strength(home, cfg.range), std::memory_order_relaxed);
+        link.signal.store(quality, std::memory_order_relaxed);
+        link.signal_lost.store(state.signal_lost, std::memory_order_relaxed);
         link.failsafe.store(state.failsafe, std::memory_order_relaxed);
         link.home_distance.store(home, std::memory_order_relaxed);
     }

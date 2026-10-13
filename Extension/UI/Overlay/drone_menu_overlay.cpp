@@ -192,9 +192,11 @@ void tab_handling() {
         ImGui::SetNextItemWidth(-ImGui::GetFontSize() * 9.0f);
         if (ImGui::SliderFloat("Range (metres)", &metres, 50.0f, 5000.0f, "%.0f", ImGuiSliderFlags_Logarithmic)) set(Knob::kRange, metres);
         if (ImGui::IsItemDeactivatedAfterEdit()) save(Knob::kRange);
-        ImGui::TextDisabled("Measured from where you took off. The picture starts to break up at %.0f m; failsafe at %.0f m.",
-                            static_cast<double>(get(Knob::kRange) * drone::range_clean),
-                            static_cast<double>(get(Knob::kRange) * drone::range_failsafe));
+        ImGui::TextWrapped("Measured from where you took off. The picture starts to break up at %.0f m and is lost at %.0f m. "
+                           "Stay without a picture for %.0f seconds, or go past %.0f m, and the motors cut.",
+                           static_cast<double>(get(Knob::kRange) * drone::range_clean), static_cast<double>(get(Knob::kRange)),
+                           static_cast<double>(drone::failsafe_after_seconds),
+                           static_cast<double>(get(Knob::kRange) * drone::range_failsafe));
     }
 }
 

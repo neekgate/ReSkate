@@ -516,6 +516,7 @@ void render(Session &s, std::uintptr_t client, const NativeFrame &local, std::ui
         // Friends only: everyone else keeps their chat bubbles and loses the name and dot.
         tag.nameless = s.nametags_friends && !std::binary_search(s.friend_ids.begin(), s.friend_ids.end(), p.member.id);
         tag.talking = std::any_of(voices.begin(), voices.end(), [&](const auto &v) { return v.id == p.member.id && v.speaking; });
+        tag.flying_drone = drone::beacon::flying(p.member.id);
         tag.bubbles = recent_bubbles(p.member.id);
         if (bubbles)
             if (auto hint = typing_bubble(p.typing_until); !hint.text.empty()) tag.bubbles.push_back(std::move(hint));
