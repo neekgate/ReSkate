@@ -304,6 +304,9 @@ void card_image_lost();
 // Game debug text (game_text_overlay.cpp): polled every presented frame.
 bool game_text_pending();
 void draw_game_text();
+// The FPV drone's goggle display and stick overlay (drone_hud_overlay.cpp): polled every presented frame.
+bool drone_hud_pending();
+void draw_drone_hud();
 // ReSkate's S.K.A.T.E. throwdown HUD (skate_hud_overlay.cpp): polled every presented frame.
 bool skate_hud_pending();
 void draw_skate_hud();
@@ -315,6 +318,8 @@ void draw_nametags();
 bool perf_hud_pending();
 void draw_perf_hud();
 void draw_perf_window();
+// The FPV drone settings window (drone_menu_overlay.cpp): drawn while the menu or console is open.
+void draw_drone_window();
 // The skater item grids' search bar and prompts (item_browser_overlay.cpp): polled every presented frame.
 enum class ItemBrowserKey { favorite, filter };
 bool item_browser_pending();
