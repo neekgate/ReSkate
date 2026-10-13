@@ -281,6 +281,8 @@ void apply_roster(Session &s, const Packet &p, std::uint64_t now) {
     apply_object_limit(s, p.object_limit); // after server_admin, which exempts an admin
     s.object_scaling = !dedicated_host(s) || p.object_scaling;
     s.sync_effects = !dedicated_host(s) || p.sync_effects;
+    s.sync_drones = !dedicated_host(s) || p.sync_drones;
+    drone::beacon::server_allows().store(s.sync_drones);
     apply_guest_tools(s, p.guest_noclip, p.guest_no_bail, p.guest_boosts);
     s.enforce_tuning = p.enforce_tuning;
     s.server_votes = dedicated_host(s) ? p.server_votes : 0;
@@ -372,8 +374,9 @@ bool accept_data(Peer &peer, const Packet &p, std::uint64_t now) {
             while (peer.impacts.size() > 64) peer.impacts.pop_front();
         }
     } else if (p.kind == PacketKind::drone) {
-        accepted = peer.effect_budget.accept(now);
-        if (accepted) drone::beacon::receive(peer.member.id, peer.member.name, p.drone_position, p.drone_active);
+        accepted = s.sync_drones && peer.effect_budget.accept(now);
+        if (accepted)
+            drone::beacon::receive(peer.member.id, peer.member.name, p.drone_position, p.drone_rotation, p.drone_active);
     } else if (p.kind == PacketKind::pose)
         accepted = peer.poses.push_validated(p, now);
     if (accepted) {

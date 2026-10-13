@@ -749,6 +749,7 @@ void Host::send_roster() {
     p.object_limit = config_.object_limit;
     p.object_scaling = config_.object_scaling;
     p.sync_effects = config_.sync_effects;
+    p.sync_drones = config_.sync_drones;
     p.guest_noclip = config_.noclip;
     p.guest_no_bail = config_.no_bail;
     p.guest_boosts = config_.boosts;
@@ -973,7 +974,7 @@ bool Host::accept_data(Guest &source, const Packet &p) {
     else if (p.kind == PacketKind::effects)
         accepted = config_.sync_effects && source.effect_budget.accept(now_);
     else if (p.kind == PacketKind::drone)
-        accepted = source.drone_budget.accept(now_);
+        accepted = config_.sync_drones && source.drone_budget.accept(now_);
     else if (p.kind == PacketKind::pose)
         accepted = source.poses.push_validated(p, now_);
     // The server never plays anything back: keep only what ordering needs.

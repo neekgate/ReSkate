@@ -1,6 +1,7 @@
 #include "overlay_internal.h"
 #include "skate_style.h"
 #include "Extension/Skater/drone_flight.h"
+#include "Extension/Skater/drone_beacon.h"
 #include <cstdio>
 #include <format>
 
@@ -324,9 +325,14 @@ void tab_radio() {
 }
 
 void tab_lobby() {
-    ImGui::TextWrapped("Let other players in your lobby see where your drone is. They need this build of ReSkate too.");
-    toggle(Knob::kBeacon, "Share my drone's position");
-    toggle(Knob::kShowBeacons, "Show other players' drone markers");
+    if (!drone::beacon::server_allows().load()) {
+        ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f), "This server has drones turned off.");
+        ImGui::TextWrapped("You can still fly, but nobody here sees your drone and you don't see theirs.");
+        ImGui::Separator();
+    }
+    ImGui::TextWrapped("Other players only see drones if they are running this version of ReSkate.");
+    toggle(Knob::kBeacon, "Let other players see my drone");
+    toggle(Knob::kShowBeacons, "Show other players' drones");
 }
 } // namespace
 

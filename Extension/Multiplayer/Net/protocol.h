@@ -154,8 +154,17 @@ enum class PacketKind : std::uint16_t {
     // relayed like effects. Only sent when the player turns `dronetune beacon` on.
     drone = 36
 };
-// A drone packet: a flag byte (1 = flying) and the drone's position as three floats.
-inline constexpr std::size_t drone_wire_size = 1 + 12;
+// A drone packet: a flag byte (1 = flying), the drone's position as three floats and which way
+// it faces as a unit quaternion (four floats: x, y, z, w).
+inline constexpr std::size_t drone_wire_size = 1 + 12 + 16;
+inline bool valid_drone_rotation(const std::array<float, 4> &q) noexcept {
+    float length = 0.f;
+    for (const float v : q) {
+        if (!(v >= -1.01f && v <= 1.01f)) return false; // also false for NaN
+        length += v * v;
+    }
+    return length > 0.81f && length < 1.21f;
+}
 inline bool valid_drone_position(const std::array<float, 3> &p) noexcept {
     for (const float v : p)
         if (!(v > -1.0e6f && v < 1.0e6f)) return false; // also false for NaN
@@ -341,6 +350,9 @@ struct Packet {
     // each other's costumes and skateboards). Off: a dedicated server relays none and games
     // neither send theirs nor show other players'.
     bool sync_effects{true};
+    // Roster: players see each other's FPV drones (Skater/drone_beacon.h). Off: a dedicated server
+    // relays none, and games neither send theirs nor show other players'.
+    bool sync_drones{true};
     // Bumped each time the host deletes all guest objects. Guests delete their
     // own session objects when it changes after their first roster.
     std::uint32_t object_clears{};
@@ -387,6 +399,7 @@ struct Packet {
     std::vector<NextMap> next_maps;           // next_maps: at most max_next_maps
     std::uint32_t role_permissions{};
     std::array<float, 3> drone_position{};    // drone: where the drone is (finite, within 1e6)
+    std::array<float, 4> drone_rotation{0.f, 0.f, 0.f, 1.f}; // drone: which way it faces (unit quaternion)
     bool drone_active{};                      // drone: flying now (false = it stopped)
     PartyAction party_action = PartyAction::leave; // party: what is asked or told
     std::uint64_t party_player{};                   // party: the other player (see PartyAction)

@@ -772,6 +772,7 @@ void send_local(Session &s, const NativeFrame &local, std::uint64_t now, std::ui
         auto d = packet(s, PacketKind::drone, now);
         d.drone_active = out->active;
         d.drone_position = out->position;
+        d.drone_rotation = out->rotation;
         deliver(d, false, true);
     }
 }

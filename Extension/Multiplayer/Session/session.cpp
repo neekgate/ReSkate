@@ -1,4 +1,5 @@
 #include "session_internal.h"
+#include "Extension/Skater/drone_beacon.h"
 #include "Engine/Core/Debug/trace.h"
 #include "Extension/Multiplayer/Hud/native_player_ui.h"
 #include "Extension/Multiplayer/Hud/native_indicators.h"
@@ -82,6 +83,8 @@ void stop(Session &s, std::string reason) {
     s.object_limit = 0;
     s.object_scaling = true;
     s.sync_effects = true;
+    s.sync_drones = true;
+    drone::beacon::server_allows().store(true);
     set_lobby_object_limit(0);
     s.server_admin = false;
     s.role.clear();

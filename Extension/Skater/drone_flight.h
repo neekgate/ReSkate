@@ -138,8 +138,8 @@ inline constexpr KnobInfo knob_info[] = {
     {"armaxis", "radio axis 1-6 for an arm switch (high = armed; minus flips it; 0 = none). Not an axis a stick uses", -6.0f, 6.0f, 0.0f},
     {"resetaxis", "radio axis 1-6 for a reset switch (flick it high to reset; 0 = none). Not an axis a stick uses", -6.0f, 6.0f, 0.0f},
     {"disarmfreeze", "1 = a disarmed drone hangs in place, 0 = it falls", 0.0f, 1.0f, 0.0f},
-    {"beacon", "1 = other players in the lobby (running this build) see a marker where your drone is", 0.0f, 1.0f, 0.0f},
-    {"showbeacons", "1 = show markers for other players' drones", 0.0f, 1.0f, 1.0f},
+    {"beacon", "1 = other players (on this version of ReSkate) see your drone", 0.0f, 1.0f, 0.0f},
+    {"showbeacons", "1 = show other players' drones, 0 = hide them", 0.0f, 1.0f, 1.0f},
     {"armbutton", "radio button 1-32 for arming (held = armed; 0 = none)", 0.0f, 32.0f, 0.0f},
     {"resetbutton", "radio button 1-32 for reset (press = reset; 0 = none)", 0.0f, 32.0f, 0.0f},
     {"analog", "1 = analogue FPV video look while flying (scanlines, static, vignette, rolling glitches)", 0.0f, 1.0f, 0.0f},
@@ -407,7 +407,7 @@ inline std::array<float, 16> step_drone_cmd(const std::array<float, 16>& camera,
     t.altitude.store(next_pos[1] - state.start_y, std::memory_order_relaxed);
     t.seconds.store(state.flight_time, std::memory_order_relaxed);
     t.armed.store(cfg.armed, std::memory_order_relaxed);
-    beacon::publish_local(next_pos, cfg.beacon);
+    beacon::publish_local(next_pos, beacon::rotation_from_basis(state.body), cfg.beacon);
     t.last_ms.store(now_ms(), std::memory_order_relaxed);
     return out;
 }
