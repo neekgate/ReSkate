@@ -160,13 +160,13 @@ void register_movement_commands(Commands &registry) {
         Group::movement, argument("0|1", Type::boolean));
     radio_mode.inspect = [](const Model &m) {
         return boolean_state(m.debug.available, drone::radio::config().enabled.load(), "Waiting for local player controls.",
-                             "droneradiocheck shows the stick values; droneaxes remaps them");
+                             "Set it up in the drone window (dronemenu, Radio tab)");
     };
     radio_mode.run = [](const Model &, const Values &args, const Output &out) {
         const bool on = std::get<bool>(args[0]);
         drone::radio::config().enabled = on;
         profile_runtime::set_local_values({{"Drone.Radio", on ? 1.0 : 0.0}});
-        out(on ? "Radio on. About 35% throttle hovers; lower falls. Run droneradiocheck if a stick does the wrong thing."
+        out(on ? "Radio on. About 35% throttle hovers; lower falls. If a stick does the wrong thing, open dronemenu and use Set up controller on the Radio tab."
                : "Radio off. The drone uses the keyboard and mouse.");
     };
     radio_mode.reset = [](const Model &, const Output &) {
@@ -194,8 +194,7 @@ void register_movement_commands(Commands &registry) {
         out(std::format("Mapping (roll pitch throttle yaw): {} {} {} {}", map[0], map[1], map[2], map[3]));
         out(std::format("Drone reads: roll {:+.2f} (right +)  pitch {:+.2f} (forward +)  throttle {:.2f}  yaw {:+.2f} (right +)",
                         cmd.roll, cmd.pitch, cmd.throttle, cmd.yaw));
-        out("Hold a stick over and run this again to see which axis moves. Use droneaxes to remap; a minus sign flips an axis.");
-        out("For arm/reset switches, use an axis or button no stick uses: flip the switch, run this again, then dronetune armaxis/resetaxis N or armbutton/resetbutton N.");
+        out("Easiest fix for a wrong stick: dronemenu, Radio tab, Set up controller. Or hold a stick over, run this again to see which axis moves, and remap with droneaxes (a minus sign reverses an axis).");
     };
     registry.add(std::move(radio_check));
     const auto axis_argument = [](const char *name) {

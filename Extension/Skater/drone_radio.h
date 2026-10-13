@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <string>
@@ -76,6 +77,167 @@ struct Sample {
     std::string name;
     int device = -1;
 };
+
+// Guided controller setup: works out which axis each stick is on, and which way round, by asking
+// the pilot to move one stick at a time. Then, optionally, which switch arms and which resets.
+//
+// It starts from the sticks at rest (centred, throttle down). For each stick it picks the unused
+// axis that moved furthest from rest, once it has been held well over for a moment, and takes the
+// direction it moved as "plus" (throttle up, yaw right, pitch forward, roll right). The stick must
+// come back to rest before the next one. Switches are any other axis that swings across, or a
+// button that was not already down at rest. Plain maths: driven by the drone window's frames.
+class Calibration {
+public:
+    enum class Step { idle, rest, throttle, yaw, pitch, roll, arm, reset, done };
+    static constexpr float move_threshold = 0.6f;   // how far from rest counts as "pushed"
+    static constexpr float switch_threshold = 0.8f; // a switch swings further than a stick drifts
+    static constexpr float return_threshold = 0.25f;
+    static constexpr float hold_seconds = 0.3f;
+
+    Step step() const { return step_; }
+    bool active() const { return step_ != Step::idle && step_ != Step::done; }
+    // True after a stick or switch was found, until it goes back to rest.
+    bool waiting_for_return() const { return returning_; }
+    // The axis (0-5) the current step would pick if held, or -1.
+    int candidate() const { return candidate_; }
+
+    // Results, in the same form `droneaxes` and `dronetune` take.
+    std::array<int, 4> mapping() const { return map_; } // roll, pitch, throttle, yaw: signed 1..6
+    int arm_axis() const { return arm_axis_; }
+    int arm_button() const { return arm_button_; }
+    int reset_axis() const { return reset_axis_; }
+    int reset_button() const { return reset_button_; }
+
+    void start() { *this = Calibration{}; step_ = Step::rest; }
+    void cancel() { *this = Calibration{}; }
+    // "Ready" on the rest step: the sticks as they are now are where they rest.
+    void capture_rest(const std::array<float, 6>& axes, std::uint32_t buttons) {
+        if (step_ != Step::rest) return;
+        rest_ = axes;
+        rest_buttons_ = buttons;
+        step_ = Step::throttle;
+    }
+    // "Skip" on a switch step: no switch for it.
+    void skip() {
+        if (step_ == Step::arm) { step_ = Step::reset; clear_hold(); }
+        else if (step_ == Step::reset) { step_ = Step::done; clear_hold(); }
+    }
+    // Once per frame while the setup is shown.
+    void update(const std::array<float, 6>& axes, std::uint32_t buttons, float seconds) {
+        if (!active() || step_ == Step::rest) return;
+        if (!std::isfinite(seconds) || seconds < 0.0f) seconds = 0.0f;
+        if (returning_) {
+            if (back_at_rest(axes, buttons)) { returning_ = false; advance(); }
+            return;
+        }
+        if (step_ == Step::arm || step_ == Step::reset) update_switch(axes, buttons, seconds);
+        else update_stick(axes, seconds);
+    }
+
+private:
+    Step step_ = Step::idle;
+    std::array<float, 6> rest_{};
+    std::uint32_t rest_buttons_ = 0;
+    std::array<int, 4> map_{1, 2, 3, 4};
+    std::array<bool, 6> used_{};
+    std::uint32_t used_buttons_ = 0;
+    int arm_axis_ = 0, arm_button_ = 0, reset_axis_ = 0, reset_button_ = 0;
+    int candidate_ = -1, candidate_button_ = 0;
+    float held_ = 0.0f;
+    bool returning_ = false;
+    int found_axis_ = -1, found_button_ = 0;
+
+    void clear_hold() { candidate_ = -1; candidate_button_ = 0; held_ = 0.0f; }
+    static int slot(Step s) { return s == Step::roll ? 0 : s == Step::pitch ? 1 : s == Step::throttle ? 2 : 3; }
+    int furthest(const std::array<float, 6>& axes, float threshold) const {
+        int best = -1;
+        float distance = threshold;
+        for (int i = 0; i < 6; ++i) {
+            if (used_[static_cast<std::size_t>(i)]) continue;
+            const float d = std::abs(axes[static_cast<std::size_t>(i)] - rest_[static_cast<std::size_t>(i)]);
+            if (std::isfinite(d) && d > distance) { distance = d; best = i; }
+        }
+        return best;
+    }
+    bool hold(int axis, int button, float seconds) {
+        if (axis != candidate_ || button != candidate_button_) {
+            candidate_ = axis;
+            candidate_button_ = button;
+            held_ = 0.0f;
+            return false;
+        }
+        held_ += seconds;
+        return (axis >= 0 || button > 0) && held_ >= hold_seconds;
+    }
+    void update_stick(const std::array<float, 6>& axes, float seconds) {
+        const int axis = furthest(axes, move_threshold);
+        if (!hold(axis, 0, seconds)) return;
+        const auto i = static_cast<std::size_t>(axis);
+        const int sign = axes[i] >= rest_[i] ? 1 : -1;
+        map_[static_cast<std::size_t>(slot(step_))] = sign * (axis + 1);
+        used_[i] = true;
+        found_axis_ = axis;
+        found_button_ = 0;
+        returning_ = true;
+        clear_hold();
+    }
+    void update_switch(const std::array<float, 6>& axes, std::uint32_t buttons, float seconds) {
+        const int axis = furthest(axes, switch_threshold);
+        int button = 0;
+        const std::uint32_t fresh = buttons & ~rest_buttons_ & ~used_buttons_;
+        for (int n = 1; n <= 32 && !button; ++n)
+            if (fresh & (1u << (n - 1))) button = n;
+        if (axis >= 0) button = 0; // an axis is the clearer signal when both move
+        if (!hold(axis, button, seconds)) return;
+        if (axis >= 0) {
+            const auto i = static_cast<std::size_t>(axis);
+            const int value = (axes[i] >= rest_[i] ? 1 : -1) * (axis + 1); // its new side counts as "on"
+            (step_ == Step::arm ? arm_axis_ : reset_axis_) = value;
+            used_[i] = true;
+        } else {
+            (step_ == Step::arm ? arm_button_ : reset_button_) = button;
+            used_buttons_ |= 1u << (button - 1);
+        }
+        found_axis_ = axis;
+        found_button_ = button;
+        // The arm switch can stay on; the reset switch has to be let go before finishing.
+        returning_ = step_ == Step::reset;
+        if (!returning_) advance();
+        clear_hold();
+    }
+    bool back_at_rest(const std::array<float, 6>& axes, std::uint32_t buttons) const {
+        if (found_axis_ >= 0) {
+            const auto i = static_cast<std::size_t>(found_axis_);
+            return std::abs(axes[i] - rest_[i]) < return_threshold;
+        }
+        return found_button_ <= 0 || (buttons & (1u << (found_button_ - 1))) == 0;
+    }
+    void advance() {
+        switch (step_) {
+        case Step::throttle: step_ = Step::yaw; break;
+        case Step::yaw: step_ = Step::pitch; break;
+        case Step::pitch: step_ = Step::roll; break;
+        case Step::roll: step_ = Step::arm; break;
+        case Step::arm: step_ = Step::reset; break;
+        case Step::reset: step_ = Step::done; break;
+        default: break;
+        }
+    }
+};
+// The one setup the drone window runs. Overlay thread only; the game thread reads calibrating().
+inline Calibration& calibration() { static Calibration value; return value; }
+// While the setup is on screen the game holds the drone still instead of flying it with the sticks.
+// The drone window marks each frame it shows the setup; leaving the tab or closing the menu lets
+// the drone fly again within half a second, even with the setup unfinished.
+inline std::atomic<std::int64_t>& calibration_seen() { static std::atomic<std::int64_t> value{0}; return value; }
+inline std::int64_t calibration_clock() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+inline void mark_calibrating() { calibration_seen().store(calibration_clock(), std::memory_order_relaxed); }
+inline bool calibrating() {
+    const auto seen = calibration_seen().load(std::memory_order_relaxed);
+    return seen != 0 && calibration_clock() - seen < 500;
+}
 
 #ifdef _WIN32
 namespace detail {

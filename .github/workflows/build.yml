@@ -42,7 +42,7 @@ jobs:
       - name: Configure
         run: |
           # -DDINGOSDK_CARGO=OFF: skip the Rust Spotify device (not needed for drone builds)
-          cmake --preset vs2022-x64 -DDINGOSDK_CARGO=OFF *>&1 | Tee-Object -FilePath configure.log
+          cmake --preset vs2022-x64 -DDINGOSDK_CARGO=OFF -DDINGOSDK_BUILD_MULTIPLAYER_TESTS=ON *>&1 | Tee-Object -FilePath configure.log
           if ($LASTEXITCODE -ne 0) {
             $tail = (Get-Content configure.log | Select-Object -Last 40) -join '%0A'
             Write-Output "::error::$tail"
@@ -57,6 +57,15 @@ jobs:
           if ($code -ne 0) {
             $errors = (Select-String -Path build.log -Pattern ' error | error [A-Z]*[0-9]+:' | Select-Object -First 40 | ForEach-Object { $_.Line }) -join '%0A'
             Write-Output "::error::$errors"
+            exit 1
+          }
+
+      - name: Test (drone setup and network protocol)
+        run: |
+          ctest --test-dir build/vs2022-x64 -C Release -R "drone_radio|multiplayer_protocol" --output-on-failure *>&1 | Tee-Object -FilePath test.log
+          if ($LASTEXITCODE -ne 0) {
+            $tail = (Get-Content test.log | Select-Object -Last 30) -join '%0A'
+            Write-Output "::error::$tail"
             exit 1
           }
 

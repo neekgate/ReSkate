@@ -42,7 +42,6 @@ struct Settings {
     bool collide = true;            // collide with the world (needs the game's collision query)
     float body_radius = 0.3f;       // how close it gets to a surface before stopping
     float floor_depth = 1.5f;       // invisible floor this far below the start height (only without collisions); 0 = none
-    bool park_at_zero = false;      // radio: throttle at the bottom freezes the drone instead of falling
     bool armed = true;              // false = motors off: no control, no thrust (the drone falls)
     bool disarm_freeze = false;     // true = a disarmed drone hangs in place instead of falling
     bool beacon = false;            // tell other players in the lobby where the drone is
@@ -100,7 +99,7 @@ inline void set_enabled(bool on) { enabled().store(on, std::memory_order_release
 // Settings you can change while flying (`dronetune`). The index order matters: live_settings() uses it.
 struct KnobInfo { const char* name; const char* help; float lo, hi, def; };
 enum Knob : std::size_t { kGravity, kDrag, kHover, kRollCenter, kRollMax, kRollExpo, kPitchCenter, kPitchMax, kPitchExpo,
-    kYawCenter, kYawMax, kYawExpo, kUptilt, kFloor, kPark, kCollide, kRadius, kOsd, kVolume,
+    kYawCenter, kYawMax, kYawExpo, kUptilt, kFloor, kCollide, kRadius, kOsd, kVolume,
     kOsdScale, kOsdColor, kOsdFont, kOsdMargin, kCrosshair, kShowArmed, kShowBattery, kShowTimer, kShowThrottle, kShowAlt,
     kShowSpeed, kSticks, kStickSize, kArmAxis, kResetAxis, kDisarmFreeze, kBeacon, kShowBeacons, kArmButton, kResetButton,
     kAnalog, kAnalogNoise, kAnalogScan, kAnalogVignette, kAnalogGlitch };
@@ -119,7 +118,6 @@ inline constexpr KnobInfo knob_info[] = {
     {"yawexpo", "yaw expo, 0-1", 0.0f, 1.0f, 0.30f},
     {"uptilt", "camera tilt up in degrees (FPV cameras are about 25-40)", -30.0f, 70.0f, 25.0f},
     {"floor", "invisible floor, units below your start height; 0 = none", 0.0f, 1000.0f, 1.5f},
-    {"park", "1 = radio throttle at the bottom freezes the drone, 0 = it falls", 0.0f, 1.0f, 0.0f},
     {"collide", "1 = hit the ground, walls and ramps, 0 = fly through everything", 0.0f, 1.0f, 1.0f},
     {"radius", "how close it gets to a surface before stopping", 0.05f, 3.0f, 0.3f},
     {"osd", "1 = show the flight display (battery, timer, throttle, altitude, speed)", 0.0f, 1.0f, 1.0f},
@@ -168,7 +166,7 @@ inline Settings live_settings() {
     s.roll = {get(kRollCenter), get(kRollMax), get(kRollExpo)};
     s.pitch = {get(kPitchCenter), get(kPitchMax), get(kPitchExpo)};
     s.yaw = {get(kYawCenter), get(kYawMax), get(kYawExpo)};
-    s.camera_uptilt_deg = get(kUptilt); s.floor_depth = get(kFloor); s.park_at_zero = get(kPark) >= 0.5f;
+    s.camera_uptilt_deg = get(kUptilt); s.floor_depth = get(kFloor);
     s.collide = get(kCollide) >= 0.5f; s.body_radius = get(kRadius);
     s.armed = armed(); s.disarm_freeze = get(kDisarmFreeze) >= 0.5f; s.beacon = get(kBeacon) >= 0.5f;
     return s;
@@ -439,9 +437,8 @@ inline std::array<float, 16> step_drone_flight(const std::array<float, 16>& came
     return step_drone_cmd(camera, state, cmd, seconds, speed, cfg, world);
 }
 
-// Radio controller: sticks drive rates directly and the throttle stick is absolute thrust. With the
-// `park` setting on, a throttle at the bottom freezes the drone; otherwise it falls and lands on the
-// invisible floor.
+// Radio controller: sticks drive rates directly and the throttle stick is absolute thrust. A throttle
+// at the bottom lets the drone fall, as a real one would.
 inline std::array<float, 16> step_drone_radio(const std::array<float, 16>& camera, State& state,
     const radio::Command& sticks, float seconds, float speed, const Settings& cfg = {}, const World* world = nullptr) {
     using namespace detail;
@@ -452,7 +449,6 @@ inline std::array<float, 16> step_drone_radio(const std::array<float, 16>& camer
     cmd.roll = clamp1(sticks.roll);
     cmd.yaw_rad = -actual_rate(clamp1(sticks.yaw), cfg.yaw) * kDegToRad * dt;
     cmd.throttle = std::clamp(sticks.throttle, 0.0f, 1.0f);
-    cmd.park = cfg.park_at_zero && sticks.throttle <= 0.03f;
     {
         auto& t = telemetry();
         t.stick_roll.store(clamp1(sticks.roll), std::memory_order_relaxed);

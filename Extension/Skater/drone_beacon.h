@@ -1,9 +1,10 @@
 #pragma once
 // Letting other players in a lobby see where your FPV drone is (they need this build too).
-// The flight tick publishes the drone's position; the session sends it a few times a second as a
-// small `drone` packet (Multiplayer/Net/protocol.h); the receiver keeps the latest position of
-// each player's drone and the overlay draws a marker for it (UI/Overlay/drone_hud_overlay.cpp).
+// The flight tick publishes the drone's position; the session sends it about 15 times a second as
+// a small `drone` packet (Multiplayer/Net/protocol.h); the receiver glides each player's marker from
+// one position to the next, and the overlay draws it (UI/Overlay/drone_hud_overlay.cpp).
 // Header-only and free of game code, so the networking can use it without pulling in the flight model.
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cmath>
@@ -44,7 +45,9 @@ inline void publish_local(const Position& position, bool share) {
 }
 
 struct Outgoing { bool active; Position position; };
-// Asked by the network every tick: a position to send now (about five times a second while
+// How often a flying drone's position goes out.
+inline constexpr auto send_interval = std::chrono::milliseconds(66);
+// Asked by the network every tick: a position to send now (about 15 times a second while
 // flying, and once to say it stopped), or nothing.
 inline std::optional<Outgoing> next_outgoing(Clock::time_point now = Clock::now()) {
     auto& l = local();
@@ -52,7 +55,7 @@ inline std::optional<Outgoing> next_outgoing(Clock::time_point now = Clock::now(
     const bool flying = l.share && l.updated != Clock::time_point{} && now - l.updated < std::chrono::milliseconds(300) &&
                         valid_position(l.position);
     if (flying) {
-        if (l.announced && now - l.last_sent < std::chrono::milliseconds(200)) return std::nullopt;
+        if (l.announced && now - l.last_sent < send_interval) return std::nullopt;
         l.announced = true;
         l.last_sent = now;
         return Outgoing{true, l.position};
@@ -66,12 +69,24 @@ inline std::optional<Outgoing> next_outgoing(Clock::time_point now = Clock::now(
 }
 
 // ---- Receiving: other players' drones.
+// A marker glides from where it was shown when a position arrived to that new position, over the
+// time the last update took to come. So it moves smoothly, about one update behind the drone,
+// instead of jumping a few times a second.
 struct Remote {
     std::uint64_t id{};
     std::string name;
-    Position position{};
-    Clock::time_point seen{};
+    Position position{};          // in a snapshot: where to draw the marker now
+    Clock::time_point seen{};     // when the latest position arrived
+    Position from{}, to{};        // the glide: from the shown position to the latest one
+    Clock::duration glide{};      // how long the glide takes
 };
+inline Position glide_position(const Remote& r, Clock::time_point now) {
+    if (r.glide <= Clock::duration::zero()) return r.to;
+    const float t = std::clamp(std::chrono::duration<float>(now - r.seen) / std::chrono::duration<float>(r.glide), 0.0f, 1.0f);
+    return {r.from[0] + (r.to[0] - r.from[0]) * t, r.from[1] + (r.to[1] - r.from[1]) * t, r.from[2] + (r.to[2] - r.from[2]) * t};
+}
+// Far jumps (a reset, a teleport) are shown at once rather than slid across the map.
+inline constexpr float snap_distance = 50.0f;
 struct Remotes {
     std::mutex mutex;
     std::vector<Remote> list;
@@ -89,12 +104,21 @@ inline void receive(std::uint64_t id, std::string name, const Position& position
         if (it->id == id) {
             if (!active) { r.list.erase(it); return; }
             if (!name.empty()) it->name = std::move(name);
+            const auto shown = glide_position(*it, now);
+            float jump = 0.0f;
+            for (std::size_t i = 0; i < 3; ++i) jump += (position[i] - shown[i]) * (position[i] - shown[i]);
+            // The glide lasts as long as this update took to arrive, within sensible bounds.
+            const auto gap = std::clamp<Clock::duration>(now - it->seen, std::chrono::milliseconds(20),
+                                                         std::chrono::milliseconds(250));
+            it->from = jump > snap_distance * snap_distance ? position : shown;
+            it->to = position;
             it->position = position;
+            it->glide = gap;
             it->seen = now;
             return;
         }
     if (!active || r.list.size() >= max_remote) return;
-    r.list.push_back({id, std::move(name), position, now});
+    r.list.push_back({id, std::move(name), position, now, position, position, {}});
 }
 // Someone left the session.
 inline void forget(std::uint64_t id) {
@@ -107,6 +131,8 @@ inline std::vector<Remote> snapshot(Clock::time_point now = Clock::now()) {
     auto& r = remotes();
     std::lock_guard lock(r.mutex);
     std::erase_if(r.list, [now](const Remote& x) { return now - x.seen > stale_after; });
-    return r.list;
+    auto out = r.list;
+    for (auto& x : out) x.position = glide_position(x, now);
+    return out;
 }
 } // namespace dingosdk::drone::beacon

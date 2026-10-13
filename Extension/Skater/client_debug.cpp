@@ -235,7 +235,11 @@ void debug_flight_tick(SourceTrial& trial, std::uintptr_t client, bool ready, bo
                 return true;
             }};
             bool flown_by_radio = false;
-            if (drone::radio::config().enabled.load(std::memory_order_acquire) && drone::radio::game_in_foreground()) {
+            if (drone::radio::calibrating()) {
+                // The controller setup is moving the sticks and switches: hold the drone where it is.
+                next = debug.flight_matrix;
+                flown_by_radio = true;
+            } else if (drone::radio::config().enabled.load(std::memory_order_acquire) && drone::radio::game_in_foreground()) {
                 const auto sample = drone::radio::poll();
                 if (sample.valid) {
                     drone::apply_switches(sample.axes, sample.buttons);

@@ -116,7 +116,6 @@ void tab_handling() {
     toggle(Knob::kCollide, "Collide with the world");
     slider(Knob::kRadius, "Collision size");
     slider(Knob::kFloor, "Invisible floor (when not colliding)", "%.1f");
-    toggle(Knob::kPark, "Radio: throttle at the bottom freezes the drone");
     toggle(Knob::kDisarmFreeze, "A disarmed drone hangs in place");
 }
 
@@ -166,21 +165,132 @@ void tab_display() {
     slider(Knob::kVolume, "Motor sound volume");
 }
 
+const char* axis_text(int signed_axis, char* buffer, std::size_t size) {
+    if (signed_axis == 0) std::snprintf(buffer, size, "none");
+    else std::snprintf(buffer, size, "axis %d%s", std::abs(signed_axis), signed_axis < 0 ? " (reversed)" : "");
+    return buffer;
+}
+
+// Live bars for the six axes; `highlight` (0-5) is drawn as the one being picked.
+void axis_bars(const drone::radio::Sample& sample, int highlight) {
+    for (int i = 0; i < 6; ++i) {
+        const auto v = sample.axes[static_cast<std::size_t>(i)];
+        char value[16];
+        std::snprintf(value, sizeof value, "%+.2f", static_cast<double>(v));
+        const bool lit = i == highlight;
+        if (lit) ImGui::PushStyleColor(ImGuiCol_PlotHistogram, IM_COL32(120, 220, 120, 255));
+        ImGui::ProgressBar((v + 1.0f) * 0.5f, ImVec2(ImGui::GetContentRegionAvail().x * 0.7f, 0), value);
+        if (lit) ImGui::PopStyleColor();
+        ImGui::SameLine();
+        ImGui::Text("Axis %d%s", i + 1, lit ? "  <" : "");
+    }
+}
+
+// The guided setup (drone_radio.h: Calibration). Saves through the same commands as the manual controls.
+void setup_wizard(const drone::radio::Sample& sample) {
+    using Step = drone::radio::Calibration::Step;
+    auto& c = drone::radio::calibration();
+    if (sample.valid) c.update(sample.axes, sample.buttons, ImGui::GetIO().DeltaTime);
+    const auto step = c.step();
+    if (c.active()) drone::radio::mark_calibrating();
+    const char* title = "";
+    const char* body = "";
+    switch (step) {
+    case Step::rest:
+        title = "Step 1 of 7: sticks at rest";
+        body = "Let go of both sticks so they centre, and put the throttle all the way down. Then press Ready.";
+        break;
+    case Step::throttle:
+        title = "Step 2 of 7: throttle";
+        body = c.waiting_for_return() ? "Got it. Now bring the throttle back down."
+                                      : "Push the throttle all the way up and hold it there.";
+        break;
+    case Step::yaw:
+        title = "Step 3 of 7: yaw";
+        body = c.waiting_for_return() ? "Got it. Let the stick go." : "Push the yaw stick (left stick, sideways) fully right and hold it.";
+        break;
+    case Step::pitch:
+        title = "Step 4 of 7: pitch";
+        body = c.waiting_for_return() ? "Got it. Let the stick go." : "Push the right stick fully forward (away from you) and hold it.";
+        break;
+    case Step::roll:
+        title = "Step 5 of 7: roll";
+        body = c.waiting_for_return() ? "Got it. Let the stick go." : "Push the right stick fully right and hold it.";
+        break;
+    case Step::arm:
+        title = "Step 6 of 7: arm switch (optional)";
+        body = "Flip the switch you want to arm the motors with to its ARMED position. No arm switch? Press Skip.";
+        break;
+    case Step::reset:
+        title = "Step 7 of 7: reset switch (optional)";
+        body = c.waiting_for_return() ? "Got it. Let the switch go back."
+                                      : "Flick the switch or press the button you want to put the drone back at its start. No reset switch? Press Skip.";
+        break;
+    default: break;
+    }
+    if (step == Step::done) {
+        // Save once, then show what was found.
+        static bool saved = false;
+        if (!saved) {
+            const auto m = c.mapping();
+            run(std::format("droneaxes {} {} {} {}", m[0], m[1], m[2], m[3]));
+            set(Knob::kArmAxis, static_cast<float>(c.arm_axis())); save(Knob::kArmAxis);
+            set(Knob::kArmButton, static_cast<float>(c.arm_button())); save(Knob::kArmButton);
+            set(Knob::kResetAxis, static_cast<float>(c.reset_axis())); save(Knob::kResetAxis);
+            set(Knob::kResetButton, static_cast<float>(c.reset_button())); save(Knob::kResetButton);
+            saved = true;
+        }
+        ImGui::TextUnformatted("Setup saved.");
+        const auto m = c.mapping();
+        static const char* const names[4] = {"Roll", "Pitch", "Throttle", "Yaw"};
+        char buffer[32];
+        for (int i = 0; i < 4; ++i) ImGui::BulletText("%s: %s", names[i], axis_text(m[static_cast<std::size_t>(i)], buffer, sizeof buffer));
+        const auto switch_text = [&buffer](int axis, int button) -> std::string {
+            if (button > 0) return std::format("button {}", button);
+            return axis_text(axis, buffer, sizeof buffer);
+        };
+        ImGui::BulletText("Arm switch: %s", switch_text(c.arm_axis(), c.arm_button()).c_str());
+        ImGui::BulletText("Reset switch: %s", switch_text(c.reset_axis(), c.reset_button()).c_str());
+        if (ImGui::Button("Done", ImVec2(-FLT_MIN, 0))) { c.cancel(); saved = false; }
+        return;
+    }
+    ImGui::TextUnformatted(title);
+    ImGui::TextWrapped("%s", body);
+    if (!sample.valid) ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.3f, 1.0f), "The controller is not connected.");
+    else axis_bars(sample, c.waiting_for_return() ? -1 : c.candidate());
+    const float third = (ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ItemSpacing.x * 2.0f) / 3.0f;
+    if (step == Step::rest) {
+        ImGui::BeginDisabled(!sample.valid);
+        if (ImGui::Button("Ready", ImVec2(third, 0))) c.capture_rest(sample.axes, sample.buttons);
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+    } else if ((step == Step::arm || step == Step::reset) && !c.waiting_for_return()) {
+        if (ImGui::Button("Skip", ImVec2(third, 0))) c.skip();
+        ImGui::SameLine();
+    }
+    if (ImGui::Button("Cancel", ImVec2(third, 0))) c.cancel();
+}
+
 void tab_radio() {
     const auto sample = drone::radio::poll();
+    auto& c = drone::radio::calibration();
+    if (c.step() != drone::radio::Calibration::Step::idle) {
+        setup_wizard(sample);
+        return;
+    }
     if (!sample.valid) {
-        ImGui::TextWrapped("No radio controller found. Plug it in and set its USB mode to Joystick.");
+        ImGui::TextWrapped("No controller found. Plug in your radio and set its USB mode to Joystick (on EdgeTX radios, "
+                           "pick \"USB Joystick (HID)\" when you plug it in).");
     } else {
         ImGui::Text("Controller: %s", sample.name.c_str());
-        for (int i = 0; i < 6; ++i) {
-            char label[32];
-            std::snprintf(label, sizeof label, "Axis %d", i + 1);
-            char value[16];
-            std::snprintf(value, sizeof value, "%+.2f", static_cast<double>(sample.axes[static_cast<std::size_t>(i)]));
-            ImGui::ProgressBar((sample.axes[static_cast<std::size_t>(i)] + 1.0f) * 0.5f, ImVec2(ImGui::GetContentRegionAvail().x * 0.7f, 0), value);
-            ImGui::SameLine();
-            ImGui::TextUnformatted(label);
-        }
+        ImGui::BeginDisabled(!sample.valid);
+        if (ImGui::Button("Set up controller", ImVec2(-FLT_MIN, 0))) c.start();
+        ImGui::EndDisabled();
+        ImGui::TextDisabled("Moves you through each stick and switch and saves which is which. The drone holds still meanwhile.");
+    }
+    if (!ImGui::CollapsingHeader("Manual setup")) return;
+    if (sample.valid) {
+        axis_bars(sample, -1);
         std::string pressed;
         for (int n = 1; n <= 32; ++n)
             if (sample.buttons & (1u << (n - 1))) pressed += (pressed.empty() ? "" : " ") + std::to_string(n);
@@ -200,7 +310,7 @@ void tab_radio() {
         ImGui::SetNextItemWidth(ImGui::GetFontSize() * 7.0f);
         if (ImGui::Combo(names[i], &axis, axes, 6)) changed = true;
         ImGui::SameLine();
-        if (ImGui::Checkbox("Flip", &flip)) changed = true;
+        if (ImGui::Checkbox("Reverse", &flip)) changed = true;
         map[static_cast<std::size_t>(i)] = (axis + 1) * (flip ? -1 : 1);
         ImGui::PopID();
     }
