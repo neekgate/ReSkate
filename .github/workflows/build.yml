@@ -10,14 +10,21 @@ jobs:
       - name: Configure
         shell: pwsh
         run: |
-          cmake --preset vs2022-x64 -DDINGOSDK_CARGO=DINGOSDK_CARGO-NOTFOUND *>&1 | Tee-Object -FilePath configure.log
+          cmake --preset vs2022-x64 -DDINGOSDK_CARGO=OFF *>&1 | Tee-Object -FilePath configure.log
           if ($LASTEXITCODE -ne 0) {
             $tail = (Get-Content configure.log | Select-Object -Last 40) -join '%0A'
             Write-Output "::error::$tail"
             exit 1
           }
       - name: Build
-        run: cmake --build --preset release --parallel 4
+        shell: pwsh
+        run: |
+          cmake --build --preset release --parallel 4 *>&1 | Tee-Object -FilePath build.log
+          if ($LASTEXITCODE -ne 0) {
+            $errors = (Select-String -Path build.log -Pattern ' error | error[A-Z]*[0-9]+:' | Select-Object -First 40 | ForEach-Object { $_.Line }) -join '%0A'
+            Write-Output "::error::$errors"
+            exit 1
+          }
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
