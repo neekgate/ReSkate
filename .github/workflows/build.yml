@@ -12,7 +12,8 @@ jobs:
         run: |
           cmake --preset vs2022-x64 -DDINGOSDK_CARGO=DINGOSDK_CARGO-NOTFOUND *>&1 | Tee-Object -FilePath configure.log
           if ($LASTEXITCODE -ne 0) {
-            Get-Content configure.log | Select-Object -Last 25 | ForEach-Object { Write-Output "::error::$_" }
+            $tail = (Get-Content configure.log | Select-Object -Last 40) -join '%0A'
+            Write-Output "::error::$tail"
             exit 1
           }
       - name: Build
