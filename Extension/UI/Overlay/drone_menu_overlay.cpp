@@ -34,7 +34,7 @@ void set(Knob k, float v) { drone::knobs().value[k].store(v, std::memory_order_r
 void save(Knob k) { run(std::format("dronetune {} {}", drone::knob_info[k].name, get(k))); }
 
 void tip(Knob k) {
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s\n(%s, default %g)", drone::knob_info[k].help, drone::knob_info[k].name,
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s.\n\nConsole: dronetune %s (default %g)", drone::knob_info[k].help, drone::knob_info[k].name,
                                                   static_cast<double>(drone::knob_info[k].def));
 }
 
@@ -92,15 +92,15 @@ void tab_fly() {
     const bool enabled = drone::is_enabled();
     const bool radio_on = drone::radio::config().enabled.load();
     const bool freecam = s.model.debug.free_camera;
-    ImGui::TextDisabled("Freecam: %s   Drone mode: %s   Controller: %s", freecam ? "on" : "off", enabled ? "on" : "off",
-                        radio_on ? "on" : "off");
+    if (enabled && freecam) ImGui::TextDisabled("Flying with %s.", radio_on ? "the controller" : "the keyboard and mouse");
+    else if (enabled) ImGui::TextDisabled("Drone mode is on, but freecam is off: press Start flying.");
     ImGui::BeginDisabled(!s.model.debug.camera_available);
-    if (ImGui::Button(enabled ? "Stop flying" : "Start flying", ImVec2(-FLT_MIN, 0))) {
-        if (enabled) { run("dronemode 0"); run("freecam 0"); } // back to the skater
-        else { if (!freecam) run("freecam 1"); run("dronemode 1"); }
+    if (ImGui::Button(enabled && freecam ? "Stop flying" : "Start flying", ImVec2(-FLT_MIN, 0))) {
+        if (enabled && freecam) { run("dronemode 0"); run("freecam 0"); } // back to the skater
+        else { if (!freecam) run("freecam 1"); if (!enabled) run("dronemode 1"); }
     }
     ImGui::EndDisabled();
-    if (!s.model.debug.camera_available) ImGui::TextDisabled("Waiting for the player's controls (load into a level).");
+    if (!s.model.debug.camera_available) ImGui::TextDisabled("Load into a level to fly.");
     bool radio = radio_on;
     if (ImGui::Checkbox("Fly with a controller (RC radio or gamepad)", &radio)) run(radio ? "droneradio 1" : "droneradio 0");
     ImGui::Separator();
@@ -111,9 +111,10 @@ void tab_fly() {
     const float half = (ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ItemSpacing.x * 2.0f) / 3.0f;
     if (ImGui::Button(armed ? "Disarm" : "Arm", ImVec2(half, 0))) drone::set_armed(!armed);
     ImGui::SameLine();
-    if (ImGui::Button("Reset position", ImVec2(half, 0))) drone::request_reset();
+    if (ImGui::Button("Back to takeoff", ImVec2(half, 0))) drone::request_reset();
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Puts the drone back where it took off, with a fresh battery and timer.");
     ImGui::SameLine();
-    if (ImGui::Button("Defaults", ImVec2(half, 0))) run("dronetune reset");
+    if (ImGui::Button("Reset settings", ImVec2(half, 0))) run("dronetune reset");
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Puts every drone setting back to its default.");
     ImGui::Separator();
     if (drone::flying()) {
@@ -122,7 +123,7 @@ void tab_fly() {
                     static_cast<double>(t.throttle.load() * 100.0f), static_cast<double>(t.speed.load() * 3.6f),
                     static_cast<double>(t.altitude.load()), static_cast<double>(t.seconds.load()));
     } else {
-        ImGui::TextDisabled("Not flying right now.");
+        ImGui::TextDisabled("Not flying.");
     }
     // The game's value comes back every frame; hold the one being set until the game has it, or
     // the slider would snap back while it is dragged.
@@ -132,21 +133,23 @@ void tab_fly() {
                             (sent_at > 0.0 && ImGui::GetTime() - sent_at > 1.0))) { pending = -1.0f; sent_at = 0.0; }
     float top = pending >= 0.0f ? pending : s.model.debug.camera_speed;
     ImGui::SetNextItemWidth(-ImGui::GetFontSize() * 9.0f);
-    if (ImGui::SliderFloat("Top speed (fly speed)", &top, 0.6f, 300.0f, "%.1f", ImGuiSliderFlags_Logarithmic)) pending = top;
+    if (ImGui::SliderFloat("Top speed", &top, 0.6f, 300.0f, "%.1f", ImGuiSliderFlags_Logarithmic)) pending = top;
     if (ImGui::IsItemDeactivatedAfterEdit()) { run(std::format("flyspeed {}", top)); sent_at = ImGui::GetTime(); }
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("The drone's speed limit is four times this (eight with boost).");
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("The same setting as freecam's fly speed.\n\nConsole: flyspeed");
+    // The flight model caps speed at four times the fly speed (m/s), twice that with boost.
+    ImGui::TextDisabled("Up to about %.0f km/h (twice that with boost).", static_cast<double>(top * 4.0f * 3.6f));
 }
 
 void tab_handling() {
     slider(Knob::kGravity, "Gravity", "%.1f");
-    slider(Knob::kHover, "Hover point (lower = more thrust)");
+    slider(Knob::kHover, "Hover throttle (lower = more power)");
     slider(Knob::kDrag, "Air drag");
     slider(Knob::kUptilt, "Camera tilt (degrees)", "%.0f");
     ImGui::Separator();
     toggle(Knob::kCollide, "Collide with the world");
     slider(Knob::kRadius, "Collision size");
-    slider(Knob::kFloor, "Invisible floor (when not colliding)", "%.1f");
-    toggle(Knob::kDisarmFreeze, "A disarmed drone hangs in place");
+    slider(Knob::kFloor, "Invisible floor (with collisions off)", "%.1f");
+    toggle(Knob::kDisarmFreeze, "Hang in the air when disarmed");
     ImGui::Separator();
     ImGui::TextUnformatted("Range");
     bool limited = get(Knob::kRange) > 0.0f;
@@ -174,7 +177,8 @@ void rate_row(const char* axis, Knob centre, Knob max, Knob expo) {
     ImGui::PopID();
 }
 void tab_rates() {
-    ImGui::TextDisabled("Betaflight \"Actual\" rates: centre sensitivity, max rate and expo, in degrees per second.");
+    ImGui::TextWrapped("How fast the drone turns, set like Betaflight's \"Actual\" rates. Centre: the speed near the middle of "
+                       "the stick. Max: the speed at full stick. Expo: how much softer the middle is.");
     rate_row("Roll", Knob::kRollCenter, Knob::kRollMax, Knob::kRollExpo);
     ImGui::Separator();
     rate_row("Pitch", Knob::kPitchCenter, Knob::kPitchMax, Knob::kPitchExpo);
@@ -183,7 +187,7 @@ void tab_rates() {
 }
 
 void tab_display() {
-    toggle(Knob::kOsd, "Show the flight display (OSD)");
+    toggle(Knob::kOsd, "Show the goggle display (OSD)");
     static const char* const colours[] = {"White", "Green", "Yellow", "Cyan", "Orange", "Pink"};
     static const char* const fonts[] = {"Pixel (goggles)", "Smooth"};
     slider(Knob::kOsdScale, "Text size");
@@ -199,8 +203,8 @@ void tab_display() {
     toggle(Knob::kShowAlt, "Altitude"); ImGui::SameLine();
     toggle(Knob::kShowSpeed, "Speed");
     ImGui::Separator();
-    toggle(Knob::kSticks, "Stick overlay");
-    slider(Knob::kStickSize, "Stick overlay size");
+    toggle(Knob::kSticks, "Show my sticks on screen");
+    slider(Knob::kStickSize, "On-screen sticks size");
     ImGui::Separator();
     toggle(Knob::kAnalog, "Analogue video look");
     slider(Knob::kAnalogNoise, "Static");
