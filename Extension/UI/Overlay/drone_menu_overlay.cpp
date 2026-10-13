@@ -103,6 +103,9 @@ void tab_fly() {
     if (!s.model.debug.camera_available) ImGui::TextDisabled("Load into a level to fly.");
     bool radio = radio_on;
     if (ImGui::Checkbox("Fly with a controller (RC radio or gamepad)", &radio)) run(radio ? "droneradio 1" : "droneradio 0");
+    if (!radio_on && drone::radio::poll().valid)
+        ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f), "A controller is connected. Tick the box above to fly with it, or the game "
+                           "keeps using it for your skater.");
     ImGui::Separator();
     preset_picker();
     ImGui::Separator();
@@ -293,9 +296,11 @@ void setup_wizard(const drone::radio::Sample& sample) {
             set(Knob::kThrottleCentre, c.throttle_centred() ? 1.0f : 0.0f); save(Knob::kThrottleCentre);
             // Gamepad sticks drift more than a radio's gimbals.
             if (c.throttle_centred() && get(Knob::kDeadzone) < 0.12f) { set(Knob::kDeadzone, 0.12f); save(Knob::kDeadzone); }
+            // Setting a controller up means flying with it.
+            if (!drone::radio::config().enabled.load()) run("droneradio 1");
             saved = true;
         }
-        ImGui::TextUnformatted("Setup saved.");
+        ImGui::TextUnformatted("Setup saved. The drone now flies with this controller.");
         const auto m = c.mapping();
         static const char* const names[4] = {"Roll", "Pitch", "Throttle", "Yaw"};
         char buffer[32];

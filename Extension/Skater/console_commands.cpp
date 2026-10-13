@@ -252,8 +252,14 @@ void register_movement_commands(Commands &registry) {
     };
     registry.add(std::move(radio_axes));
     auto speed = argument("speed", Type::number);
-    speed.choices = {"0.6", "3", "5", "15", "60", "300", "1500"};
-    auto flight = variable("flyspeed", "Free-flight speed in world units per second", Group::movement, speed);
+    // Any speed in range, so the drone's presets and top speed slider can set theirs; the usual
+    // ones are still offered as completions.
+    speed.minimum = 0.6;
+    speed.maximum = 1500.0;
+    speed.complete = [](const Model &, auto) {
+        return std::vector<std::string>{"0.6", "3", "5", "15", "60", "300", "1500"};
+    };
+    auto flight = variable("flyspeed", "Free-flight speed in world units per second (0.6-1500)", Group::movement, speed);
     flight.aliases = {"debug.camera_speed"};
     flight.inspect = [](const Model &m) {
         return State{m.debug.available,
