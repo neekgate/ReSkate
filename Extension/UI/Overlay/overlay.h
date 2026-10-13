@@ -519,6 +519,11 @@ struct Gamepad {
     unsigned buttons = 0;
 };
 Gamepad read_gamepad();
+// Reads of a controller between these two calls see the real device even while ReSkate keeps
+// the game from reading it (freecam or drone controller capture). Same thread, paired.
+// The FPV drone reads its controller this way (Skater/drone_radio.h).
+void begin_input_access() noexcept;
+void end_input_access() noexcept;
 
 // Nonblocking. A later Present releases GPU resources after its fence completes.
 // The DLL stays pinned until process exit so no thread can return into unloaded

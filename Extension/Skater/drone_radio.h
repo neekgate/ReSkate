@@ -60,12 +60,21 @@ inline float pick_axis(const std::array<float, 6>& axes, int signed_index) {
     if (index < 0 || index > 5) return 0.0f;
     return signed_index < 0 ? -axes[index] : axes[index];
 }
-inline Command map_axes(const std::array<float, 6>& axes, const std::array<int, 4>& map, float dz = 0.03f) {
+// A throttle stick that springs back to the middle (a gamepad's): the middle holds the drone up,
+// up climbs to full, down drops to nothing. `hover` is the throttle that holds altitude.
+inline float spring_throttle(float stick, float hover) {
+    const float h = std::clamp(std::isfinite(hover) ? hover : 0.35f, 0.05f, 0.95f);
+    const float v = std::clamp(std::isfinite(stick) ? stick : 0.0f, -1.0f, 1.0f);
+    return v >= 0.0f ? h + v * (1.0f - h) : h * (1.0f + v);
+}
+inline Command map_axes(const std::array<float, 6>& axes, const std::array<int, 4>& map, float dz = 0.03f,
+                        bool centred_throttle = false, float hover = 0.35f) {
     Command out;
     out.valid = true;
     out.roll = deadzone(pick_axis(axes, map[0]), dz);
     out.pitch = deadzone(pick_axis(axes, map[1]), dz);
-    out.throttle = std::clamp((pick_axis(axes, map[2]) + 1.0f) * 0.5f, 0.0f, 1.0f);
+    out.throttle = centred_throttle ? spring_throttle(deadzone(pick_axis(axes, map[2]), dz), hover)
+                                    : std::clamp((pick_axis(axes, map[2]) + 1.0f) * 0.5f, 0.0f, 1.0f);
     out.yaw = deadzone(pick_axis(axes, map[3]), dz);
     return out;
 }
@@ -107,6 +116,8 @@ public:
     int arm_button() const { return arm_button_; }
     int reset_axis() const { return reset_axis_; }
     int reset_button() const { return reset_button_; }
+    // The throttle stick rested in the middle, not at the bottom: it springs back (a gamepad).
+    bool throttle_centred() const { return throttle_centred_; }
 
     void start() { *this = Calibration{}; step_ = Step::rest; }
     void cancel() { *this = Calibration{}; }
@@ -145,6 +156,7 @@ private:
     int candidate_ = -1, candidate_button_ = 0;
     float held_ = 0.0f;
     bool returning_ = false;
+    bool throttle_centred_ = false;
     int found_axis_ = -1, found_button_ = 0;
 
     void clear_hold() { candidate_ = -1; candidate_button_ = 0; held_ = 0.0f; }
@@ -175,6 +187,7 @@ private:
         const auto i = static_cast<std::size_t>(axis);
         const int sign = axes[i] >= rest_[i] ? 1 : -1;
         map_[static_cast<std::size_t>(slot(step_))] = sign * (axis + 1);
+        if (step_ == Step::throttle) throttle_centred_ = std::abs(rest_[i]) < 0.5f;
         used_[i] = true;
         found_axis_ = axis;
         found_button_ = 0;
@@ -240,7 +253,19 @@ inline bool calibrating() {
 }
 
 #ifdef _WIN32
+}
+namespace dingosdk::overlay { // UI/Overlay/overlay.h: reads that see the controller while the game is kept off it
+void begin_input_access() noexcept;
+void end_input_access() noexcept;
+}
+namespace dingosdk::drone::radio {
 namespace detail {
+struct InputAccess {
+    InputAccess() noexcept { overlay::begin_input_access(); }
+    ~InputAccess() { overlay::end_input_access(); }
+    InputAccess(const InputAccess&) = delete;
+    InputAccess& operator=(const InputAccess&) = delete;
+};
 inline std::string narrow(const wchar_t* text) {
     std::string out;
     for (; *text; ++text) out += *text < 128 ? static_cast<char>(*text) : '?';
@@ -275,6 +300,9 @@ inline bool read_device(UINT id, Sample& out) {
 
 // Reads the radio. Safe to call from any thread; rescans for a controller at most once a second.
 inline Sample poll() {
+    // While the drone flies with a controller, ReSkate keeps the game from reading it; this read
+    // has to see it all the same.
+    detail::InputAccess access;
     static std::atomic<int> cached{-1};
     static std::atomic<ULONGLONG> next_scan{0};
     Sample sample;

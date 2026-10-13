@@ -156,18 +156,18 @@ void register_movement_commands(Commands &registry) {
     };
     registry.add(std::move(reset_command));
     auto radio_mode = variable("droneradio",
-        "Fly the drone with a USB radio controller (set the radio's USB mode to Joystick). Needs dronemode 1",
+        "Fly the drone with a controller: an RC radio (USB mode: Joystick) or a gamepad. Needs dronemode 1",
         Group::movement, argument("0|1", Type::boolean));
     radio_mode.inspect = [](const Model &m) {
         return boolean_state(m.debug.available, drone::radio::config().enabled.load(), "Waiting for local player controls.",
-                             "Set it up in the drone window (dronemenu, Radio tab)");
+                             "Set it up in the drone window (dronemenu, Controller tab)");
     };
     radio_mode.run = [](const Model &, const Values &args, const Output &out) {
         const bool on = std::get<bool>(args[0]);
         drone::radio::config().enabled = on;
         profile_runtime::set_local_values({{"Drone.Radio", on ? 1.0 : 0.0}});
-        out(on ? "Radio on. About 35% throttle hovers; lower falls. If a stick does the wrong thing, open dronemenu and use Set up controller on the Radio tab."
-               : "Radio off. The drone uses the keyboard and mouse.");
+        out(on ? "Controller on. About 35% throttle hovers; lower falls. If a stick does the wrong thing, open dronemenu and use Set up controller on the Controller tab."
+               : "Controller off. The drone uses the keyboard and mouse.");
     };
     radio_mode.reset = [](const Model &, const Output &) {
         drone::radio::config().enabled = false;
@@ -179,7 +179,7 @@ void register_movement_commands(Commands &registry) {
     radio_check.run = [](const Model &, const Values &, const Output &out) {
         const auto sample = drone::radio::poll();
         if (!sample.valid) {
-            out("No radio controller found. Plug it in and set its USB mode to Joystick, then try again.");
+            out("No controller found. Plug in a gamepad, or an RC radio with its USB mode set to Joystick, then try again.");
             return;
         }
         out(std::format("Controller: {}", sample.name));
@@ -190,11 +190,11 @@ void register_movement_commands(Commands &registry) {
             if (sample.buttons & (1u << (n - 1))) pressed += (pressed.empty() ? "" : " ") + std::to_string(n);
         out(std::format("Buttons pressed: {}", pressed.empty() ? "none" : pressed));
         const auto map = drone::radio::mapping_snapshot();
-        const auto cmd = drone::radio::map_axes(sample.axes, map);
+        const auto cmd = drone::read_sticks(sample.axes);
         out(std::format("Mapping (roll pitch throttle yaw): {} {} {} {}", map[0], map[1], map[2], map[3]));
         out(std::format("Drone reads: roll {:+.2f} (right +)  pitch {:+.2f} (forward +)  throttle {:.2f}  yaw {:+.2f} (right +)",
                         cmd.roll, cmd.pitch, cmd.throttle, cmd.yaw));
-        out("Easiest fix for a wrong stick: dronemenu, Radio tab, Set up controller. Or hold a stick over, run this again to see which axis moves, and remap with droneaxes (a minus sign reverses an axis).");
+        out("Easiest fix for a wrong stick: dronemenu, Controller tab, Set up controller. Or hold a stick over, run this again to see which axis moves, and remap with droneaxes (a minus sign reverses an axis).");
     };
     registry.add(std::move(radio_check));
     const auto axis_argument = [](const char *name) {

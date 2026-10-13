@@ -450,6 +450,8 @@ dingosdk::overlay::FlightInput read_player_flight_controller() {
 }
 
 namespace dingosdk::overlay {
+void begin_input_access() noexcept { ++detail::overlay_input_access; }
+void end_input_access() noexcept { --detail::overlay_input_access; }
 Gamepad read_gamepad() {
     const auto sample = read_controller_sample();
     Gamepad out;

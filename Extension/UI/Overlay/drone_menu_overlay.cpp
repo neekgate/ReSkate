@@ -92,7 +92,7 @@ void tab_fly() {
     const bool enabled = drone::is_enabled();
     const bool radio_on = drone::radio::config().enabled.load();
     const bool freecam = s.model.debug.free_camera;
-    ImGui::TextDisabled("Freecam: %s   Drone mode: %s   Radio: %s", freecam ? "on" : "off", enabled ? "on" : "off",
+    ImGui::TextDisabled("Freecam: %s   Drone mode: %s   Controller: %s", freecam ? "on" : "off", enabled ? "on" : "off",
                         radio_on ? "on" : "off");
     ImGui::BeginDisabled(!s.model.debug.camera_available);
     if (ImGui::Button(enabled ? "Stop flying" : "Start flying", ImVec2(-FLT_MIN, 0))) {
@@ -102,7 +102,7 @@ void tab_fly() {
     ImGui::EndDisabled();
     if (!s.model.debug.camera_available) ImGui::TextDisabled("Waiting for the player's controls (load into a level).");
     bool radio = radio_on;
-    if (ImGui::Checkbox("Fly with the radio controller", &radio)) run(radio ? "droneradio 1" : "droneradio 0");
+    if (ImGui::Checkbox("Fly with a controller (RC radio or gamepad)", &radio)) run(radio ? "droneradio 1" : "droneradio 0");
     ImGui::Separator();
     preset_picker();
     ImGui::Separator();
@@ -240,12 +240,13 @@ void setup_wizard(const drone::radio::Sample& sample) {
     switch (step) {
     case Step::rest:
         title = "Step 1 of 7: sticks at rest";
-        body = "Let go of both sticks so they centre, and put the throttle all the way down. Then press Ready.";
+        body = "Let go of both sticks so they centre, and put the throttle all the way down (a gamepad's sticks just "
+               "centre). Then press Ready.";
         break;
     case Step::throttle:
         title = "Step 2 of 7: throttle";
-        body = c.waiting_for_return() ? "Got it. Now bring the throttle back down."
-                                      : "Push the throttle all the way up and hold it there.";
+        body = c.waiting_for_return() ? "Got it. Now let the throttle back down."
+                                      : "Push the throttle all the way up and hold it there. On a gamepad, that's the left stick, up.";
         break;
     case Step::yaw:
         title = "Step 3 of 7: yaw";
@@ -280,6 +281,9 @@ void setup_wizard(const drone::radio::Sample& sample) {
             set(Knob::kArmButton, static_cast<float>(c.arm_button())); save(Knob::kArmButton);
             set(Knob::kResetAxis, static_cast<float>(c.reset_axis())); save(Knob::kResetAxis);
             set(Knob::kResetButton, static_cast<float>(c.reset_button())); save(Knob::kResetButton);
+            set(Knob::kThrottleCentre, c.throttle_centred() ? 1.0f : 0.0f); save(Knob::kThrottleCentre);
+            // Gamepad sticks drift more than a radio's gimbals.
+            if (c.throttle_centred() && get(Knob::kDeadzone) < 0.12f) { set(Knob::kDeadzone, 0.12f); save(Knob::kDeadzone); }
             saved = true;
         }
         ImGui::TextUnformatted("Setup saved.");
@@ -293,6 +297,9 @@ void setup_wizard(const drone::radio::Sample& sample) {
         };
         ImGui::BulletText("Arm switch: %s", switch_text(c.arm_axis(), c.arm_button()).c_str());
         ImGui::BulletText("Reset switch: %s", switch_text(c.reset_axis(), c.reset_button()).c_str());
+        if (c.throttle_centred())
+            ImGui::TextWrapped("Your throttle springs back to the middle, so the middle now holds the drone up: push up to "
+                               "climb, down to descend.");
         if (ImGui::Button("Done", ImVec2(-FLT_MIN, 0))) { c.cancel(); saved = false; }
         return;
     }
@@ -321,8 +328,8 @@ void tab_radio() {
         return;
     }
     if (!sample.valid) {
-        ImGui::TextWrapped("No controller found. Plug in your radio and set its USB mode to Joystick (on EdgeTX radios, "
-                           "pick \"USB Joystick (HID)\" when you plug it in).");
+        ImGui::TextWrapped("No controller found. Plug in a gamepad, or an RC radio with its USB mode set to Joystick (on "
+                           "EdgeTX radios, pick \"USB Joystick (HID)\" when you plug it in).");
     } else {
         ImGui::Text("Controller: %s", sample.name.c_str());
         ImGui::BeginDisabled(!sample.valid);
@@ -357,6 +364,8 @@ void tab_radio() {
         ImGui::PopID();
     }
     if (changed) run(std::format("droneaxes {} {} {} {}", map[0], map[1], map[2], map[3]));
+    toggle(Knob::kThrottleCentre, "Throttle springs back to the middle (gamepads)");
+    slider(Knob::kDeadzone, "Stick dead zone");
     ImGui::Separator();
     ImGui::TextUnformatted("Switches (use an axis or button no stick uses; 0 = none)");
     integer(Knob::kArmAxis, "Arm switch axis");
@@ -399,7 +408,7 @@ void draw_drone_window() {
             if (ImGui::BeginTabItem("Handling")) { tab_handling(); ImGui::EndTabItem(); }
             if (ImGui::BeginTabItem("Rates")) { tab_rates(); ImGui::EndTabItem(); }
             if (ImGui::BeginTabItem("Display")) { tab_display(); ImGui::EndTabItem(); }
-            if (ImGui::BeginTabItem("Radio")) { tab_radio(); ImGui::EndTabItem(); }
+            if (ImGui::BeginTabItem("Controller")) { tab_radio(); ImGui::EndTabItem(); }
             if (ImGui::BeginTabItem("Lobby")) { tab_lobby(); ImGui::EndTabItem(); }
             ImGui::EndTabBar();
         }

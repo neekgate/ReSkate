@@ -81,6 +81,10 @@ inline std::atomic<bool>& enabled() {
     return value;
 }
 inline bool is_enabled() { return enabled().load(std::memory_order_acquire); }
+// While the drone flies with a controller (RC radio or gamepad), the game must not read that
+// controller too, or the skater moves with the sticks: ReSkate keeps it off the controller, as
+// its freecam controller mode does (Runtime/client_tick.cpp), and the drone reads it regardless.
+inline bool controller_capture() { return is_enabled() && radio::config().enabled.load(std::memory_order_acquire); }
 inline std::atomic<bool>& armed_flag() {
     static std::atomic<bool> value{true};
     return value;
@@ -107,7 +111,7 @@ enum Knob : std::size_t { kGravity, kDrag, kHover, kRollCenter, kRollMax, kRollE
     kYawCenter, kYawMax, kYawExpo, kUptilt, kFloor, kCollide, kRadius, kOsd, kVolume,
     kOsdScale, kOsdColor, kOsdFont, kOsdMargin, kCrosshair, kShowArmed, kShowBattery, kShowTimer, kShowThrottle, kShowAlt,
     kShowSpeed, kSticks, kStickSize, kArmAxis, kResetAxis, kDisarmFreeze, kBeacon, kShowBeacons, kArmButton, kResetButton,
-    kAnalog, kAnalogNoise, kAnalogScan, kAnalogVignette, kAnalogGlitch, kRange, kMotorPitch };
+    kAnalog, kAnalogNoise, kAnalogScan, kAnalogVignette, kAnalogGlitch, kRange, kMotorPitch, kThrottleCentre, kDeadzone };
 inline constexpr KnobInfo knob_info[] = {
     {"gravity", "downward pull", 0.0f, 50.0f, 9.81f},
     {"drag", "air drag: higher stops you sooner", 0.0f, 3.0f, 0.15f},
@@ -154,9 +158,11 @@ inline constexpr KnobInfo knob_info[] = {
     {"analogglitch", "analogue look: rolling bar and signal tears, 0-1", 0.0f, 1.0f, 0.3f},
     {"range", "how far the radio and video reach from where you took off, in metres; 0 = unlimited", 0.0f, 5000.0f, 0.0f},
     {"motorpitch", "motor sound pitch: higher sounds like smaller, faster-spinning motors", 0.4f, 2.5f, 1.0f},
+    {"throttlecentre", "1 = the throttle stick springs back to the middle (gamepads): middle = hover, up = climb, down = descend", 0.0f, 1.0f, 0.0f},
+    {"deadzone", "how far a stick has to move from the middle before it does anything, 0-0.3 (raise it if the drone drifts)", 0.0f, 0.3f, 0.03f},
 };
 inline constexpr std::size_t knob_count = std::size(knob_info);
-static_assert(knob_count == kMotorPitch + 1, "knob enum and table must match");
+static_assert(knob_count == kDeadzone + 1, "knob enum and table must match");
 struct KnobValues {
     std::atomic<float> value[knob_count];
     KnobValues() { for (std::size_t i = 0; i < knob_count; ++i) value[i] = knob_info[i].def; }
@@ -165,6 +171,11 @@ inline KnobValues& knobs() { static KnobValues values; return values; }
 inline int find_knob(std::string_view name) {
     for (std::size_t i = 0; i < knob_count; ++i) if (name == knob_info[i].name) return static_cast<int>(i);
     return -1;
+}
+// The controller's sticks as the drone reads them, with the saved axes, dead zone and throttle kind.
+inline radio::Command read_sticks(const std::array<float, 6>& axes) {
+    const auto get = [](Knob k) { return knobs().value[k].load(std::memory_order_relaxed); };
+    return radio::map_axes(axes, radio::mapping_snapshot(), get(kDeadzone), get(kThrottleCentre) >= 0.5f, get(kHover));
 }
 inline Settings live_settings() {
     Settings s;
