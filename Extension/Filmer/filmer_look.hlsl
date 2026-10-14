@@ -97,52 +97,47 @@ float4 text_sample(float2 q)
     return float4(tint * L6.y * f.x, f.x + shadow);
 }
 
-// ---- a hand right in front of the lens: palm towards it, fingers up (hand units: about a palm wide)
-float capsule(float2 p, float2 a, float2 b, float r, out float along)
+// ---- a hand right in front of the lens: palm towards it, fingers up (hand units: about a palm wide).
+// That close it is out of focus: a soft, rounded shape with no sharp detail.
+float sq(float x) { return x * x; }
+// A finger: a capsule that narrows from `r0` at its base to `r1` at its tip.
+float tapered(float2 p, float2 a, float2 b, float r0, float r1, out float along)
 {
     float2 pa = p - a, ba = b - a;
     along = saturate(dot(pa, ba) / dot(ba, ba));
-    return length(pa - ba * along) - r;
+    return length(pa - ba * along) - lerp(r0, r1, along);
 }
 float rounded_box(float2 p, float2 centre, float2 half_size, float r)
 {
     float2 d = abs(p - centre) - half_size + r;
     return length(max(d, 0.0)) + min(max(d.x, d.y), 0.0) - r;
 }
-float sq(float x) { return x * x; }
 float smooth_min(float a, float b, float k)
 {
     float h = saturate(0.5 + 0.5 * (b - a) / k);
     return lerp(b, a, h) - k * h * (1.0 - h);
 }
-// x: distance (negative inside), y: creases (finger joints, palm lines)
+// x: distance (negative inside), y: the faint folds at the finger joints
 float2 hand(float2 p)
 {
-    float d = rounded_box(p, float2(0.0, -0.16), float2(0.34, 0.37), 0.14);
+    float d = rounded_box(p, float2(0.0, -0.17), float2(0.35, 0.38), 0.24);
     float4 fa = float4(-0.25, -0.085, 0.085, 0.24), fay = float4(0.16, 0.20, 0.20, 0.15);
     float4 fb = float4(-0.33, -0.11, 0.10, 0.33), fby = float4(0.80, 0.93, 0.89, 0.70);
-    float4 fr = float4(0.082, 0.088, 0.087, 0.074);
-    float fingers = 9.0, crease = 0.0;
+    float4 r0 = float4(0.088, 0.094, 0.092, 0.080), r1 = float4(0.068, 0.074, 0.072, 0.062);
+    float fingers = 9.0, folds = 0.0;
     [unroll] for (int i = 0; i < 4; ++i)
     {
         float along;
-        float f = capsule(p, float2(fa[i], fay[i]), float2(fb[i], fby[i]), fr[i], along);
-        float c = exp(-sq((along - 0.36) / 0.035)) + exp(-sq((along - 0.66) / 0.035));
-        if (f < fingers) { fingers = f; crease = c; }
+        float f = tapered(p, float2(fa[i], fay[i]), float2(fb[i], fby[i]), r0[i], r1[i], along);
+        float fold = exp(-sq((along - 0.38) / 0.07)) + exp(-sq((along - 0.68) / 0.07));
+        if (f < fingers) { fingers = f; folds = fold; }
     }
     float along_thumb;
-    float thumb = min(capsule(p, float2(-0.30, -0.38), float2(-0.55, -0.08), 0.105, along_thumb),
-                      capsule(p, float2(-0.55, -0.08), float2(-0.70, 0.18), 0.09, along_thumb));
-    d = smooth_min(d, fingers, 0.05);
-    d = smooth_min(d, thumb, 0.06);
-    crease = fingers <= d + 0.02 ? crease : 0.0;
-    if (d < 0.0 && fingers > 0.01)
-    {
-        float l1 = abs(length(p - float2(-0.05, 0.55)) - 0.62);
-        float l2 = abs(length(p - float2(-0.45, -0.05)) - 0.42);
-        crease += exp(-sq(l1 / 0.02)) * 0.6 + exp(-sq(l2 / 0.02)) * 0.5;
-    }
-    return float2(d, crease);
+    float thumb = min(tapered(p, float2(-0.30, -0.38), float2(-0.56, -0.07), 0.115, 0.10, along_thumb),
+                      tapered(p, float2(-0.56, -0.07), float2(-0.70, 0.17), 0.10, 0.082, along_thumb));
+    d = smooth_min(d, fingers, 0.09);
+    d = smooth_min(d, thumb, 0.08);
+    return float2(d, fingers <= d + 0.03 ? folds : 0.0);
 }
 
 float3 fetch(float2 uv)
@@ -207,19 +202,27 @@ float4 ps_main(Interpolated i) : SV_Target
         p = float2(p.x * ca - p.y * sa, p.x * sa + p.y * ca) / L4.w;
         p.y = -p.y; // the picture's y runs down; the fingers point up
         float2 h = hand(p);
-        float blur = 0.012 + L5.y;
+        float blur = 0.05 + L5.y; // out of focus, more so while it moves
         float cover = 1.0 - smoothstep(-blur, blur, h.x);
         if (cover > 0.0)
         {
-            const float e = 0.004;
-            float2 gradient = float2(hand(p + float2(e, 0.0)).x - h.x, hand(p + float2(0.0, e)).x - h.x) / e;
-            float depth = saturate(-h.x / 0.1);
-            float3 n = normalize(float3(gradient * (1.0 - depth), sqrt(saturate(1.0 - (1.0 - depth) * (1.0 - depth))) * 0.9 + 0.1));
+            // Rounded shading from the shape's slope, sampled wide so it stays smooth.
+            const float e = 0.06;
+            float2 gradient = float2(hand(p + float2(e, 0.0)).x - hand(p - float2(e, 0.0)).x,
+                                     hand(p + float2(0.0, e)).x - hand(p - float2(0.0, e)).x) / (2.0 * e);
+            float depth = saturate(-h.x / 0.32);
+            float3 n = normalize(float3(gradient * (1.0 - depth), sqrt(saturate(1.0 - sq(1.0 - depth))) * 0.85 + 0.15));
             float3 light = normalize(float3(-0.35, 0.55, 0.76));
+            float wrap = saturate((dot(n, light) + 0.4) / 1.4); // soft light wrapping round the skin
             float3 weights = float3(0.299, 0.587, 0.114);
             float ambient = (dot(fetch(float2(0.5, 0.5)), weights) + dot(fetch(float2(0.25, 0.3)), weights) + dot(fetch(float2(0.75, 0.3)), weights) +
                              dot(fetch(float2(0.25, 0.75)), weights) + dot(fetch(float2(0.75, 0.75)), weights)) * 0.2;
-            float3 skin = float3(0.80, 0.58, 0.47) * (0.35 + 0.85 * saturate(dot(n, light))) * (0.5 + ambient) * (1.0 - 0.22 * saturate(h.y));
+            float blotch = sin(p.x * 9.1 + sin(p.y * 7.3)) * sin(p.y * 8.7 + sin(p.x * 5.9)) * 0.5; // uneven skin tone
+            float3 skin = float3(0.74, 0.53, 0.43) * (1.0 + 0.06 * blotch) * (0.30 + 0.75 * wrap);
+            skin += float3(0.22, 0.05, 0.02) * sq(1.0 - depth) * 0.6; // light through the thin edges
+            skin *= 1.0 - 0.07 * saturate(h.y);
+            skin *= 1.0 - 0.12 * exp(-(sq(p.x + 0.02) / 0.06 + sq(p.y + 0.12) / 0.08)); // the palm's hollow
+            skin *= 0.55 + ambient;
             float pressed = saturate((L4.w - 2.6) / 1.4);
             float glow = exp(-abs(h.x) * 14.0);
             float3 dark = float3(0.05, 0.02, 0.015) + float3(0.5, 0.1, 0.04) * glow * 0.6;
