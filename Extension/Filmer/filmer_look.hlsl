@@ -254,7 +254,7 @@ float4 ps_main(Interpolated i) : SV_Target
         }
         // Reds smear on tape: they trail to the right.
         if (L7.w > 0.5)
-            colour.r = lerp(colour.r, fetch(uv + float2(texel.x * sd * 6.0, 0.0)).r, 0.45);
+            colour.r = lerp(colour.r, fetch(uv + float2(texel.x * sd * 4.0, 0.0)).r, 0.3);
     }
     // The hand in front of the lens: lit by the scene, then dark and glowing red through the skin
     // once it is pressed over the glass.
