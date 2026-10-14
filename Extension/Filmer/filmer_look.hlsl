@@ -117,26 +117,41 @@ float smooth_min(float a, float b, float k)
     float h = saturate(0.5 + 0.5 * (b - a) / k);
     return lerp(b, a, h) - k * h * (1.0 - h);
 }
-// x: distance (negative inside), y: the faint folds at the finger joints
+float ellipse(float2 p, float2 centre, float2 radii)
+{
+    return (length((p - centre) / radii) - 1.0) * min(radii.x, radii.y);
+}
+// x: distance (negative inside), y: the faint folds at the finger joints. The filmer reaches round the
+// camera with their free arm, so the hand comes in at an angle with the wrist and forearm behind it.
 float2 hand(float2 p)
 {
-    float d = rounded_box(p, float2(0.0, -0.17), float2(0.35, 0.38), 0.24);
-    float4 fa = float4(-0.25, -0.085, 0.085, 0.24), fay = float4(0.16, 0.20, 0.20, 0.15);
-    float4 fb = float4(-0.33, -0.11, 0.10, 0.33), fby = float4(0.80, 0.93, 0.89, 0.70);
-    float4 r0 = float4(0.088, 0.094, 0.092, 0.080), r1 = float4(0.068, 0.074, 0.072, 0.062);
+    float d = rounded_box(p, float2(0.02, -0.17), float2(0.35, 0.37), 0.24);
+    d = smooth_min(d, ellipse(p, float2(-0.24, -0.33), float2(0.25, 0.29)), 0.10); // the pad at the base of the thumb
+    // Fingers: base, direction (radians from straight up: spread apart), length, radii, and a slight
+    // curl of the last joints (towards the middle, and towards the lens: a little shorter).
+    float4 bx = float4(-0.25, -0.085, 0.085, 0.235), by = float4(0.16, 0.21, 0.21, 0.15);
+    float4 spread = float4(-0.17, -0.05, 0.07, 0.22), lengths = float4(0.64, 0.72, 0.68, 0.54);
+    float4 r0 = float4(0.097, 0.103, 0.101, 0.088), r1 = float4(0.076, 0.081, 0.079, 0.068);
+    float4 curl = float4(0.10, 0.05, -0.04, -0.10);
     float fingers = 9.0, folds = 0.0;
     [unroll] for (int i = 0; i < 4; ++i)
     {
-        float along;
-        float f = tapered(p, float2(fa[i], fay[i]), float2(fb[i], fby[i]), r0[i], r1[i], along);
-        float fold = exp(-sq((along - 0.38) / 0.07)) + exp(-sq((along - 0.68) / 0.07));
+        float2 base = float2(bx[i], by[i]);
+        float2 knuckle = base + float2(sin(spread[i]), cos(spread[i])) * lengths[i] * 0.58;
+        float2 tip = knuckle + float2(sin(spread[i] + curl[i]), cos(spread[i] + curl[i])) * lengths[i] * 0.42 * 0.9;
+        float rm = lerp(r0[i], r1[i], 0.58);
+        float h1, h2;
+        float f = smooth_min(tapered(p, base, knuckle, r0[i], rm, h1), tapered(p, knuckle, tip, rm, r1[i], h2), 0.02);
+        float fold = exp(-sq((h1 - 0.62) / 0.12)) + exp(-sq((h2 - 0.45) / 0.15));
         if (f < fingers) { fingers = f; folds = fold; }
     }
-    float along_thumb;
-    float thumb = min(tapered(p, float2(-0.30, -0.38), float2(-0.56, -0.07), 0.115, 0.10, along_thumb),
-                      tapered(p, float2(-0.56, -0.07), float2(-0.70, 0.17), 0.10, 0.082, along_thumb));
+    float along;
+    float thumb = min(tapered(p, float2(-0.30, -0.36), float2(-0.58, -0.06), 0.12, 0.10, along),
+                      tapered(p, float2(-0.58, -0.06), float2(-0.66, 0.18), 0.10, 0.082, along));
+    float arm = tapered(p, float2(0.04, -0.55), float2(0.30, -2.4), 0.27, 0.33, along);
     d = smooth_min(d, fingers, 0.09);
     d = smooth_min(d, thumb, 0.08);
+    d = smooth_min(d, arm, 0.12);
     return float2(d, fingers <= d + 0.03 ? folds : 0.0);
 }
 
@@ -201,6 +216,9 @@ float4 ps_main(Interpolated i) : SV_Target
         float ca = cos(-L4.z), sa = sin(-L4.z);
         p = float2(p.x * ca - p.y * sa, p.x * sa + p.y * ca) / L4.w;
         p.y = -p.y; // the picture's y runs down; the fingers point up
+        // The palm is turned a little away round its long axis: narrower, its near side bigger.
+        p.x /= 0.9; // cos(0.45)
+        p /= 1.0 + 0.22 * p.x;
         float2 h = hand(p);
         float blur = 0.05 + L5.y; // out of focus, more so while it moves
         float cover = 1.0 - smoothstep(-blur, blur, h.x);
@@ -211,7 +229,7 @@ float4 ps_main(Interpolated i) : SV_Target
             float2 gradient = float2(hand(p + float2(e, 0.0)).x - hand(p - float2(e, 0.0)).x,
                                      hand(p + float2(0.0, e)).x - hand(p - float2(0.0, e)).x) / (2.0 * e);
             float depth = saturate(-h.x / 0.32);
-            float3 n = normalize(float3(gradient * (1.0 - depth), sqrt(saturate(1.0 - sq(1.0 - depth))) * 0.85 + 0.15));
+            float3 n = normalize(float3(gradient * (1.0 - depth) + float2(0.25, 0.0), sqrt(saturate(1.0 - sq(1.0 - depth))) * 0.85 + 0.15));
             float3 light = normalize(float3(-0.35, 0.55, 0.76));
             float wrap = saturate((dot(n, light) + 0.4) / 1.4); // soft light wrapping round the skin
             float3 weights = float3(0.299, 0.587, 0.114);
@@ -221,7 +239,8 @@ float4 ps_main(Interpolated i) : SV_Target
             float3 skin = float3(0.74, 0.53, 0.43) * (1.0 + 0.06 * blotch) * (0.30 + 0.75 * wrap);
             skin += float3(0.22, 0.05, 0.02) * sq(1.0 - depth) * 0.6; // light through the thin edges
             skin *= 1.0 - 0.07 * saturate(h.y);
-            skin *= 1.0 - 0.12 * exp(-(sq(p.x + 0.02) / 0.06 + sq(p.y + 0.12) / 0.08)); // the palm's hollow
+            skin *= 1.0 - 0.12 * exp(-(sq(p.x) / 0.05 + sq(p.y + 0.08) / 0.06)); // the palm's hollow
+            skin *= 1.0 + 0.10 * pow(saturate(1.0 - length((p - float2(-0.22, -0.33)) / float2(0.22, 0.26))), 0.7); // the thumb's pad swells to the light
             skin *= 0.55 + ambient;
             float pressed = saturate((L4.w - 2.6) / 1.4);
             float glow = exp(-abs(h.x) * 14.0);

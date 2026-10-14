@@ -197,28 +197,30 @@ Hand hand_at(double since, std::uint64_t serial) {
     if (since < 0.0 || since > slap_gone) return hand;
     hand.mirrored = (serial & 1u) != 0;
     const float side = hand.mirrored ? -1.0f : 1.0f;
+    // The free arm reaches round the camera from a lower corner: the hand comes in at an angle, the
+    // palm smacks the lens, and the arm pulls back out the way it came. (Mirrored every other slap.)
     if (since < slap_impact) {
         float u = static_cast<float>(since / slap_impact);
         u *= u; // accelerating at the lens
-        hand.x = side * (0.9f - 0.75f * u);
-        hand.y = 0.75f - 0.7f * u;
-        hand.angle = side * (0.35f - 0.25f * u);
-        hand.size = 1.3f + 3.2f * u;
+        hand.x = side * (1.15f - 1.0f * u);
+        hand.y = 0.85f - 0.78f * u;
+        hand.angle = -0.55f + 0.10f * u;
+        hand.size = 1.25f + 3.25f * u;
         hand.blur = 0.02f + 0.05f * u;
     } else if (since < slap_release) {
         const float u = static_cast<float>((since - slap_impact) / (slap_release - slap_impact));
-        hand.x = side * (0.15f + 0.05f * u);
-        hand.y = 0.05f + 0.04f * u;
-        hand.angle = side * 0.1f;
+        hand.x = side * (0.15f + 0.04f * u);
+        hand.y = 0.07f + 0.03f * u;
+        hand.angle = -0.45f;
         hand.size = 4.5f + 0.2f * u;
         hand.blur = 0.02f;
     } else {
         float u = static_cast<float>((since - slap_release) / (slap_gone - slap_release));
         u = u * u * (3.0f - 2.0f * u);
-        hand.x = side * (0.2f + 0.9f * u);
-        hand.y = 0.09f + 1.2f * u;
-        hand.angle = side * (0.1f + 0.3f * u);
-        hand.size = 4.7f - 2.7f * u;
+        hand.x = side * (0.19f + 1.0f * u);
+        hand.y = 0.10f + 1.0f * u;
+        hand.angle = -0.45f - 0.15f * u;
+        hand.size = 4.7f - 3.1f * u;
         hand.blur = 0.04f + 0.06f * u;
     }
     return hand;
