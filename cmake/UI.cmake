@@ -60,6 +60,16 @@ target_link_libraries(dingosdk_startup_window PRIVATE gdi32 user32 msimg32 shell
 set(filmer_look_path "${PROJECT_SOURCE_DIR}/Extension/Filmer/filmer_look.hlsl")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${filmer_look_path}")
 file(READ "${filmer_look_path}" filmer_look_source)
+# MSVC takes at most about 16 KB in one string literal: the shader goes in as several, which the
+# compiler joins.
+string(LENGTH "${filmer_look_source}" filmer_look_length)
+set(filmer_look_chunks "")
+set(filmer_look_at 0)
+while(filmer_look_at LESS filmer_look_length)
+    string(SUBSTRING "${filmer_look_source}" ${filmer_look_at} 8000 filmer_look_chunk)
+    string(APPEND filmer_look_chunks "R\"filmer_hlsl(${filmer_look_chunk})filmer_hlsl\"\n")
+    math(EXPR filmer_look_at "${filmer_look_at} + 8000")
+endwhile()
 configure_file(cmake/templates/filmer_look_hlsl.h.in
     "${CMAKE_CURRENT_BINARY_DIR}/generated/filmer_look_hlsl.h" @ONLY)
 if(WIN32)
