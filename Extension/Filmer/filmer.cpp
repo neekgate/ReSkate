@@ -146,6 +146,7 @@ void load_store() {
         r.tilt = clamped(o, "tilt", d.rig.tilt, 0.0f, 1.0f);
         r.stop_at_drops = flag(o, "stop_at_drops", d.rig.stop_at_drops);
         r.lunge = flag(o, "lunge", d.rig.lunge);
+        s.settings.marker = o.value("marker", std::string("slap")) == "hover" ? Marker::hover : Marker::slap;
         s.settings.stick_clicks = flag(o, "stick_clicks", d.stick_clicks);
         // Settings saved before the camera could go this low keep their old height: start them low.
         if (o.value("schema", 1) < 2) {
@@ -203,6 +204,7 @@ void save_store() {
         json["tilt"] = r.tilt;
         json["stop_at_drops"] = r.stop_at_drops;
         json["lunge"] = r.lunge;
+        json["marker"] = s.settings.marker == Marker::hover ? "hover" : "slap";
         json["stick_clicks"] = s.settings.stick_clicks;
         json["hide_hud"] = s.settings.hide_hud;
         json["take_stick"] = s.settings.take_stick;
@@ -398,7 +400,7 @@ std::string slap(State &s) {
     const double t = now();
     // A second slap straight after the first is the same mark.
     if (t - s.slap_at < 0.8) return "Already slapped.";
-    s.rig.slap(t);
+    s.rig.slap(t, s.settings.marker);
     s.slap_at = t;
     ++s.slap_serial;
     Clip clip{s.clip, std::max(0.0, t - s.rolling_since), clock_text()};
@@ -406,7 +408,7 @@ std::string slap(State &s) {
     s.clips.push_back(clip);
     if (s.clips.size() > clip_history) s.clips.erase(s.clips.begin());
     ++s.clip;
-    s.rolling_since = t + 0.6; // the next clip starts once the hand is off the lens
+    s.rolling_since = t + marker_duration(s.settings.marker); // the next clip starts once the hand is away
     s.view_due = true;
     say(logging::Level::info, std::format("Filmer: clip {} marked ({:.1f} s).", clip.number, clip.seconds));
     return std::format("Clip {} marked: {:.1f} s.", clip.number, clip.seconds);
@@ -719,6 +721,14 @@ std::string set_option(State &s, const std::string &key, const std::string &valu
     if (key == "clicks") return toggle(s.settings.stick_clicks);
     if (key == "anywhere") return toggle(k.anywhere);
     if (key == "lunge") return toggle(r.lunge);
+    if (key == "marker") {
+        const auto v = lower(value);
+        if (v == "slap") s.settings.marker = Marker::slap;
+        else if (v == "hover") s.settings.marker = Marker::hover;
+        else return "error: marker is slap or hover.";
+        changed(s);
+        return "marker = " + v;
+    }
     if (key == "age") return real(k.age, 0.0f, 1.0f);
     if (key == "dropouts") return toggle(k.dropouts);
     if (key == "headswitch") return toggle(k.head_switching);

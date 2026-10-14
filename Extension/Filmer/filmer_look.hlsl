@@ -203,11 +203,11 @@ float4 ps_main(Interpolated i) : SV_Target
         tape_uv.x += (hash12(float2(scan, frame)) - 0.3) * 0.04 * k * (0.5 + age);
     }
     float tracking = 0.0;
-    if (L8.y > 0.5 && L8.x >= 0.0 && L8.x < 0.7)
+    if (L8.y > 0.5 && L8.x >= 0.0 && L8.x < 0.5)
     {
-        float t = L8.x / 0.7;
-        tracking = exp(-sq((i.uv.y - (1.15 - t * 1.4)) / 0.05)) * (1.0 - t);
-        tape_uv.x += (hash12(float2(scan, frame + 7.0)) - 0.5) * 0.06 * tracking + sin(i.uv.y * 80.0 + L1.w * 40.0) * 0.004 * (1.0 - t);
+        float t = L8.x / 0.5;
+        tracking = exp(-sq((i.uv.y - (1.1 - t * 1.3)) / 0.03)) * (1.0 - t);
+        tape_uv.x += (hash12(float2(scan, frame + 7.0)) - 0.5) * 0.025 * tracking + sin(i.uv.y * 60.0 + L1.w * 30.0) * 0.0012 * (1.0 - t);
     }
     float2 c = tape_uv * 2.0 - 1.0;
     float2 q = float2(c.x * screen_aspect, c.y);
@@ -376,7 +376,7 @@ float4 ps_main(Interpolated i) : SV_Target
     if (tracking > 0.01)
     {
         float grey = dot(colour, float3(0.299, 0.587, 0.114));
-        colour = lerp(colour, (grey + (hash12(float2(i.uv.x * 700.0, frame + scan)) - 0.5) * 0.4).xxx, saturate(tracking * 0.8));
+        colour = lerp(colour, (grey + (hash12(float2(i.uv.x * 700.0, frame + scan)) - 0.5) * 0.2).xxx, saturate(tracking * 0.5));
     }
     // Interlaced fields: every other line a little darker.
     if (L2.y > 0.5)

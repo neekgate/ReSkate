@@ -158,7 +158,13 @@ void filmer_page(SkateMenu &menu, const Model &, const CallbacksV3 &callbacks) {
 
     begin_card(menu, "filmer-clips", "CLIPS", "Slap the lens to end a clip.");
     info(menu, "Rolling", std::format("Clip {}", v.clip));
-    if (primary_button(menu, "SLAP THE LENS", s.mode != filmer::Mode::off)) filmer_command(menu, callbacks, "slap");
+    field(menu, "Marker", "How you mark the end of a clip.");
+    int marker = s.marker == filmer::Marker::hover ? 1 : 0;
+    if (choice(menu, "marker", marker, {"Slap", "Hover twice"}, true, 0.0f,
+               {"A palm slapped onto the lens: it goes dark for a beat and the camera gets knocked.",
+                "A hand brought in close to the lens twice, never touching."}))
+        filmer_command(menu, callbacks, marker ? "set marker hover" : "set marker slap");
+    if (primary_button(menu, s.marker == filmer::Marker::hover ? "MARK THE CLIP" : "SLAP THE LENS", s.mode != filmer::Mode::off)) filmer_command(menu, callbacks, "slap");
     note("Click the right stick (filming, or following with Stick clicks on), or put \"Filmer: slap the lens\" on a button in Settings > Binds.");
     for (auto it = v.clips.rbegin(); it != v.clips.rend() && it - v.clips.rbegin() < 6; ++it)
         info(menu, std::format("Clip {}", it->number).c_str(), std::format("{:.1f} s, ended {}", it->seconds, it->ended_at));

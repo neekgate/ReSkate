@@ -164,8 +164,9 @@ float Rig::frame_pitch(const Vec3 &eye, const Vec3 &root, bool, float, const Rig
     return std::min(pitch, feet + 0.82f * view);
 }
 
-void Rig::slap(double now) noexcept {
+void Rig::slap(double now, Marker marker) noexcept {
     slap_at_ = now;
+    slap_contact_ = marker == Marker::slap;
     std::uniform_real_distribution<float> side(-1.0f, 1.0f);
     slap_yaw_ = side(random_) > 0 ? 1.0f : -1.0f;
     slap_pitch_ = -0.6f - 0.4f * std::abs(side(random_));
@@ -346,8 +347,8 @@ void Rig::shake(double now, float speed, float human, float &yaw, float &pitch, 
     eye[1] += wobble_[7].sample(now * 0.5) * 0.008f * rattle + wobble_[1].sample(now) * 0.02f * h;
     // The smack: the palm hits the glass 0.1 s after the slap starts and knocks the camera back hard,
     // it shakes while the hand is held there, and recovers as the hand comes off.
-    const double since = now - slap_at_ - 0.1;
-    if (since >= 0 && since < 0.6) {
+    const double since = now - slap_at_ - slap_contact;
+    if (slap_contact_ && since >= 0 && since < 0.6) {
         const float t = static_cast<float>(since);
         const float kick = (1.0f - std::exp(-t * 60.0f)) * std::exp(-t * 7.0f);
         const float buzz = std::sin(t * 70.0f) * std::exp(-t * 10.0f);
