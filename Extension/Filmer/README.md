@@ -29,8 +29,7 @@ colour and grain are SDR only. The game's HUD is hidden while filming (switchabl
 ## Marking clips
 
 Slap the lens: a hand rushes at it and smacks it, the camera is knocked back, the iris shuts while
-the palm is on the glass and overshoots as it comes off, and the clip ends. Or choose **Hover twice** (`filmer set marker hover`): the hand comes in close to
-the lens twice without touching. Clips are numbered and logged with their end time in
+the palm is on the glass and overshoots as it comes off, and the clip ends. Clips are numbered and logged with their end time in
 `%LOCALAPPDATA%\ReSkate\filmer\clips.csv`, so they can be found in a recording.
 
 - Click the right stick (filming, or following with Stick clicks on).

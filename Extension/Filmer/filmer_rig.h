@@ -28,12 +28,8 @@ enum class Mode : std::uint8_t { off, follow, film };
 enum class Style : std::uint8_t { automatic, behind, side, ahead };
 // fisheye: a Century MK1 on the VX, ridden close. long_lens: the VX's own lens from further away.
 enum class Lens : std::uint8_t { fisheye, long_lens };
-// How a clip is marked: a palm slapped onto the lens, or a hand brought in close to it twice without
-// touching.
-enum class Marker : std::uint8_t { slap, hover };
-// How long each takes (seconds), and when the palm hits the glass.
-constexpr double marker_duration(Marker marker) noexcept { return marker == Marker::hover ? 0.9 : 0.6; }
-constexpr double slap_contact = 0.13;
+// The lens slap that marks a clip: how long it takes (seconds), and when the palm hits the glass.
+constexpr double slap_duration = 0.6, slap_contact = 0.13;
 
 struct RigSettings {
     Style style = Style::automatic;
@@ -98,9 +94,8 @@ public:
     // You film: the camera is in your skater's hands. `target`, when there is one, is who the assist frames.
     Frame film(double now, float dt, const Subject &self, const Subject *target, const StickInput &stick,
                const RigSettings &settings);
-    // A hand marking the clip: slapped onto the lens the camera jolts; hovered, only the hand moves.
-    // The overlay draws the hand.
-    void slap(double now, Marker marker = Marker::slap) noexcept;
+    // A hand slapping the lens: the camera jolts. The overlay draws the hand.
+    void slap(double now) noexcept;
     // For the menu: where auto is riding (degrees round the skater; 0 behind, 180 ahead).
     float angle_degrees() const noexcept;
 
@@ -166,7 +161,6 @@ private:
     float push_phase_{};
     bool pushing_{};
     double slap_at_{-100.0};
-    bool slap_contact_{true};
     float slap_yaw_{}, slap_pitch_{};
     std::array<Wobble, 9> wobble_{};
 };
