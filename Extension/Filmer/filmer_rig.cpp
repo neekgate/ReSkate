@@ -109,15 +109,34 @@ void Rig::set_planted(bool planted) noexcept {
     edge_ = false;
 }
 
+void Rig::begin_tick(double now) noexcept {
+    now_ = now;
+    probe_budget_ = 8;
+    ray_budget_ = 4;
+    if (probes_.size() > 4096) probes_.clear();
+}
+
 std::optional<float> Rig::ground_at(float x, float z, float near_y) const {
-    if (!cast_) return std::nullopt;
-    Vec3 hit{};
-    if (cast_(Vec3{x, near_y + 0.9f, z}, Vec3{x, near_y - 6.0f, z}, hit) && std::isfinite(hit[1])) return hit[1];
-    return std::nullopt;
+    if (!cast_ || !std::isfinite(x) || !std::isfinite(z) || !std::isfinite(near_y)) return std::nullopt;
+    const auto cell = [](float v, float size) { return static_cast<std::uint64_t>(static_cast<std::int64_t>(std::floor(v / size)) & 0x1fffff); };
+    const std::uint64_t key = cell(x, 0.25f) | cell(z, 0.25f) << 21 | cell(near_y, 0.5f) << 42;
+    const auto found = probes_.find(key);
+    const bool fresh = found != probes_.end() && now_ - found->second.time < 2.0;
+    if (!fresh && probe_budget_ > 0) {
+        --probe_budget_;
+        Vec3 hit{};
+        Probe probe{false, 0.0f, now_};
+        if (cast_(Vec3{x, near_y + 0.9f, z}, Vec3{x, near_y - 6.0f, z}, hit) && std::isfinite(hit[1])) probe = {true, hit[1], now_};
+        probes_[key] = probe;
+        return probe.hit ? std::optional<float>(probe.y) : std::nullopt;
+    }
+    if (found != probes_.end()) return found->second.hit ? std::optional<float>(found->second.y) : std::nullopt;
+    return near_y; // out of questions this tick and never asked here: assume it is level
 }
 
 bool Rig::blocked(const Vec3 &from, const Vec3 &to, Vec3 *hit) const {
-    if (!cast_) return false;
+    if (!cast_ || ray_budget_ == 0) return false;
+    --ray_budget_;
     Vec3 found{};
     if (!cast_(from, to, found)) return false;
     if (hit) *hit = found;
@@ -144,7 +163,7 @@ bool Rig::step_allowed(const Vec3 &, float to_ground, bool stop_at_drops) const 
     const float rise = to_ground - operator_ground_;
     if (rise > 0.3f) return false;
     if (!stop_at_drops) return true;
-    return rise >= -0.45f;
+    return rise >= -0.85f; // a curb, a planter's edge: rolled off; a set or a big drop: not
 }
 
 // The vertical half of the view (radians): the fisheye's frame edge sees half the game camera's FOV.
@@ -237,7 +256,7 @@ void Rig::track(double now, float dt, const Subject &subject, Tracked &t, bool o
                 if (speed_now > 0.5f)
                     for (const float ahead : {1.0f, 2.0f}) {
                         const auto g = ground_at(p[0] + t.velocity[0] / speed_now * ahead, p[2] + t.velocity[2] / speed_now * ahead, t.ground);
-                        if (!g || std::abs(*g - t.ground) > 0.15f) flat = false;
+                        if (!g || std::abs(*g - world(t.ground)) > 0.15f) flat = false;
                     }
             }
             flat_air_ = flat;
@@ -251,8 +270,13 @@ void Rig::track(double now, float dt, const Subject &subject, Tracked &t, bool o
     const bool landed = t.airborne && !air;
     t.airborne = air;
     // On the ground, the ground is where the skater is: a step (onto a ledge, off one) is a step, not a
-    // slope, so it is not smoothed over; only a little jitter is.
-    if (!air) t.ground = landed || std::abs(p[1] - t.ground) > 0.05f ? p[1] : mix(t.ground, p[1], ease(dt, 0.02f));
+    // slope, so it is not smoothed over; the root's bob is.
+    if (!air) t.ground = landed || std::abs(p[1] - t.ground) > 0.2f ? p[1] : mix(t.ground, p[1], ease(dt, 0.15f));
+    // How far the skater's root is above the ground the game reports under them.
+    if (own_trail && !air && cast_) {
+        if (const auto under = ground_at(p[0], p[2], p[1]); under && p[1] - *under > -0.2f && p[1] - *under < 0.8f)
+            root_above_ground_ = mix(root_above_ground_, p[1] - *under, ease(dt, 0.5f));
+    }
     else if (p[1] < t.ground) t.ground = p[1]; // dropped below where they left: a drop-in or a stair set
     // The trail: where the skater has been, at their feet. That ground is known to be clear, so the
     // filmer rides it.
@@ -326,10 +350,12 @@ Rig::Walk Rig::walk(std::size_t from, std::size_t to, float level, bool stop_at_
         }
         const float ground = point.at[1];
         const std::size_t before = air_start != none ? (air_start > 0 ? air_start - 1 : 0) : k - 1;
-        if (ground < result.level - 0.35f) {
-            // Down from the filmer's level in one go.
+        if (ground < result.level - 0.8f) {
+            // Down from the filmer's level in one go, further than a curb or a planter: a set, a drop.
             if (stop_at_drops) { result.edge = true; result.reach = before; return result; }
             result.level = ground;
+        } else if (ground < result.level - 0.35f) {
+            result.level = ground; // a curb, off a planter: rolled off after you
         } else if (air_start != none && std::abs(ground - result.level) <= 0.35f && cast_) {
             // Over a jump at the same level: is there ground under it (an ollie), or nothing (a gap)?
             const Vec3 &a = trail_[before].at;
@@ -337,7 +363,7 @@ Rig::Walk Rig::walk(std::size_t from, std::size_t to, float level, bool stop_at_
             if (span > 1.2f) {
                 for (const float u : {0.33f, 0.5f, 0.67f}) {
                     const auto g = ground_at(a[0] + (point.at[0] - a[0]) * u, a[2] + (point.at[2] - a[2]) * u, result.level);
-                    if (!g || *g < result.level - 0.35f) {
+                    if (!g || *g < world(result.level) - 0.8f) {
                         if (stop_at_drops) { result.edge = true; result.reach = before; return result; }
                         break;
                     }
@@ -358,7 +384,7 @@ Rig::Walk Rig::walk(std::size_t from, std::size_t to, float level, bool stop_at_
         bool level_ground = static_cast<bool>(cast_);
         for (std::size_t k = air_start; level_ground && k <= to && k < trail_.size(); k += 3) {
             const auto g = ground_at(trail_[k].at[0], trail_[k].at[2], result.level);
-            if (!g || std::abs(*g - result.level) > 0.3f) level_ground = false;
+            if (!g || std::abs(*g - world(result.level)) > 0.3f) level_ground = false;
         }
         if (!level_ground) {
             result.hold = true;
@@ -474,6 +500,7 @@ void Rig::shake(double now, float speed, float human, float &yaw, float &pitch, 
 Frame Rig::follow(double now, float dt, const Subject &subject, const RigSettings &s) {
     if (!subject.valid || !finite(subject.position)) return {};
     dt = std::clamp(dt, 0.0f, 0.1f);
+    begin_tick(now);
     track(now, dt, subject, subject_, true);
     const auto &t = subject_;
     const float speed = flat_length(t.velocity);
@@ -538,6 +565,7 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
     holding_ = false;
     Vec3 base{};
     float offset = 0.0f;
+    bool raised_ahead = false;
     if (std::abs(angle) <= 100.0f * degrees && trail_.size() >= 2) {
         // Behind and beside: on the trail the skater left, out to the side; never past a drop, a gap
         // or a jump you are still in the air for.
@@ -563,21 +591,62 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
         }
         base = trail_[index].at;
         offset = d * std::sin(angle);
+        // Something raised just ahead on your line (the planter you ollied onto): the filmer starts
+        // out round it before they reach it, not once they are nosed up against it.
+        const std::size_t ahead = trail_index_back(std::max(0.25f, arc - 2.5f));
+        for (std::size_t i = index; i <= ahead && i < trail_.size(); ++i)
+            if (!trail_[i].air && trail_[i].at[1] > ground + 0.3f) { raised_ahead = true; break; }
     } else {
         // Ahead, riding backwards up the line in front of them (or no trail yet).
         base = sub(Vec3{t.position[0], t.ground, t.position[2]}, scale(heading, d * std::cos(angle)));
         offset = d * std::sin(angle);
         if (!operator_have_) ground = t.ground;
     }
-    desired = add(base, scale(side, offset));
-    // Out to the side only where the ground is the filmer's level: not over a gap, off the end of a
-    // ledge or up on one. Otherwise closer in, or on the trail itself.
-    if (cast_ && std::abs(offset) > 0.05f) {
-        for (const float keep : {1.0f, 0.5f, 0.0f}) {
-            const Vec3 spot = add(base, scale(side, offset * keep));
-            const auto g = ground_at(spot[0], spot[2], ground);
-            if (keep == 0.0f || (g && std::abs(*g - ground) < 0.3f)) { desired = spot; break; }
+    // Out to the side only where the ground is the filmer's level: not over a gap or off the end of a
+    // ledge. Where you are up on something (a ledge, a rail, a planter) they keep at least a metre off
+    // your line, beside it, never on it. The share of the offset used eases, so the spot never jumps.
+    const bool raised = raised_ahead || base[1] > ground + 0.3f;
+    const float lean = offset == 0.0f ? sign : (offset > 0.0f ? 1.0f : -1.0f);
+    if (raised) {
+        // Beside whatever you are up on: the nearest spot out to the side (yours first, then the other)
+        // whose ground is the filmer's level, so they ride round it, never over it.
+        float wanted = std::max(std::abs(offset), 1.0f) * lean;
+        if (cast_) {
+            bool found = false;
+            for (const float flip : {1.0f, -1.0f}) {
+                for (const float out : {std::max(std::abs(offset), 1.0f), 1.6f, 2.2f, 2.8f, 3.5f}) {
+                    // Level there and half a metre further in towards your line: room to ride by.
+                    const Vec3 spot = add(base, scale(side, out * lean * flip));
+                    const Vec3 inner = add(base, scale(side, (out - 0.5f) * lean * flip));
+                    const auto g = ground_at(spot[0], spot[2], ground);
+                    const auto gi = ground_at(inner[0], inner[2], ground);
+                    if (g && gi && std::abs(*g - world(ground)) < 0.3f && std::abs(*gi - world(ground)) < 0.3f) {
+                        wanted = out * lean * flip;
+                        found = true;
+                        break;
+                    }
+                }
+                if (found) break;
+            }
         }
+        raised_offset_ += (wanted - raised_offset_) * ease(dt, 0.25f);
+        side_keep_ = 1.0f;
+        desired = add(Vec3{base[0], ground, base[2]}, scale(side, raised_offset_));
+    } else {
+        // Out to the side only where the ground is the filmer's level (not over a gap or off the end of
+        // a ledge): otherwise closer in. The share of the offset used eases, so the spot never jumps.
+        float keep_target = 1.0f;
+        if (cast_ && std::abs(offset) > 0.05f) {
+            keep_target = 0.0f;
+            for (const float keep : {1.0f, 0.5f}) {
+                const Vec3 spot = add(base, scale(side, offset * keep));
+                const auto g = ground_at(spot[0], spot[2], ground);
+                if (g && std::abs(*g - world(ground)) < 0.3f) { keep_target = keep; break; }
+            }
+        }
+        side_keep_ += (keep_target - side_keep_) * ease(dt, 0.5f);
+        raised_offset_ = offset * side_keep_;
+        desired = add(Vec3{base[0], ground, base[2]}, scale(side, raised_offset_));
     }
     const Vec3 centre{t.position[0], t.position[1] + 0.9f, t.position[2]};
     // Never behind a wall: where the spot is out of sight of the skater, it comes in towards them.
@@ -600,8 +669,8 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
         operator_ = desired;
         operator_velocity_ = t.velocity;
         operator_velocity_[1] = 0;
-        level_ = ground_at(desired[0], desired[2], ground).value_or(ground);
-        operator_ground_ = level_;
+        level_ = ground;
+        operator_ground_ = cast_ ? ground_at(desired[0], desired[2], ground).value_or(world(ground)) : ground;
         operator_height_ = operator_ground_ + height;
         operator_height_rate_ = 0;
         last_desired_ = desired;
@@ -610,7 +679,8 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
         edge_ = holding_ = false;
         unseen_since_ = -1.0;
     }
-    const Vec3 desired_rate = dt > 0 ? scale(sub(desired, last_desired_), 1.0f / std::max(dt, 0.001f)) : Vec3{};
+    // Riding with you: at your speed (not the spot's jumps from tick to tick).
+    const Vec3 desired_rate{t.velocity[0], 0.0f, t.velocity[2]};
     last_desired_ = desired;
     const Vec3 before = operator_;
     if (planted_) {
@@ -643,15 +713,23 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
             return true;
         };
         if (flat_length(sub(operator_, before)) > 0.0005f && !try_step(operator_)) {
+            // Nosed up against something (a planter, a ledge's end): step round it, out to the side
+            // of the line they want, at a walking pace. Failing that, slide along it, or stay.
+            const Vec3 moved = sub(operator_, before);
+            const float l = flat_length(moved);
+            const Vec3 across{-moved[2] / l, 0.0f, moved[0] / l};
+            const float which = (desired[0] - before[0]) * across[0] + (desired[2] - before[2]) * across[2] >= 0.0f ? 1.0f : -1.0f;
+            const float sidestep = std::max(l, 2.5f * dt);
+            const Vec3 round = add(before, scale(across, which * sidestep));
             const Vec3 along_x{operator_[0], 0, before[2]}, along_z{before[0], 0, operator_[2]};
-            if (try_step(along_x)) { operator_ = along_x; operator_velocity_[2] = 0; }
+            if (try_step(round)) { operator_ = round; operator_velocity_ = scale(across, which * std::min(sidestep / std::max(dt, 1e-3f), 4.0f)); }
+            else if (try_step(along_x)) { operator_ = along_x; operator_velocity_[2] = 0; }
             else if (try_step(along_z)) { operator_ = along_z; operator_velocity_[0] = 0; }
             else { operator_ = before; operator_velocity_ = {}; }
         }
         operator_[1] = 0;
-        // The world's answer where it agrees with the level the filmer rides at; the level where it
-        // does not (a ledge's top under the spot, or no answer at all).
-        if (std::abs(operator_ground_ - level_) > 0.5f) operator_ground_ = level_;
+        // Never up on top of something (a ledge's or a rail's top under the spot): the filmer's level.
+        if (operator_ground_ > world(level_) + 0.25f) operator_ground_ = world(level_);
     } else if (!cast_) {
         operator_ground_ = ground; // no world to ask: the level from the trail
     }
@@ -722,6 +800,7 @@ Frame Rig::film(double now, float dt, const Subject &self, const Subject *target
                 const RigSettings &s) {
     if (!self.valid || !finite(self.position)) return {};
     dt = std::clamp(dt, 0.0f, 0.1f);
+    begin_tick(now);
     track(now, dt, self, self_, false);
     const bool aiming_at = target && target->valid && finite(target->position);
     if (aiming_at) track(now, dt, *target, subject_, true);
