@@ -53,6 +53,7 @@ struct Settings {
     // follow mode: the stick clicks are the filmer's (left: stop and film / ride again; right: slap),
     // kept from the game while following.
     bool stick_clicks = true;
+    Marker marker = Marker::slap; // how a clip is marked: a slap on the lens, or a hand hovered close twice
     // follow: whom the AI films (0: you). film: whom the assist frames (0: whoever is closest ahead).
     std::uint64_t subject{}, target{};
 };
