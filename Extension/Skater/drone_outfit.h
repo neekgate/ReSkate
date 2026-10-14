@@ -8,7 +8,9 @@
 
 namespace dingosdk::drone::outfit {
 // What the `goggles` setting picks (1 = the first): eyewear from the game's own catalog that
-// looks most like FPV goggles. The pilot's skater wears it while the drone flies.
+// looks most like FPV goggles. The pilot's skater wears it while the drone flies. The default is
+// the Dime speed shades, which the FPV_Goggles content mod turns into a pair of FPV goggles;
+// without the mod they are the game's own sports glasses.
 struct Eyewear { const char* label; const char* item; };
 inline constexpr Eyewear eyewear[] = {
     {"Large visor 1", "Own_EyewearGlasses_Gen_SunglassesVisorLarge_00001"},
@@ -18,7 +20,7 @@ inline constexpr Eyewear eyewear[] = {
     {"Shield aviators", "Own_EyewearGlasses_Gen_ShieldAviator_00001"},
     {"Wraparounds", "Own_EyewearGlasses_Gen_WrapAround_00001"},
     {"Slim wraparounds", "Own_EyewearGlasses_Gen_SunglassesWraparoundSlim_00001"},
-    {"Speed shades", "Own_EyewearGlasses_Dime_SpeedShades_00001"},
+    {"FPV goggles (Speed shades)", "Own_EyewearGlasses_Dime_SpeedShades_00001"},
 };
 inline constexpr std::size_t eyewear_count = sizeof(eyewear) / sizeof(eyewear[0]);
 // Once per client tick (Runtime/client_tick.cpp): puts the chosen eyewear on the local skater

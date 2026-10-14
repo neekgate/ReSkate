@@ -162,7 +162,7 @@ inline constexpr KnobInfo knob_info[] = {
     {"motorpitch", "Motor sound pitch. Higher sounds like a smaller drone", 0.4f, 2.5f, 1.0f},
     {"throttlecentre", "Your throttle stick springs back to the middle (gamepads): the middle hovers, up climbs, down descends", 0.0f, 1.0f, 0.0f},
     {"deadzone", "How far a stick must move before the drone reacts (0-0.3). Raise it if the drone drifts on its own", 0.0f, 0.3f, 0.03f},
-    {"goggles", "What your skater wears over their eyes while you fly: 0 = nothing, 1-8 = one of the eyewear choices on the DRONE page", 0.0f, 8.0f, 1.0f},
+    {"goggles", "What your skater wears over their eyes while you fly: 0 = nothing, 1-8 = one of the eyewear choices on the DRONE page. The default, speed shades, become FPV goggles with the FPV_Goggles mod", 0.0f, 8.0f, 8.0f},
     {"hideui", "Hide the game's own interface while you fly (Start flying hides it, Stop flying brings it back)", 0.0f, 1.0f, 1.0f},
 };
 inline constexpr std::size_t knob_count = std::size(knob_info);
