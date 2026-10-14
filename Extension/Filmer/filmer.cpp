@@ -133,6 +133,8 @@ void load_store() {
         const auto &o = *json;
         const auto style = o.value("style", std::string("auto"));
         r.style = style == "behind" ? Style::behind : style == "side" ? Style::side : style == "ahead" ? Style::ahead : Style::automatic;
+        const auto side = o.value("side", std::string("auto"));
+        r.side = side == "left" ? Side::left : side == "right" ? Side::right : Side::automatic;
         r.lens = o.value("lens", std::string("fisheye")) == "long" ? Lens::long_lens : Lens::fisheye;
         r.distance = clamped(o, "distance", d.rig.distance, 0.6f, 6.0f);
         r.height = clamped(o, "height", d.rig.height, 0.08f, 2.5f);
@@ -190,6 +192,7 @@ void save_store() {
         Json json = Json::object();
         json["schema"] = 2;
         json["style"] = style_name(r.style);
+        json["side"] = r.side == Side::left ? "left" : r.side == Side::right ? "right" : "auto";
         json["lens"] = lens_name(r.lens);
         json["distance"] = r.distance;
         json["height"] = r.height;
@@ -521,7 +524,17 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready, bool camera_ph
             // The game's own collision (the Park Editor's ray, as the drone uses): the AI filmer rides
             // real ground and stays out of walls.
             s.rig.set_world([](const Vec3 &from, const Vec3 &to, Vec3 &hit) {
+                static unsigned asked{}, answered{};
+                static bool said{};
                 const auto found = local_surface_hit(from, to);
+                ++asked;
+                if (found) ++answered;
+                // Said once: without the game's collision the AI filmer goes by your trail alone.
+                if (!said && asked >= 600) {
+                    said = true;
+                    say(logging::Level::info, std::format("Filmer: the game's collision query answered {} of the first {} questions{}", answered, asked,
+                        answered ? "." : "; the AI filmer goes by your trail alone (it still stops at drops, but cannot see gaps or walls)."));
+                }
                 if (!found) return false;
                 hit = *found;
                 return true;
@@ -698,6 +711,16 @@ std::string set_option(State &s, const std::string &key, const std::string &valu
         else return "error: style is auto, behind, side or ahead.";
         changed(s);
         return std::string("style = ") + style_name(r.style);
+    }
+    if (key == "side") {
+        const auto v = lower(value);
+        if (v == "auto") r.side = Side::automatic;
+        else if (v == "left") r.side = Side::left;
+        else if (v == "right") r.side = Side::right;
+        else if (v == "swap") r.side = r.side == Side::left ? Side::right : Side::left;
+        else return "error: side is auto, left, right or swap.";
+        changed(s);
+        return std::string("side = ") + (r.side == Side::left ? "left" : r.side == Side::right ? "right" : "auto");
     }
     if (key == "lens") {
         const auto v = lower(value);
