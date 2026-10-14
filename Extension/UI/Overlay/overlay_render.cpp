@@ -16,8 +16,9 @@ namespace dingosdk::overlay::detail {
 namespace {
 // The overlay's output transfer (setup_graphics): the Filmer's look only grades colour in SDR.
 int output_transfer{};
-// The SRV heap's slots: ImGui's atlas, the map download card's icon, the Filmer look's copy of the frame.
-constexpr UINT srv_slots = 3, filmer_look_slot = 2;
+// The SRV heap's slots: ImGui's atlas, the map download card's icon, then the Filmer look's three (its
+// copy of the frame and the auto-iris's two targets).
+constexpr UINT srv_slots = 5, filmer_look_slot = 2;
 }
 
 // ImGui draws into the swapchain's back buffer, so its display is the buffer, in the buffer's

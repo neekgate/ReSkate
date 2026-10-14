@@ -367,9 +367,15 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
     const float human = std::clamp(s.human, 0.0f, 1.0f), reaction = std::clamp(s.reaction, 0.0f, 1.0f);
     const bool fish = s.lens == Lens::fisheye;
     float distance = std::clamp(s.distance, 0.6f, 6.0f) * (fish ? 1.0f : 3.2f);
-    // Pull back a little at speed and in the air, so a trick stays in the frame.
+    // The lunge: with the fisheye, the moment you pop the filmer pushes in close and low under the
+    // trick, then pulls back as you land and ride away.
+    const bool lunging = s.lunge && fish && t.airborne && !planted_ && !edge_;
+    spring(lunge_, lunge_rate_, lunging ? 1.0f : 0.0f, 0.0f, lunging ? 9.0f : 3.0f, 1.0f, dt);
+    lunge_ = std::clamp(lunge_, 0.0f, 1.0f);
+    // Pull back a little at speed and in the air, so a trick stays in the frame (unless lunging in).
     distance += std::min(speed * 0.04f, 0.5f);
-    if (t.airborne) distance += std::clamp(t.position[1] - t.ground, 0.0f, 3.0f) * 0.35f + 0.3f;
+    if (t.airborne) distance += (std::clamp(t.position[1] - t.ground, 0.0f, 3.0f) * 0.35f + 0.3f) * (1.0f - lunge_);
+    distance = std::max(distance * mix(1.0f, 0.5f, lunge_), mix(distance, 0.7f, lunge_));
     // The angle round the skater.
     switch (s.style) {
     case Style::automatic: choose_angle(now, speed); break;
@@ -400,7 +406,7 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
         desired = add(Vec3{t.position[0], t.ground, t.position[2]}, add(scale(heading, -d * std::cos(angle)), scale(side, d * std::sin(angle))));
         ground = t.ground;
     }
-    const float height = std::clamp(s.height, 0.08f, 2.5f);
+    const float height = std::max(0.08f, std::clamp(s.height, 0.08f, 2.5f) * mix(1.0f, 0.6f, lunge_));
     const Vec3 centre{t.position[0], t.position[1] + 0.9f, t.position[2]};
     // Never behind a wall: where the spot is out of sight of the skater, it comes in towards them.
     if (cast_) {
@@ -444,7 +450,7 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
     if (planted_) {
         operator_velocity_ = {};
     } else {
-        const float omega = mix(3.2f, 2.0f, reaction);
+        const float omega = mix(mix(3.2f, 2.0f, reaction), 6.0f, lunge_);
         for (std::size_t axis : {std::size_t{0}, std::size_t{2}})
             spring(operator_[axis], operator_velocity_[axis], desired[axis], std::clamp(desired_rate[axis], -25.0f, 25.0f), omega, 1.0f, dt);
     }

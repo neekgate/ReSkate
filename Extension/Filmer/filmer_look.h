@@ -20,7 +20,7 @@ struct Target {
     ID3D12Resource *buffer{};             // the back buffer, in the PRESENT state; left in it
     D3D12_CPU_DESCRIPTOR_HANDLE rtv{};
     ID3D12DescriptorHeap *srvs{};         // the overlay's shader-visible heap (already set on the list)
-    unsigned slot{};                      // the heap slot the look may use for its copy
+    unsigned slot{};                      // the first of three heap slots the look uses (its copy, the auto-iris's two)
     DXGI_FORMAT format{};
     int transfer{};                       // the overlay's output transfer: 0 SDR, 1 scRGB, 2 HDR10
     // Waits until the GPU has finished every frame submitted so far (a copy about to be replaced may

@@ -35,6 +35,13 @@ struct Look {
     bool date = false;       // a date stamp in the corner
     bool viewfinder = false; // REC, the tape counter and the battery, as in the viewfinder
     bool anywhere = false;   // over any camera, not only the Filmer's (the replay editor's, say)
+    // The tape and the camera's electronics.
+    float age = 0.35f;        // tape age 0..1: how often and how badly the tape misbehaves
+    bool dropouts = true;     // now and then a white streak where the tape lost its coating
+    bool head_switching = true; // the torn, noisy lines at the very bottom
+    bool tracking = true;     // a band of tearing rolls up the picture as each clip starts recording
+    bool smear = true;        // reds trail to the right
+    bool iris = true;         // the auto-iris lags the scene: blown out into the sun, murky into shade
 };
 
 struct Settings {

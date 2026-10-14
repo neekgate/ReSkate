@@ -77,6 +77,7 @@ if(WIN32)
         add_custom_command(OUTPUT "${filmer_look_checked}"
             COMMAND "${DINGOSDK_FXC}" /nologo /T vs_5_0 /E vs_main /Fo "${CMAKE_CURRENT_BINARY_DIR}/generated/filmer_look_vs.cso" "${filmer_look_path}"
             COMMAND "${DINGOSDK_FXC}" /nologo /T ps_5_0 /E ps_main /Fo "${CMAKE_CURRENT_BINARY_DIR}/generated/filmer_look_ps.cso" "${filmer_look_path}"
+            COMMAND "${DINGOSDK_FXC}" /nologo /T ps_5_0 /E ps_adapt /Fo "${CMAKE_CURRENT_BINARY_DIR}/generated/filmer_look_iris.cso" "${filmer_look_path}"
             COMMAND "${CMAKE_COMMAND}" -E touch "${filmer_look_checked}"
             DEPENDS "${filmer_look_path}"
             COMMENT "Checking the Filmer's look shader with fxc"
