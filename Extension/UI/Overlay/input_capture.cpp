@@ -266,19 +266,25 @@ std::string xinput_entry_owners() {
     return text.empty() ? "none" : text;
 }
 
-std::atomic<dingosdk::overlay::GamepadFilter>& gamepad_filter() {
-    static std::atomic<dingosdk::overlay::GamepadFilter> value{};
+// One filter per feature that changes what the game reads (DingoSDKOverlaySetGamepadFilterSlot):
+// slot 0 the grind exit control, slot 1 the Filmer. They run in slot order.
+constexpr std::size_t gamepad_filter_slots = 4;
+std::array<std::atomic<dingosdk::overlay::GamepadFilter>, gamepad_filter_slots>& gamepad_filters() {
+    static std::array<std::atomic<dingosdk::overlay::GamepadFilter>, gamepad_filter_slots> value{};
     return value;
 }
 // The game's own read only: not ReSkate's (overlay_input_access) and not an inner layer of a
 // read already being answered (Steam's hook going on to XInput runs inside OverlayInputAccess).
 void filter_pad(bool outer, DWORD user, XINPUT_STATE* output) noexcept {
     if (!outer || !output) return;
-    const auto filter = gamepad_filter().load(std::memory_order_acquire);
-    if (!filter) return;
+    auto& filters = gamepad_filters();
+    bool any = false;
+    for (const auto& slot : filters) any = any || slot.load(std::memory_order_acquire) != nullptr;
+    if (!any) return;
     auto& g = output->Gamepad;
     dingosdk::overlay::GamepadValues pad{g.wButtons, g.bLeftTrigger, g.bRightTrigger, g.sThumbLX, g.sThumbLY, g.sThumbRX, g.sThumbRY};
-    filter(static_cast<unsigned>(user), pad);
+    for (const auto& slot : filters)
+        if (const auto filter = slot.load(std::memory_order_acquire)) filter(static_cast<unsigned>(user), pad);
     g.wButtons = pad.buttons;
     g.bLeftTrigger = pad.left_trigger;
     g.bRightTrigger = pad.right_trigger;
@@ -905,5 +911,10 @@ bool install_input_capture() {
 }
 
 extern "C" void DingoSDKOverlaySetGamepadFilter(dingosdk::overlay::GamepadFilter filter) {
-    dingosdk::overlay::detail::gamepad_filter().store(filter, std::memory_order_release);
+    dingosdk::overlay::detail::gamepad_filters()[0].store(filter, std::memory_order_release);
+}
+
+extern "C" void DingoSDKOverlaySetGamepadFilterSlot(unsigned slot, dingosdk::overlay::GamepadFilter filter) {
+    auto& filters = dingosdk::overlay::detail::gamepad_filters();
+    if (slot < filters.size()) filters[slot].store(filter, std::memory_order_release);
 }

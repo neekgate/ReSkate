@@ -36,6 +36,10 @@ bool client_free_camera_active() noexcept;
 // `fov` is applied to the spectate camera while it is held; its own comes back after.
 bool update_party_camera(std::uintptr_t base, std::uintptr_t client, bool ready, bool phase,
     const std::array<float, 16>* transform, std::string& detail, float fov = 0) noexcept;
+// The same, held for the Filmer (Extension/Filmer/filmer.cpp). Its own lease: it can only be
+// taken while nothing else (Freecam, Noclip, First person, Spectate) has the camera.
+bool update_filmer_camera(std::uintptr_t base, std::uintptr_t client, bool ready, bool phase,
+    const std::array<float, 16>* transform, std::string& detail, float fov = 0) noexcept;
 bool read_local_camera_transform(std::uintptr_t base, std::uintptr_t client, std::array<float, 16>& transform) noexcept;
 // Publishes the local view's camera (Engine/Game/UI/game_view.h) for things drawn over the
 // world. Client thread, every tick while something needs it.

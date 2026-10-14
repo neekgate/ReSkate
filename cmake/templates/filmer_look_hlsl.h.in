@@ -1,0 +1,5 @@
+#pragma once
+// Generated from Extension/Filmer/filmer_look.hlsl (cmake/UI.cmake).
+namespace dingosdk::filmer {
+inline constexpr char filmer_look_hlsl[] = R"filmer_hlsl(@filmer_look_source@)filmer_hlsl";
+}

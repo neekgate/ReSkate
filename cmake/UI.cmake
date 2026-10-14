@@ -44,9 +44,47 @@ add_library(dingosdk_overlay STATIC
     Extension/Music/music_page.cpp
     Extension/Trainer/trainer_view.cpp
     Extension/HallOfMeat/hall_of_meat_overlay.cpp
+    Extension/Filmer/filmer_view.cpp
+    Extension/Filmer/filmer_look.cpp
+    Extension/Filmer/filmer_page.cpp
 )
 target_link_libraries(dingosdk_overlay PUBLIC dingosdk_logging dingosdk_profiler dingosdk_imgui dingosdk_hooks dingosdk_console_core dxguid PRIVATE dingosdk_playstation_input shell32 dingosdk_initfs dingosdk_custom_scripts dingosdk_game_archives dingosdk_mods dingosdk_json windowscodecs ole32)
 
 # The window shown from the moment ReSkate loads until the game's own window appears.
 add_library(dingosdk_startup_window STATIC Extension/UI/Startup/startup_window.cpp)
 target_link_libraries(dingosdk_startup_window PRIVATE gdi32 user32 msimg32 shell32 ole32 windowscodecs)
+
+# The Filmer's VX1000 look: its shader is built into the DLL as text and compiled when it is first
+# drawn. The build checks it with the Windows SDK's fxc when there is one, so a shader that would not
+# compile in the game fails here instead.
+set(filmer_look_path "${PROJECT_SOURCE_DIR}/Extension/Filmer/filmer_look.hlsl")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${filmer_look_path}")
+file(READ "${filmer_look_path}" filmer_look_source)
+configure_file(cmake/templates/filmer_look_hlsl.h.in
+    "${CMAKE_CURRENT_BINARY_DIR}/generated/filmer_look_hlsl.h" @ONLY)
+if(WIN32)
+    file(GLOB filmer_fxc_candidates "C:/Program Files (x86)/Windows Kits/10/bin/10.*/x64/fxc.exe")
+    if(filmer_fxc_candidates)
+        list(SORT filmer_fxc_candidates)
+        list(REVERSE filmer_fxc_candidates)
+        list(GET filmer_fxc_candidates 0 filmer_fxc_newest)
+        set(DINGOSDK_FXC "${filmer_fxc_newest}" CACHE FILEPATH "fxc.exe that checks the Filmer's look shader")
+    else()
+        find_program(DINGOSDK_FXC fxc)
+    endif()
+    if(DINGOSDK_FXC)
+        set(filmer_look_checked "${CMAKE_CURRENT_BINARY_DIR}/generated/filmer_look.checked")
+        add_custom_command(OUTPUT "${filmer_look_checked}"
+            COMMAND "${DINGOSDK_FXC}" /nologo /T vs_5_0 /E vs_main /Fo "${CMAKE_CURRENT_BINARY_DIR}/generated/filmer_look_vs.cso" "${filmer_look_path}"
+            COMMAND "${DINGOSDK_FXC}" /nologo /T ps_5_0 /E ps_main /Fo "${CMAKE_CURRENT_BINARY_DIR}/generated/filmer_look_ps.cso" "${filmer_look_path}"
+            COMMAND "${CMAKE_COMMAND}" -E touch "${filmer_look_checked}"
+            DEPENDS "${filmer_look_path}"
+            COMMENT "Checking the Filmer's look shader with fxc"
+            VERBATIM)
+        add_custom_target(dingosdk_filmer_look_check DEPENDS "${filmer_look_checked}")
+        add_dependencies(dingosdk_overlay dingosdk_filmer_look_check)
+        message(STATUS "Filmer look shader: checked with ${DINGOSDK_FXC}")
+    else()
+        message(STATUS "Filmer look shader: no fxc found; it is only compiled in the game.")
+    endif()
+endif()

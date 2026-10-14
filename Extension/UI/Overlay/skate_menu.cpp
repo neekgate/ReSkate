@@ -278,11 +278,11 @@ ImFont* embedded_font(const wchar_t* name, float size, const ImWchar* ranges) {
         &config, ranges);
 }
 
-enum Page { map, world, build, skater, training, multiplayer, progress, mods, music, settings, special, developer, page_count };
+enum Page { map, world, build, skater, training, filming, multiplayer, progress, mods, music, settings, special, developer, page_count };
 constexpr std::array<const char*, page_count> page_names{
-    "MAP", "WORLD", "BUILD", "SKATER", "TRAINER", "MULTIPLAYER", "PROGRESS", "MODS", "MUSIC", "SETTINGS", "SPECIAL", "DEVELOPER"};
+    "MAP", "WORLD", "BUILD", "SKATER", "TRAINER", "FILMER", "MULTIPLAYER", "PROGRESS", "MODS", "MUSIC", "SETTINGS", "SPECIAL", "DEVELOPER"};
 constexpr std::array<const char*, page_count> page_subtitles{
-    "Pick your spot.", "Set the vibe.", "Make the park yours.", "Ride it your way.", "Tune it. Drill it. Measure it.",
+    "Pick your spot.", "Set the vibe.", "Make the park yours.", "Ride it your way.", "Tune it. Drill it. Measure it.", "Roll tape.",
     "Bring your crew.", "Pick up where you want.", "Bring your own.", "Your sound, in the game.", "Your controls, your screen.", "Not everyone gets this page.",
     "Under the hood."};
 }
@@ -429,6 +429,7 @@ void draw_skate_menu(SkateMenu& menu, const Model& model, const CallbacksV3& cal
         case build: build_page(menu, model, callbacks); break;
         case skater: skater_page(menu, model, callbacks); break;
         case training: trainer_page(menu, model, callbacks); break;
+        case filming: filmer_page(menu, model, callbacks); break;
         case multiplayer: multiplayer_page(menu, model, callbacks); break;
         case progress: progression_page(menu, model, callbacks); break;
         case mods:

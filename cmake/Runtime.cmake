@@ -160,6 +160,9 @@ add_library(dingosdk_runtime SHARED
     Extension/Trainer/trainer_jump.cpp
     Extension/Trainer/trainer_classes.cpp
     Extension/Trainer/trainer_commands.cpp
+    Extension/Filmer/filmer.cpp
+    Extension/Filmer/filmer_rig.cpp
+    Extension/Filmer/filmer_commands.cpp
     Extension/Trainer/trainer_session.cpp
     Extension/Trainer/trainer_waypoint.cpp
     Extension/Skater/offboard_flight.cpp
