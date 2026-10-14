@@ -120,7 +120,7 @@ void fly_tab(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks) 
     {   // What the pilot's skater wears over their eyes while flying.
         const int worn = std::clamp(static_cast<int>(std::lround(get(Knob::kGoggles))), 0, static_cast<int>(drone::outfit::eyewear_count));
         field(menu, "Goggles", "Your skater wears these while you fly. Your own eyewear comes back when you land.\n\n"
-                               "FPV goggles are the game's speed shades: with the FPV_Goggles mod installed they look like real FPV goggles.");
+                               "FPV goggles come from the FPV_Goggles mod. Without it, your skater wears the game's speed shades instead.");
         if (ImGui::BeginCombo("##goggles", worn ? drone::outfit::eyewear[worn - 1].label : "None")) {
             if (ImGui::Selectable("None", worn == 0)) { set(Knob::kGoggles, 0.0f); save(callbacks, Knob::kGoggles); }
             for (std::size_t i = 0; i < drone::outfit::eyewear_count; ++i)

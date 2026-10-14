@@ -29,6 +29,8 @@ struct Worn {
     std::string original;               // what the eyewear slot held before
     std::vector<std::uint32_t> original_parameters;
     std::uint64_t last_flying{}, retry_after{};
+    int choice{};                       // the `goggles` choice `found` was looked up for
+    std::string found;                  // the installed item a choice's look_for found
     std::string last_error;
 };
 Worn& worn() { static auto* value = new Worn; return *value; }
@@ -101,7 +103,18 @@ void on_client_tick() noexcept {
     try {
         const SkaterItems m{road_rash::readable, skater.base};
         if (wanted) {
-            const std::string item = eyewear[static_cast<std::size_t>(choice - 1)].item;
+            const auto& pick = eyewear[static_cast<std::size_t>(choice - 1)];
+            std::string item = pick.item;
+            // An item a content mod adds, when one is installed (looked up once per flight).
+            if (pick.look_for) {
+                if (!w.on || w.choice != choice) {
+                    std::size_t total{};
+                    const auto found = find_items(pick.look_for, 1, total);
+                    w.found = found.empty() ? std::string{} : found.front();
+                    w.choice = choice;
+                }
+                if (!w.found.empty()) item = w.found;
+            }
             if (!w.on || w.item != item) put_on(w, m, skater.entity, item);
         } else {
             take_off(w, m, skater.entity);
