@@ -58,34 +58,34 @@ float glyph_bit(uint code, int fx, int fy)
     return (float)(bit < 32u ? (g.x >> bit) & 1u : (g.y >> (bit - 32u)) & 1u);
 }
 
-uint text_char(int line, int column)
+uint text_char(int row_at, int col_at)
 {
-    uint word = (uint)(line * 3 + (column >> 2));
+    uint word = (uint)(row_at * 3 + (col_at >> 2));
     uint4 v = T[word >> 2];
     uint w = v[word & 3u];
-    return (w >> (8u * (uint)(column & 3))) & 0xffu;
+    return (w >> (8u * (uint)(col_at & 3))) & 0xffu;
 }
 
-// x: lit, y: the record dot (red).
+// x: on_bit, y: the record dot (red).
 float2 text_at(float2 q)
 {
     float gp = L6.x;
     float left = -L0.w + 0.14, right = L0.w - 0.14 - 72.0 * gp;
     float top = -0.88, bottom = 0.88 - 7.0 * gp;
-    int line = -1;
+    int row_at = -1;
     float2 origin = float2(0.0, 0.0);
-    if (q.y >= top && q.y < top + 7.0 * gp) { line = q.x < 0.0 ? 0 : 1; origin = float2(q.x < 0.0 ? left : right, top); }
-    else if (q.y >= bottom && q.y < bottom + 7.0 * gp) { line = q.x < 0.0 ? 2 : 4; origin = float2(q.x < 0.0 ? left : right, bottom); }
-    else if (q.x >= 0.0 && q.y >= bottom - 9.0 * gp && q.y < bottom - 2.0 * gp) { line = 3; origin = float2(right, bottom - 9.0 * gp); }
-    if (line < 0) return float2(0.0, 0.0);
+    if (q.y >= top && q.y < top + 7.0 * gp) { row_at = q.x < 0.0 ? 0 : 1; origin = float2(q.x < 0.0 ? left : right, top); }
+    else if (q.y >= bottom && q.y < bottom + 7.0 * gp) { row_at = q.x < 0.0 ? 2 : 4; origin = float2(q.x < 0.0 ? left : right, bottom); }
+    else if (q.x >= 0.0 && q.y >= bottom - 9.0 * gp && q.y < bottom - 2.0 * gp) { row_at = 3; origin = float2(right, bottom - 9.0 * gp); }
+    if (row_at < 0) return float2(0.0, 0.0);
     float2 cell = (q - origin) / gp;
-    int column = (int)floor(cell.x / 6.0);
-    int fx = (int)floor(cell.x) - column * 6;
+    int col_at = (int)floor(cell.x / 6.0);
+    int fx = (int)floor(cell.x) - col_at * 6;
     int fy = (int)floor(cell.y);
-    if (column < 0 || column >= 12 || fx < 0 || fx >= 5 || fy < 0 || fy >= 7) return float2(0.0, 0.0);
-    uint code = text_char(line, column);
-    float lit = glyph_bit(code, fx, fy);
-    return float2(lit, code == 35u ? lit : 0.0);
+    if (col_at < 0 || col_at >= 12 || fx < 0 || fx >= 5 || fy < 0 || fy >= 7) return float2(0.0, 0.0);
+    uint code = text_char(row_at, col_at);
+    float on_bit = glyph_bit(code, fx, fy);
+    return float2(on_bit, code == 35u ? on_bit : 0.0);
 }
 
 // Premultiplied white (or red) text with the dark edge the camcorder gives it.
