@@ -116,14 +116,16 @@ void Rig::begin_tick(double now) noexcept {
     if (probes_.size() > 4096) probes_.clear();
 }
 
-std::optional<float> Rig::ground_at(float x, float z, float near_y) const {
+std::optional<float> Rig::ground_at(float x, float z, float near_y, bool always) const {
     if (!cast_ || !std::isfinite(x) || !std::isfinite(z) || !std::isfinite(near_y)) return std::nullopt;
     const auto cell = [](float v, float size) { return static_cast<std::uint64_t>(static_cast<std::int64_t>(std::floor(v / size)) & 0x1fffff); };
     const std::uint64_t key = cell(x, 0.25f) | cell(z, 0.25f) << 21 | cell(near_y, 0.5f) << 42;
     const auto found = probes_.find(key);
-    const bool fresh = found != probes_.end() && now_ - found->second.time < 2.0;
-    if (!fresh && probe_budget_ > 0) {
-        --probe_budget_;
+    // The ground under the lens is asked fresh each tick, at its own spot: a cell's answer is from
+    // somewhere else in the cell, up to a hand's height off on a bank.
+    const bool fresh = !always && found != probes_.end() && now_ - found->second.time < 2.0;
+    if (!fresh && (probe_budget_ > 0 || always)) {
+        if (probe_budget_ > 0) --probe_budget_;
         Vec3 hit{};
         Probe probe{false, 0.0f, now_};
         if (cast_(Vec3{x, near_y + 0.9f, z}, Vec3{x, near_y - 6.0f, z}, hit) && std::isfinite(hit[1])) probe = {true, hit[1], now_};
@@ -216,6 +218,10 @@ void Rig::learn_root(float dt, const Vec3 &root) {
         root_above_ground_ = mix(root_above_ground_, d, ease(dt, 3.0f));
     }
 }
+
+// The least the lens is ever above the ground: closer, the game's near clipping plane cuts into the
+// ground at the corners of the wide lens and the picture shows under the floor.
+constexpr float lens_clearance = 0.12f;
 
 // Follows a skater from tick to tick: speed, the way they travel, whether they are in the air and
 // the ground under them. A jump of more than 8 m is a teleport or a respawn: everything restarts.
@@ -758,7 +764,7 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
         // Each step is checked against the world: real ground under it, no wall in the way, nothing a
         // board would not roll up or off. Blocked, the filmer slides along what stopped them, or stays.
         const auto try_step = [&](const Vec3 &to) -> bool {
-            const auto g = ground_at(to[0], to[2], operator_ground_);
+            const auto g = ground_at(to[0], to[2], operator_ground_, true);
             if (!g || !step_allowed(to, *g, s.stop_at_drops)) return false;
             if (blocked(Vec3{before[0], operator_ground_ + 0.45f, before[2]}, Vec3{to[0], *g + 0.45f, to[2]})) return false;
             operator_ground_ = *g;
@@ -780,16 +786,17 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
             else { operator_ = before; operator_velocity_ = {}; }
         }
         operator_[1] = 0;
-        // Never up on top of something (a ledge's or a rail's top under the spot): the filmer's level.
-        if (operator_ground_ > world(level_) + 0.25f) operator_ground_ = world(level_);
     } else if (!cast_) {
         operator_ground_ = ground; // no world to ask: the level from the trail
     }
     // The camera's height: over the ground under the filmer, smoothed (rolling down a bank, over a
     // crack), never below it.
-    operator_floor_ += (operator_ground_ - operator_floor_) * ease(dt, 0.12f);
+    // Ground rising under them (a bank, a ramp, a kerb they rode up): taken at once, so the lens never
+    // sinks into it. Falling away: eased, so an odd answer never drops the camera with a jolt.
+    if (operator_ground_ > operator_floor_) operator_floor_ = operator_ground_;
+    else operator_floor_ += (operator_ground_ - operator_floor_) * ease(dt, 0.12f);
     spring(operator_height_, operator_height_rate_, operator_floor_ + height, 0.0f, 5.5f, 0.8f, dt);
-    operator_height_ = std::max(operator_height_, operator_floor_ + 0.04f);
+    operator_height_ = std::max(operator_height_, operator_floor_ + lens_clearance);
     const float operator_speed = flat_length(operator_velocity_);
     // Pushing to keep up: a dip and a nod every stride.
     const float behind = flat_length(sub(desired, operator_));
@@ -797,7 +804,7 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
     if (pushing_ || std::fmod(push_phase_, 1.0f) > 0.02f) push_phase_ += dt / 0.95f;
     const float stride = std::fmod(push_phase_, 1.0f);
     const float dip = stride < 0.4f ? std::sin(stride / 0.4f * pi) : 0.0f;
-    Vec3 eye{operator_[0], std::max(operator_height_ - dip * 0.03f * (0.4f + human), operator_floor_ + 0.04f), operator_[2]};
+    Vec3 eye{operator_[0], std::max(operator_height_ - dip * 0.03f * (0.4f + human), operator_floor_ + lens_clearance), operator_[2]};
     // Can the filmer see you? (For the cut when they lose you.)
     if (cast_) {
         const bool hidden = blocked(eye, centre);
@@ -810,9 +817,11 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
     history_.push_back({now, now_point});
     while (!history_.empty() && now - history_.front().time > 0.6) history_.pop_front();
     const Vec3 late = delayed_point(now, 0.04f + 0.16f * reaction * (0.5f + human));
-    // Stopped with the left stick: the camera stays on the framing it had, held by hand (it does not
-    // follow you round). Otherwise it tracks you.
-    if (!planted_ || !aim_.have) {
+    // Stopped (the left stick, or braked to a stop at the top of a drop): the camera stays on the
+    // framing it had, held by hand (it does not follow you round). Otherwise it tracks you.
+    if (!edge_) edge_locked_ = false;
+    else if (operator_speed < 0.5f) edge_locked_ = true; // braked to a stop at the lip
+    if (!(planted_ || edge_locked_) || !aim_.have) {
         const Vec3 to_late = sub(late, eye), to_now = sub(now_point, eye);
         float want_yaw = yaw_of(to_late[0], to_late[2]);
         float want_pitch = frame_pitch(eye, late, t.airborne, 0.0f, s);
@@ -846,6 +855,7 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
     lean_ = mix(lean_, std::clamp(-turn * operator_speed * 0.012f, -0.12f, 0.12f), ease(dt, 0.25f));
     float yaw = aim_.yaw, pitch = aim_.pitch, roll = lean_;
     shake(now, operator_speed, human, yaw, pitch, roll, eye);
+    eye[1] = std::max(eye[1], operator_floor_ + lens_clearance); // the hand's shake never takes it under
     Frame frame;
     frame.camera = build(eye, yaw, std::clamp(pitch, -1.45f, 1.45f), roll);
     frame.fov = render_fov(s.lens);
@@ -898,7 +908,13 @@ Frame Rig::film(double now, float dt, const Subject &self, const Subject *target
             const float full = length(to);
             if (full > 0.01f) eye = add(chest, scale(to, std::max(0.0f, length(sub(hit, chest)) - 0.12f) / full));
         }
-        if (const auto g = ground_at(eye[0], eye[2], me.position[1])) eye[1] = std::max(eye[1], *g + 0.06f);
+        if (const auto g = ground_at(eye[0], eye[2], world(me.position[1]) + 0.3f, true)) {
+            // Over the ground under the lens: kerb or bank, it never goes into it.
+            if (*g > film_floor_) film_floor_ = *g;
+            else film_floor_ += (*g - film_floor_) * ease(dt, 0.12f);
+            if (!film_floor_known_) { film_floor_ = *g; film_floor_known_ = true; }
+            eye[1] = std::max(eye[1], film_floor_ + lens_clearance);
+        }
     }
     if (s.assist && aiming_at) {
         // Framing a skater: the aim keeps on them as a person would (late, a little loose), and the
@@ -935,6 +951,7 @@ Frame Rig::film(double now, float dt, const Subject &self, const Subject *target
     // Pushing: you can tell from your own speed picking up on the ground.
     pushing_ = !me.airborne && speed > 0.5f && me.velocity[1] > -0.2f;
     shake(now, speed, human, yaw, pitch, roll, eye);
+    if (film_floor_known_) eye[1] = std::max(eye[1], film_floor_ + lens_clearance);
     Frame frame;
     frame.camera = build(eye, yaw, std::clamp(pitch, -1.45f, 1.45f), roll);
     frame.fov = render_fov(s.lens);
