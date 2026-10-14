@@ -40,6 +40,12 @@ the palm is on the glass and overshoots as it comes off, and the clip ends. Clip
 The date and the viewfinder text are drawn by the shader in a 5x7 camcorder font, burnt in after the
 lens (straight, over the hood) and before the tape (softened, interlaced, grainy).
 
+The tape can be worn (Tape age): dropouts, head-switching noise along the bottom, a tracking band
+rolling up the picture as each clip starts, and reds smearing to the right. The auto-iris lags the
+light: into the sun the picture blows out for a moment, into shade it goes murky, then settles. With
+the fisheye the AI filmer lunges in close and low under an air, then pulls back for the landing.
+Each of these has its own switch.
+
 **Over any camera** draws the look whatever has the camera, including the replay editor's. The
 Filmer's own camera does not run in replays yet.
 
@@ -51,7 +57,7 @@ Filmer's own camera does not run in replays yet.
 | `filmer mode off\|follow\|film` | |
 | `filmer subject me\|<player>` | Whom the AI filmer films |
 | `filmer target auto\|<player>` | Whom the assist frames while you film |
-| `filmer set <option> <value>` | `style auto\|behind\|side\|ahead`, `lens fisheye\|long`, `distance`, `height`, `tilt`, `human`, `reaction`, `sensitivity`, `hold`, `bend`; switches `assist`, `invert`, `recenter`, `hidehud`, `stick`, `clicks`, `drops`, `look`, `anywhere`, `fisheye`, `bars`, `hood`, `grade`, `soft`, `scanlines`, `grain`, `date`, `viewfinder` |
+| `filmer set <option> <value>` | `style auto\|behind\|side\|ahead`, `lens fisheye\|long`, `distance`, `height`, `tilt`, `human`, `reaction`, `sensitivity`, `hold`, `bend`, `age`; switches `assist`, `invert`, `recenter`, `hidehud`, `stick`, `clicks`, `drops`, `lunge`, `look`, `anywhere`, `dropouts`, `headswitch`, `tracking`, `smear`, `iris`, `fisheye`, `bars`, `hood`, `grade`, `soft`, `scanlines`, `grain`, `date`, `viewfinder` |
 | `filmer plant [on\|off]` | The AI filmer stops and films from where it is, or rides again |
 | `filmer slap` | End the clip |
 | `filmer clips` | This session's clips |

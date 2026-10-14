@@ -145,6 +145,7 @@ void load_store() {
         r.hold_height = clamped(o, "hold", d.rig.hold_height, 0.1f, 1.8f);
         r.tilt = clamped(o, "tilt", d.rig.tilt, 0.0f, 1.0f);
         r.stop_at_drops = flag(o, "stop_at_drops", d.rig.stop_at_drops);
+        r.lunge = flag(o, "lunge", d.rig.lunge);
         s.settings.stick_clicks = flag(o, "stick_clicks", d.stick_clicks);
         // Settings saved before the camera could go this low keep their old height: start them low.
         if (o.value("schema", 1) < 2) {
@@ -169,6 +170,12 @@ void load_store() {
             k.date = flag(l, "date", d.look.date);
             k.viewfinder = flag(l, "viewfinder", d.look.viewfinder);
             k.anywhere = flag(l, "anywhere", d.look.anywhere);
+            k.age = clamped(l, "age", d.look.age, 0.0f, 1.0f);
+            k.dropouts = flag(l, "dropouts", d.look.dropouts);
+            k.head_switching = flag(l, "head_switching", d.look.head_switching);
+            k.tracking = flag(l, "tracking", d.look.tracking);
+            k.smear = flag(l, "smear", d.look.smear);
+            k.iris = flag(l, "iris", d.look.iris);
         }
     } catch (...) {
         say(logging::Level::warning, "Filmer: filmer.json is damaged; starting from what could be read.");
@@ -195,6 +202,7 @@ void save_store() {
         json["hold"] = r.hold_height;
         json["tilt"] = r.tilt;
         json["stop_at_drops"] = r.stop_at_drops;
+        json["lunge"] = r.lunge;
         json["stick_clicks"] = s.settings.stick_clicks;
         json["hide_hud"] = s.settings.hide_hud;
         json["take_stick"] = s.settings.take_stick;
@@ -213,6 +221,12 @@ void save_store() {
         look["date"] = k.date;
         look["viewfinder"] = k.viewfinder;
         look["anywhere"] = k.anywhere;
+        look["age"] = k.age;
+        look["dropouts"] = k.dropouts;
+        look["head_switching"] = k.head_switching;
+        look["tracking"] = k.tracking;
+        look["smear"] = k.smear;
+        look["iris"] = k.iris;
         json["look"] = std::move(look);
         const auto directory = data_directory();
         if (directory.empty()) return;
@@ -704,6 +718,13 @@ std::string set_option(State &s, const std::string &key, const std::string &valu
     if (key == "drops") return toggle(r.stop_at_drops);
     if (key == "clicks") return toggle(s.settings.stick_clicks);
     if (key == "anywhere") return toggle(k.anywhere);
+    if (key == "lunge") return toggle(r.lunge);
+    if (key == "age") return real(k.age, 0.0f, 1.0f);
+    if (key == "dropouts") return toggle(k.dropouts);
+    if (key == "headswitch") return toggle(k.head_switching);
+    if (key == "tracking") return toggle(k.tracking);
+    if (key == "smear") return toggle(k.smear);
+    if (key == "iris") return toggle(k.iris);
     if (key == "assist") return toggle(r.assist);
     if (key == "invert") return toggle(r.invert_y);
     if (key == "recenter") return toggle(r.recenter);

@@ -36,6 +36,7 @@ struct RigSettings {
     float height = 0.3f;    // camera above the ground: about a foot, the classic fisheye angle
     float tilt = 0.5f;      // framing: 0 the board near the centre, 1 the board low in the frame (more skater)
     bool stop_at_drops = true; // the filmer stops at the top of a set or a gap you jumped, and films from there
+    bool lunge = true;      // fisheye: on an air the filmer pushes in close and low under the trick, then pulls back
     float human = 0.5f;     // 0 steady as a robot, 1 a sketchy filmer: shake, drift, late corrections
     float reaction = 0.4f;  // 0 snaps onto the action, 1 lazy and late
     // film mode
@@ -146,6 +147,7 @@ private:
     float operator_height_{}, operator_height_rate_{};
     float last_operator_yaw_{}, lean_{};
     float operator_ground_{};       // the ground under the filmer (probed)
+    float lunge_{}, lunge_rate_{};  // 0..1: how far into a lunge under an air
     bool planted_{}, edge_{};
     double edge_since_{}, landed_since_{}, unseen_since_{-1.0};
     // Auto: the angle ridden round the skater (radians) and the one being moved to.

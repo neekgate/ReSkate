@@ -13,10 +13,21 @@ cbuffer Look : register(b0)
     float4 L4; // hand centre x, y (half heights, y down), angle (rad), size (0: no hand)
     float4 L5; // hand mirrored, hand blur (hand units), unused, unused
     float4 L6; // text pixel (half heights), text white, text on, unused
+    float4 L7; // tape age 0..1, dropouts, head switching, red smear
+    float4 L8; // seconds since this clip started recording (tracking; < 0: none), tracking, auto-iris, seconds since the last frame
     uint4 T[4]; // five lines of twelve characters, four to a uint: top left, top right, bottom left, bottom right x2
 };
 Texture2D source : register(t0);
+// The auto-iris (ps_adapt): x the brightness it has adapted to, y the scene's brightness this frame.
+Texture2D adapted : register(t1);
 SamplerState linear_clamp : register(s0);
+
+float hash12(float2 p)
+{
+    float3 p3 = frac(float3(p.xyx) * 0.1031);
+    p3 += dot(p3, p3.yzx + 33.33);
+    return frac((p3.x + p3.y) * p3.z);
+}
 
 struct Interpolated { float4 position : SV_POSITION; float2 uv : TEXCOORD0; };
 
@@ -160,10 +171,45 @@ float3 fetch(float2 uv)
     return source.SampleLevel(linear_clamp, uv, 0.0).rgb;
 }
 
+// The auto-iris, a pass of its own into a 1x1 target before the picture: how bright the scene is
+// now (the mean of 64 samples, in log), and the brightness the iris has settled to, which follows it
+// over about a second (the previous frame's, from the other of two targets).
+float2 ps_adapt(Interpolated i) : SV_Target
+{
+    float sum = 0.0;
+    [unroll] for (int y = 0; y < 8; ++y)
+        [unroll] for (int x = 0; x < 8; ++x)
+            sum += log(max(dot(fetch(float2((x + 0.5) / 8.0, (y + 0.5) / 8.0)), float3(0.299, 0.587, 0.114)), 0.002));
+    float current = exp(sum / 64.0);
+    float previous = adapted.Load(int3(0, 0, 0)).x;
+    float k = 1.0 - exp(-max(L8.w, 0.0) / 1.1);
+    float settled = (previous > 0.0 && previous < 100.0) ? lerp(previous, current, k) : current;
+    return float2(settled, current);
+}
+
 float4 ps_main(Interpolated i) : SV_Target
 {
     float screen_aspect = L1.x;
-    float2 c = i.uv * 2.0 - 1.0;
+    // The tape: the picture's lines as recorded. Head switching tears the bottom few lines sideways;
+    // when a clip starts recording, the tracking settles: a band of tearing rolls up the frame.
+    float lines = min(L3.w, 480.0);
+    float scan = floor(i.uv.y * lines);
+    float frame = floor(L1.w * 29.97);
+    float age = L7.x;
+    float2 tape_uv = i.uv;
+    if (L7.z > 0.5 && i.uv.y > 0.972)
+    {
+        float k = (i.uv.y - 0.972) / 0.028;
+        tape_uv.x += (hash12(float2(scan, frame)) - 0.3) * 0.04 * k * (0.5 + age);
+    }
+    float tracking = 0.0;
+    if (L8.y > 0.5 && L8.x >= 0.0 && L8.x < 0.7)
+    {
+        float t = L8.x / 0.7;
+        tracking = exp(-sq((i.uv.y - (1.15 - t * 1.4)) / 0.05)) * (1.0 - t);
+        tape_uv.x += (hash12(float2(scan, frame + 7.0)) - 0.5) * 0.06 * tracking + sin(i.uv.y * 80.0 + L1.w * 40.0) * 0.004 * (1.0 - t);
+    }
+    float2 c = tape_uv * 2.0 - 1.0;
     float2 q = float2(c.x * screen_aspect, c.y);
     // 4:3: black at the sides.
     if (L1.y > 0.5 && abs(q.x) > L0.w)
@@ -206,6 +252,9 @@ float4 ps_main(Interpolated i) : SV_Target
         {
             colour = fetch(uv);
         }
+        // Reds smear on tape: they trail to the right.
+        if (L7.w > 0.5)
+            colour.r = lerp(colour.r, fetch(uv + float2(texel.x * sd * 6.0, 0.0)).r, 0.45);
     }
     // The hand in front of the lens: lit by the scene, then dark and glowing red through the skin
     // once it is pressed over the glass.
@@ -264,6 +313,14 @@ float4 ps_main(Interpolated i) : SV_Target
     }
     if (sdr)
         colour *= L3.y; // the iris: down while the hand covers it, open too wide for a moment after
+    // The auto-iris lags the scene: into the sun the picture blows out for a moment, into shade it
+    // goes murky, then each settles. (Not in HDR10, whose values are not linear.)
+    if (L8.z > 0.5 && L3.x < 1.5)
+    {
+        float2 iris = adapted.Load(int3(0, 0, 0)).xy;
+        if (iris.x > 0.0 && iris.x < 100.0 && iris.y > 0.0)
+            colour *= clamp(pow(iris.y / iris.x, 0.75), 0.5, 2.0);
+    }
     // The hood: the fisheye's picture ends in a soft dark edge, and darkens towards it.
     if (L1.z > 0.5)
     {
@@ -297,12 +354,33 @@ float4 ps_main(Interpolated i) : SV_Target
         }
         colour = colour * (1.0 - text.a) + text.rgb;
     }
+    // Dropouts: now and then a short white streak where the tape lost its coating (more, the older it is).
+    if (L7.y > 0.5)
+    {
+        [unroll] for (int k = 0; k < 3; ++k)
+        {
+            if (hash12(float2(frame, k * 13.1)) < age * age * 0.05)
+            {
+                float y0 = hash12(float2(frame + 3.1, k));
+                float x0 = hash12(float2(k, frame + 9.7)) * 1.1 - 0.1;
+                float span = 0.04 + 0.25 * hash12(float2(frame * 1.7, k + 2.0));
+                if (abs(i.uv.y - y0) * lines < 1.0 && i.uv.x > x0 && i.uv.x < x0 + span)
+                    colour = lerp(colour, ((0.6 + 0.4 * hash12(float2(i.uv.x * 900.0, frame))) * (sdr ? 1.0 : L6.y)).xxx, 0.85);
+            }
+        }
+    }
+    // Head switching: the bottom lines also carry a strip of noise.
+    if (L7.z > 0.5 && i.uv.y > 0.985)
+        colour = lerp(colour, (hash12(float2(i.uv.x * 400.0, frame + scan)) * (sdr ? 0.8 : 0.4 * L6.y)).xxx, 0.35 + 0.3 * age);
+    // The tracking band: its picture loses its colour and fills with noise.
+    if (tracking > 0.01)
+    {
+        float grey = dot(colour, float3(0.299, 0.587, 0.114));
+        colour = lerp(colour, (grey + (hash12(float2(i.uv.x * 700.0, frame + scan)) - 0.5) * 0.4).xxx, saturate(tracking * 0.8));
+    }
     // Interlaced fields: every other line a little darker.
     if (L2.y > 0.5)
-    {
-        float row = floor(i.uv.y * min(L3.w, 480.0));
-        colour *= (fmod(row, 2.0) < 1.0) ? 1.0 : 0.93;
-    }
+        colour *= (fmod(scan, 2.0) < 1.0) ? 1.0 : 0.93;
     if (sdr && L2.z > 0.5)
     {
         float n = frac(sin(dot(floor(i.uv * float2(720.0, 480.0)) + frac(L1.w * 37.0) * 91.0, float2(12.9898, 78.233))) * 43758.5453) - 0.5;

@@ -108,6 +108,7 @@ void filmer_page(SkateMenu &menu, const Model &, const CallbacksV3 &callbacks) {
             filmer_command(menu, callbacks, std::string("set style ") + filmer::style_name(static_cast<filmer::Style>(style)));
         filmer_slider(menu, callbacks, "Distance", "How close they ride (metres; the long lens rides about 3x further).", "distance", r.distance, 0.6f, 6.0f, "%.1f m");
         filmer_slider(menu, callbacks, "Camera height", "Above the ground. About a foot (0.3 m) is the classic fisheye angle; the board-level shots go lower.", "height", r.height, 0.08f, 2.5f, "%.2f m");
+        filmer_toggle(menu, callbacks, "Lunge", "Fisheye: the moment you pop, the filmer pushes in close and low under the trick, then pulls back as you land.", "lunge", r.lunge, r.lens == filmer::Lens::fisheye);
         filmer_toggle(menu, callbacks, "Stop at drops", "The filmer only rides where you rolled: at a set or a gap you jumped they stop at the edge, film you land and ride away, then catch up.", "drops", r.stop_at_drops);
         filmer_toggle(menu, callbacks, "Stick clicks", "While the AI films: click the left stick to have them stop and film from where they are (again to ride on), the right stick to slap the lens. The game does not get those clicks while this is on.", "clicks", s.stick_clicks);
         if (s.mode == filmer::Mode::follow && primary_button(menu, v.planted ? "RIDE AGAIN" : "STOP AND FILM FROM HERE", v.active))
@@ -140,9 +141,19 @@ void filmer_page(SkateMenu &menu, const Model &, const CallbacksV3 &callbacks) {
     filmer_toggle(menu, callbacks, "Tape grain", "Fine noise.", "grain", s.look.grain, look);
     filmer_toggle(menu, callbacks, "Date stamp", "The date and time in the corner.", "date", s.look.date, look);
     filmer_toggle(menu, callbacks, "Viewfinder", "REC, the tape counter and the battery, as through the viewfinder.", "viewfinder", s.look.viewfinder, look);
+    filmer_toggle(menu, callbacks, "Auto-iris", "The camera's iris lags the light: into the sun the picture blows out for a moment, into shade it goes murky, then each settles.", "iris", s.look.iris, look);
     filmer_toggle(menu, callbacks, "Over any camera", "Draw the look even when the Filmer is not filming: over the replay editor's cameras, Freecam, the game's own camera. (Clips the replay editor exports are made without it: record the screen.)", "anywhere", s.look.anywhere, look);
     filmer_toggle(menu, callbacks, "Hide the game's HUD", "While the Filmer films (shown again when it stops, if it hid it).", "hidehud", s.hide_hud);
     note("HDR displays get the bend, 4:3, hood and interlacing; the colour and grain are for SDR.");
+    end_card();
+
+    begin_card(menu, "filmer-tape", "TAPE", "How worn the tape is. Each flaw can be switched off.");
+    const bool tape = s.look.enabled;
+    filmer_slider(menu, callbacks, "Tape age", "0: a fresh tape. 1: one that has been dubbed and played to death: more dropouts and a worse bottom edge.", "age", s.look.age, 0.0f, 1.0f, "%.2f");
+    filmer_toggle(menu, callbacks, "Dropouts", "Now and then a short white streak where the tape lost its coating (more, the older it is).", "dropouts", s.look.dropouts, tape);
+    filmer_toggle(menu, callbacks, "Head switching", "The torn, noisy lines along the very bottom of the picture.", "headswitch", s.look.head_switching, tape);
+    filmer_toggle(menu, callbacks, "Tracking at each clip", "As a clip starts recording (the camera rolling, or after a slap), a band of tearing rolls up the picture.", "tracking", s.look.tracking, tape);
+    filmer_toggle(menu, callbacks, "Red smear", "Reds trail to the right, as on a composite tape.", "smear", s.look.smear, tape);
     end_card();
 
     begin_card(menu, "filmer-clips", "CLIPS", "Slap the lens to end a clip.");
