@@ -9,7 +9,8 @@
 namespace dingosdk::drone::outfit {
 // What the `goggles` setting picks (1 = the first): eyewear from the game's own catalog that
 // looks most like FPV goggles. The pilot's skater wears it while the drone flies. The default is
-// the Dime speed shades, which the FPV_Goggles content mod turns into a pair of FPV goggles;
+// the Dime speed shades, which the FPV_Goggles content mod (Thunderstore: neekgate-FPV_Goggles) turns
+// into a pair of FPV goggles;
 // without the mod they are the game's own sports glasses.
 struct Eyewear { const char* label; const char* item; };
 inline constexpr Eyewear eyewear[] = {

@@ -130,6 +130,9 @@ void fly_tab(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks) 
                 }
             ImGui::EndCombo();
         }
+        // The look of the default goggles comes from a content mod on Thunderstore.
+        note("For real FPV goggles, install FPV_Goggles by neekgate from the launcher's MODS page "
+             "(Thunderstore: neekgate-FPV_Goggles).");
     }
     {   // The game's value comes back every frame; hold the one being set until the game has it,
         // or the slider would snap back while it is dragged.
