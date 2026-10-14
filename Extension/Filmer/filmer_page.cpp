@@ -106,9 +106,14 @@ void filmer_page(SkateMenu &menu, const Model &, const CallbacksV3 &callbacks) {
         int style = static_cast<int>(r.style);
         if (choice(menu, "style", style, {"Auto", "Behind", "Side", "Ahead"}))
             filmer_command(menu, callbacks, std::string("set style ") + filmer::style_name(static_cast<filmer::Style>(style)));
-        filmer_slider(menu, callbacks, "Distance", "How close they ride (metres; the long lens rides about 3x further).", "distance", r.distance, 0.8f, 6.0f, "%.1f m");
-        filmer_slider(menu, callbacks, "Camera height", "Low to the ground is the classic fisheye angle.", "height", r.height, 0.2f, 2.5f, "%.2f m");
+        filmer_slider(menu, callbacks, "Distance", "How close they ride (metres; the long lens rides about 3x further).", "distance", r.distance, 0.6f, 6.0f, "%.1f m");
+        filmer_slider(menu, callbacks, "Camera height", "Above the ground. About a foot (0.3 m) is the classic fisheye angle; the board-level shots go lower.", "height", r.height, 0.08f, 2.5f, "%.2f m");
+        filmer_toggle(menu, callbacks, "Stop at drops", "The filmer only rides where you rolled: at a set or a gap you jumped they stop at the edge, film you land and ride away, then catch up.", "drops", r.stop_at_drops);
+        filmer_toggle(menu, callbacks, "Stick clicks", "While the AI films: click the left stick to have them stop and film from where they are (again to ride on), the right stick to slap the lens. The game does not get those clicks while this is on.", "clicks", s.stick_clicks);
+        if (s.mode == filmer::Mode::follow && primary_button(menu, v.planted ? "RIDE AGAIN" : "STOP AND FILM FROM HERE", v.active))
+            filmer_command(menu, callbacks, "plant");
     }
+    filmer_slider(menu, callbacks, "Tilt", "How the skater sits in the frame: 0 the board near the middle, 1 the board low with more of the skater above. The board is always kept in.", "tilt", r.tilt, 0.0f, 1.0f, "%.2f");
     filmer_slider(menu, callbacks, "Human", "0: steady as a robot. 1: a sketchy filmer: shaky, a loose frame, late corrections.", "human", r.human, 0.0f, 1.0f, "%.2f");
     filmer_slider(menu, callbacks, "Reaction", "0: snaps onto the action. 1: lazy and late (but never loses the trick).", "reaction", r.reaction, 0.0f, 1.0f, "%.2f");
     if (s.mode == filmer::Mode::film) {
@@ -116,7 +121,7 @@ void filmer_page(SkateMenu &menu, const Model &, const CallbacksV3 &callbacks) {
         filmer_slider(menu, callbacks, "Stick speed", "How fast the right stick turns the camera.", "sensitivity", r.sensitivity, 0.2f, 3.0f, "x %.2f");
         filmer_toggle(menu, callbacks, "Invert up / down", "Push up to point the camera down.", "invert", r.invert_y);
         filmer_toggle(menu, callbacks, "Recenter", "Without the assist: let go and the camera drifts back to where you ride.", "recenter", r.recenter, !r.assist);
-        filmer_slider(menu, callbacks, "Hold height", "Where you hold the camera above your feet.", "hold", r.hold_height, 0.3f, 1.8f, "%.2f m");
+        filmer_slider(menu, callbacks, "Hold height", "Where you hold the camera above your feet: low and out at arm's length, clear of your body.", "hold", r.hold_height, 0.1f, 1.8f, "%.2f m");
         filmer_toggle(menu, callbacks, "Take the right stick", "Keep the right stick (and its click) from the game while you film. Off: it also flicks tricks.", "stick", s.take_stick);
     }
     end_card();
@@ -135,6 +140,7 @@ void filmer_page(SkateMenu &menu, const Model &, const CallbacksV3 &callbacks) {
     filmer_toggle(menu, callbacks, "Tape grain", "Fine noise.", "grain", s.look.grain, look);
     filmer_toggle(menu, callbacks, "Date stamp", "The date and time in the corner.", "date", s.look.date, look);
     filmer_toggle(menu, callbacks, "Viewfinder", "REC, the tape counter and the battery, as through the viewfinder.", "viewfinder", s.look.viewfinder, look);
+    filmer_toggle(menu, callbacks, "Over any camera", "Draw the look even when the Filmer is not filming: over the replay editor's cameras, Freecam, the game's own camera. (Clips the replay editor exports are made without it: record the screen.)", "anywhere", s.look.anywhere, look);
     filmer_toggle(menu, callbacks, "Hide the game's HUD", "While the Filmer films (shown again when it stops, if it hid it).", "hidehud", s.hide_hud);
     note("HDR displays get the bend, 4:3, hood and interlacing; the colour and grain are for SDR.");
     end_card();
@@ -142,7 +148,7 @@ void filmer_page(SkateMenu &menu, const Model &, const CallbacksV3 &callbacks) {
     begin_card(menu, "filmer-clips", "CLIPS", "Slap the lens to end a clip.");
     info(menu, "Rolling", std::format("Clip {}", v.clip));
     if (primary_button(menu, "SLAP THE LENS", s.mode != filmer::Mode::off)) filmer_command(menu, callbacks, "slap");
-    note("While you film, click the right stick. Following, put \"Filmer: slap the lens\" on a button in Settings > Binds.");
+    note("Click the right stick (filming, or following with Stick clicks on), or put \"Filmer: slap the lens\" on a button in Settings > Binds.");
     for (auto it = v.clips.rbegin(); it != v.clips.rend() && it - v.clips.rbegin() < 6; ++it)
         info(menu, std::format("Clip {}", it->number).c_str(), std::format("{:.1f} s, ended {}", it->seconds, it->ended_at));
     if (!v.clips.empty()) note("Every clip is listed with its time in %LOCALAPPDATA%\\ReSkate\\filmer\\clips.csv, for finding them in a recording.");

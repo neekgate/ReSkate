@@ -34,6 +34,7 @@ struct Look {
     bool grain = true;       // tape noise
     bool date = false;       // a date stamp in the corner
     bool viewfinder = false; // REC, the tape counter and the battery, as in the viewfinder
+    bool anywhere = false;   // over any camera, not only the Filmer's (the replay editor's, say)
 };
 
 struct Settings {
@@ -42,6 +43,9 @@ struct Settings {
     Look look;
     bool hide_hud = true;   // hide the game's interface while filming
     bool take_stick = true; // film mode: keep the right stick from the game
+    // follow mode: the stick clicks are the filmer's (left: stop and film / ride again; right: slap),
+    // kept from the game while following.
+    bool stick_clicks = true;
     // follow: whom the AI films (0: you). film: whom the assist frames (0: whoever is closest ahead).
     std::uint64_t subject{}, target{};
 };
@@ -68,6 +72,9 @@ struct View {
     std::string subject_name; // who is being filmed
     std::vector<PlayerRow> players;
     float auto_angle{};       // auto: degrees round the skater
+    bool planted{};           // follow: the filmer was told to stop and film from where they stand
+    bool at_edge{};           // follow: the filmer stopped where you went over a drop or a gap
+    float camera_fov{};       // the game camera's own field of view (the look over another camera)
     // The overlay's clock (now()): when the camera started rolling this clip and when the lens was
     // last slapped.
     double rolling_since{}, slap_at{-100.0};
@@ -84,8 +91,9 @@ double now() noexcept;
 
 // Game thread (filmer.cpp).
 // Each client tick, after the session placed the other skaters for this frame. `ready` while the
-// local skater can be controlled; `camera_phase` while the native camera may be changed.
-void tick(std::uintptr_t base, std::uintptr_t client, bool ready, bool camera_phase) noexcept;
+// local skater can be controlled; `camera_phase` while the native camera may be changed;
+// `game_state` the client's state, said in the status while the Filmer waits.
+void tick(std::uintptr_t base, std::uintptr_t client, bool ready, bool camera_phase, int game_state) noexcept;
 // Runs one `filmer` command and returns the line to print. Only from the console dispatcher.
 // `hud_hidden`: whether the game's interface is hidden right now (the Filmer hides it while it films
 // and only shows it again if it was the one that hid it).

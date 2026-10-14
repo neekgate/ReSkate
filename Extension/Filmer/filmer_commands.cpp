@@ -18,9 +18,10 @@ void register_filmer_commands(Commands &registry) {
         {"subject", "Whom the AI filmer follows", "me|<player>", false},
         {"target", "Whom the assist frames while you film", "auto|<player>", false},
         {"set", "Change a Filmer option",
-         "style auto|behind|side|ahead, lens fisheye|long, distance|height|human|reaction|sensitivity|hold|bend <number>, "
-         "assist|invert|recenter|hidehud|stick|look|fisheye|bars|hood|grade|soft|scanlines|grain|date|viewfinder 0|1",
+         "style auto|behind|side|ahead, lens fisheye|long, distance|height|tilt|human|reaction|sensitivity|hold|bend <number>, "
+         "assist|invert|recenter|hidehud|stick|clicks|drops|look|anywhere|fisheye|bars|hood|grade|soft|scanlines|grain|date|viewfinder 0|1",
          true},
+        {"plant", "The AI filmer stops and films from where they are, or rides again", "[on|off]", false},
         {"slap", "Slap the lens: ends the clip", nullptr, false},
         {"clips", "The clips marked this session", nullptr, false},
         {"reset", "Put every Filmer option back to its default", nullptr, false},

@@ -5,6 +5,8 @@
 #include "Extension/Multiplayer/Hud/follow_camera.h"
 #include "Extension/Multiplayer/Hud/native_party.h"
 #include "Extension/Multiplayer/Net/protocol.h"
+#include "Extension/Profile/local_profile_runtime.h"
+#include "Engine/Game/UI/game_view.h"
 #include "Extension/Skater/client_source_spawn.h"
 #include "Extension/Trainer/trainer.h"
 #include "Extension/UI/Overlay/overlay.h"
@@ -27,7 +29,8 @@
 namespace dingosdk::filmer {
 namespace {
 constexpr unsigned filter_slot = 1;            // DingoSDKOverlaySetGamepadFilterSlot
-constexpr std::uint16_t right_thumb = 0x0080;  // XINPUT_GAMEPAD_RIGHT_THUMB: the stick click, a slap while filming
+constexpr std::uint16_t left_thumb = 0x0040;   // XINPUT_GAMEPAD_LEFT_THUMB: following, stop and film / ride again
+constexpr std::uint16_t right_thumb = 0x0080;  // XINPUT_GAMEPAD_RIGHT_THUMB: the stick click, a slap
 constexpr float stick_dead_zone = 7849.0f;     // the left stick's XInput dead zone: fine framing
 constexpr std::size_t clip_history = 20;
 
@@ -71,6 +74,9 @@ struct State {
     bool view_due{true}, save_due{};
     ULONGLONG next_publish{}, next_save{};
     bool filter_installed{};
+    bool world_set{};
+    bool planted_shown{}, edge_shown{};
+    float camera_fov{};
 };
 State &state() {
     static auto *value = new State;
@@ -128,15 +134,23 @@ void load_store() {
         const auto style = o.value("style", std::string("auto"));
         r.style = style == "behind" ? Style::behind : style == "side" ? Style::side : style == "ahead" ? Style::ahead : Style::automatic;
         r.lens = o.value("lens", std::string("fisheye")) == "long" ? Lens::long_lens : Lens::fisheye;
-        r.distance = clamped(o, "distance", d.rig.distance, 0.8f, 6.0f);
-        r.height = clamped(o, "height", d.rig.height, 0.2f, 2.5f);
+        r.distance = clamped(o, "distance", d.rig.distance, 0.6f, 6.0f);
+        r.height = clamped(o, "height", d.rig.height, 0.08f, 2.5f);
         r.human = clamped(o, "human", d.rig.human, 0.0f, 1.0f);
         r.reaction = clamped(o, "reaction", d.rig.reaction, 0.0f, 1.0f);
         r.assist = flag(o, "assist", d.rig.assist);
         r.sensitivity = clamped(o, "sensitivity", d.rig.sensitivity, 0.2f, 3.0f);
         r.invert_y = flag(o, "invert", d.rig.invert_y);
         r.recenter = flag(o, "recenter", d.rig.recenter);
-        r.hold_height = clamped(o, "hold", d.rig.hold_height, 0.3f, 1.8f);
+        r.hold_height = clamped(o, "hold", d.rig.hold_height, 0.1f, 1.8f);
+        r.tilt = clamped(o, "tilt", d.rig.tilt, 0.0f, 1.0f);
+        r.stop_at_drops = flag(o, "stop_at_drops", d.rig.stop_at_drops);
+        s.settings.stick_clicks = flag(o, "stick_clicks", d.stick_clicks);
+        // Settings saved before the camera could go this low keep their old height: start them low.
+        if (o.value("schema", 1) < 2) {
+            r.height = d.rig.height;
+            r.hold_height = d.rig.hold_height;
+        }
         s.settings.hide_hud = flag(o, "hide_hud", d.hide_hud);
         s.settings.take_stick = flag(o, "take_stick", d.take_stick);
         s.last_mode = o.value("last_mode", std::string("follow")) == "film" ? Mode::film : Mode::follow;
@@ -154,6 +168,7 @@ void load_store() {
             k.grain = flag(l, "grain", d.look.grain);
             k.date = flag(l, "date", d.look.date);
             k.viewfinder = flag(l, "viewfinder", d.look.viewfinder);
+            k.anywhere = flag(l, "anywhere", d.look.anywhere);
         }
     } catch (...) {
         say(logging::Level::warning, "Filmer: filmer.json is damaged; starting from what could be read.");
@@ -166,7 +181,7 @@ void save_store() {
     try {
         const auto &r = s.settings.rig;
         Json json = Json::object();
-        json["schema"] = 1;
+        json["schema"] = 2;
         json["style"] = style_name(r.style);
         json["lens"] = lens_name(r.lens);
         json["distance"] = r.distance;
@@ -178,6 +193,9 @@ void save_store() {
         json["invert"] = r.invert_y;
         json["recenter"] = r.recenter;
         json["hold"] = r.hold_height;
+        json["tilt"] = r.tilt;
+        json["stop_at_drops"] = r.stop_at_drops;
+        json["stick_clicks"] = s.settings.stick_clicks;
         json["hide_hud"] = s.settings.hide_hud;
         json["take_stick"] = s.settings.take_stick;
         json["last_mode"] = mode_name(s.last_mode);
@@ -194,6 +212,7 @@ void save_store() {
         look["grain"] = k.grain;
         look["date"] = k.date;
         look["viewfinder"] = k.viewfinder;
+        look["anywhere"] = k.anywhere;
         json["look"] = std::move(look);
         const auto directory = data_directory();
         if (directory.empty()) return;
@@ -391,6 +410,9 @@ void publish_view(State &s) {
     next->subject_name = s.subject_name;
     next->players = s.players;
     next->auto_angle = s.rig.angle_degrees();
+    next->planted = s.rig.planted();
+    next->at_edge = s.rig.at_edge();
+    next->camera_fov = s.camera_fov;
     next->rolling_since = s.rolling_since;
     next->slap_at = s.slap_at;
     next->slap_serial = s.slap_serial;
@@ -407,16 +429,42 @@ void set_status(State &s, std::string text) {
     say(logging::Level::info, "Filmer: " + s.status);
 }
 
-// The right stick and its click are the camera's while you film; nothing is taken otherwise.
+// The right stick and its click are the camera's while you film; following, the two stick clicks are
+// the filmer's (stop and film, slap). Nothing is taken otherwise.
 void update_filter(State &s) {
     const bool film = s.settings.mode == Mode::film && s.held && s.settings.take_stick;
+    const bool follow = s.settings.mode == Mode::follow && s.held && s.settings.stick_clicks;
     take_right_stick.store(film, std::memory_order_release);
-    masked_buttons.store(film ? right_thumb : std::uint16_t{0}, std::memory_order_release);
+    masked_buttons.store(film ? right_thumb : follow ? static_cast<std::uint16_t>(left_thumb | right_thumb) : std::uint16_t{0},
+                         std::memory_order_release);
     const bool wanted = s.settings.mode != Mode::off;
     if (wanted != s.filter_installed) {
         DingoSDKOverlaySetGamepadFilterSlot(filter_slot, wanted ? &filter_pad : nullptr);
         s.filter_installed = wanted;
     }
+}
+
+// The stick clicks: the right one slaps the lens (filming, or following with stick_clicks); the left
+// one, following, stops the filmer to film from where they stand, and sends them riding again.
+void read_clicks(State &s, std::uint16_t buttons) {
+    const auto pressed = [&](std::uint16_t button) { return (buttons & button) != 0 && (s.previous_buttons & button) == 0; };
+    const bool follow = s.settings.mode == Mode::follow && s.settings.stick_clicks;
+    if (s.held && pressed(right_thumb) && (s.settings.mode == Mode::film || follow)) s.last = slap(s);
+    if (s.held && follow && pressed(left_thumb)) {
+        s.rig.set_planted(!s.rig.planted());
+        s.last = s.rig.planted() ? "The filmer stops and films from here." : "The filmer rides with you again.";
+        s.view_due = true;
+    }
+    s.previous_buttons = buttons;
+}
+
+void read_follow_clicks(State &s) {
+    overlay::GamepadValues pad;
+    if (!DingoSDKOverlayReadGamepad(&pad)) {
+        s.previous_buttons = 0;
+        return;
+    }
+    read_clicks(s, pad.buttons);
 }
 
 StickInput read_stick(State &s) {
@@ -433,10 +481,7 @@ StickInput read_stick(State &s) {
         stick.x = x * scale;
         stick.y = y * scale;
     }
-    // The stick's click slaps the lens while you film.
-    const bool pressed = (pad.buttons & right_thumb) != 0, was = (s.previous_buttons & right_thumb) != 0;
-    s.previous_buttons = pad.buttons;
-    if (pressed && !was && s.settings.mode == Mode::film && s.held) s.last = slap(s);
+    read_clicks(s, pad.buttons);
     return stick;
 }
 
@@ -451,13 +496,31 @@ void release_camera(State &s, std::uintptr_t base, std::uintptr_t client, bool c
 }
 } // namespace
 
-void tick(std::uintptr_t base, std::uintptr_t client, bool ready, bool camera_phase) noexcept {
+void tick(std::uintptr_t base, std::uintptr_t client, bool ready, bool camera_phase, int game_state) noexcept {
     try {
         auto &s = state();
         if (!s.loaded) {
             load_store();
             s.view_due = true;
         }
+        if (!s.world_set) {
+            // The game's own collision (the Park Editor's ray, as the drone uses): the AI filmer rides
+            // real ground and stays out of walls.
+            s.rig.set_world([](const Vec3 &from, const Vec3 &to, Vec3 &hit) {
+                const auto found = local_surface_hit(from, to);
+                if (!found) return false;
+                hit = *found;
+                return true;
+            });
+            s.world_set = true;
+        }
+        // The game camera's own field of view, for the look drawn over a camera that is not the Filmer's.
+        if (!s.held)
+            if (const auto game = latest_game_view(std::chrono::milliseconds(1000)); game && game->vertical_fov > 10.0f && game->vertical_fov < 170.0f)
+                if (std::abs(game->vertical_fov - s.camera_fov) > 0.5f) {
+                    s.camera_fov = game->vertical_fov;
+                    s.view_due = true;
+                }
         const double t = now();
         const float dt = static_cast<float>(std::clamp(t - s.last_time, 0.0, 0.1));
         s.last_time = t;
@@ -482,7 +545,8 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready, bool camera_ph
             // Loading, a menu, a cutscene: the game's camera, until the skater is back.
             release_camera(s, base, client, camera_phase);
             s.rig.reset();
-            set_status(s, "Waiting for your skater.");
+            set_status(s, std::format("Waiting for your skater (game state {}{}).", game_state,
+                                      self.valid ? ", skater found but not in control" : ""));
         } else {
             Frame frame;
             std::string name;
@@ -498,7 +562,13 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready, bool camera_ph
                         name = "nobody (they left)";
                     }
                 }
+                read_follow_clicks(s);
                 if (subject.valid) frame = s.rig.follow(t, dt, subject, s.settings.rig);
+                if (s.rig.planted() != s.planted_shown || s.rig.at_edge() != s.edge_shown) {
+                    s.planted_shown = s.rig.planted();
+                    s.edge_shown = s.rig.at_edge();
+                    s.view_due = true;
+                }
             } else {
                 const multiplayer::FilmablePlayer *target{};
                 if (s.settings.target) target = find_player(s, s.settings.target);
@@ -525,7 +595,10 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready, bool camera_ph
                         s.rolling_since = t;
                         say(logging::Level::info, std::format("Filmer: rolling ({}).", mode_name(s.settings.mode)));
                     }
-                    set_status(s, std::string(s.settings.mode == Mode::follow ? "Filming " : "You film ") + name + ".");
+                    std::string where;
+                    if (s.settings.mode == Mode::follow && s.rig.planted()) where = " (stopped: click the left stick to ride again)";
+                    else if (s.settings.mode == Mode::follow && s.rig.at_edge()) where = " (stopped at the drop)";
+                    set_status(s, std::string(s.settings.mode == Mode::follow ? "Filming " : "You film ") + name + "." + where);
                 } else if (!detail.empty()) {
                     // Refused (another camera has the view, the camera phase is not here yet): try
                     // again shortly. Without a reason it was only busy this tick, and nothing changes.
@@ -621,12 +694,16 @@ std::string set_option(State &s, const std::string &key, const std::string &valu
         changed(s);
         return std::string("lens = ") + lens_name(r.lens);
     }
-    if (key == "distance") return real(r.distance, 0.8f, 6.0f);
-    if (key == "height") return real(r.height, 0.2f, 2.5f);
+    if (key == "distance") return real(r.distance, 0.6f, 6.0f);
+    if (key == "height") return real(r.height, 0.08f, 2.5f);
     if (key == "human") return real(r.human, 0.0f, 1.0f);
     if (key == "reaction") return real(r.reaction, 0.0f, 1.0f);
     if (key == "sensitivity") return real(r.sensitivity, 0.2f, 3.0f);
-    if (key == "hold") return real(r.hold_height, 0.3f, 1.8f);
+    if (key == "hold") return real(r.hold_height, 0.1f, 1.8f);
+    if (key == "tilt") return real(r.tilt, 0.0f, 1.0f);
+    if (key == "drops") return toggle(r.stop_at_drops);
+    if (key == "clicks") return toggle(s.settings.stick_clicks);
+    if (key == "anywhere") return toggle(k.anywhere);
     if (key == "assist") return toggle(r.assist);
     if (key == "invert") return toggle(r.invert_y);
     if (key == "recenter") return toggle(r.recenter);
@@ -696,6 +773,14 @@ std::string command(std::string_view verb, const std::vector<std::string> &argum
         s.view_due = true;
     } else if (verb == "set") {
         reply = arguments.size() >= 2 ? set_option(s, lower(arg(0)), arg(1)) : "error: filmer set <option> <value>.";
+    } else if (verb == "plant") {
+        if (s.settings.mode != Mode::follow) reply = "Only the AI filmer stops to film (filmer mode follow).";
+        else {
+            const auto wanted = lower(arg(0));
+            const bool plant = wanted == "on" || wanted == "1" ? true : wanted == "off" || wanted == "0" ? false : !s.rig.planted();
+            s.rig.set_planted(plant);
+            reply = plant ? "The filmer stops and films from here." : "The filmer rides with you again.";
+        }
     } else if (verb == "slap") {
         reply = slap(s);
     } else if (verb == "clips") {

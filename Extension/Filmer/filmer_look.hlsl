@@ -1,13 +1,19 @@
 // The Filmer's VX1000 look (filmer_look.cpp). Built into the DLL as text (cmake/UI.cmake) and compiled
 // when the overlay first draws it; the build checks it with fxc when the Windows SDK has one.
+//
+// Order, as on a real camcorder: the world through the MK1 (bend), a hand in front of the lens, the
+// camera's colour and iris, the hood's dark edge, then the electronics burn in the date and the
+// viewfinder text, and the tape softens, interlaces and adds grain to all of it.
 cbuffer Look : register(b0)
 {
-    float4 L0; // bend 0..1, half angle the bend covers at the frame's top edge (rad), tan(half the game's FOV), frame aspect
-    float4 L1; // source aspect, 4:3 bars, hood, seconds
+    float4 L0; // bend 0..1, half angle the bend covers at the frame's top edge (rad), tan(half the game's FOV), frame half width (half heights)
+    float4 L1; // screen aspect, 4:3 bars, hood, seconds
     float4 L2; // grade, scanlines, grain, softness
     float4 L3; // transfer (0 SDR), exposure, output width, output height
-    float4 L4; // hand centre x, y (half heights), hand angle (rad), hand on 0..1
-    float4 L5; // hand size, mirrored, source width, source height
+    float4 L4; // hand centre x, y (half heights, y down), angle (rad), size (0: no hand)
+    float4 L5; // hand mirrored, hand blur (hand units), unused, unused
+    float4 L6; // text pixel (half heights), text white, text on, unused
+    uint4 T[4]; // five lines of twelve characters, four to a uint: top left, top right, bottom left, bottom right x2
 };
 Texture2D source : register(t0);
 SamplerState linear_clamp : register(s0);
@@ -23,32 +29,120 @@ Interpolated vs_main(uint id : SV_VertexID)
     return o;
 }
 
-float hash(float2 p)
+// ---- the camcorder's character generator: 5x7, ASCII 32..95; '#' is the record dot, '[=]' the battery
+static const uint2 FONT[64] =
 {
-    p = frac(p * float2(443.897, 441.423));
-    p += dot(p, p.yx + 19.19);
-    return frac((p.x + p.y) * p.x);
+    uint2(0x00000000u, 0x0u), uint2(0x00000000u, 0x0u), uint2(0x00000000u, 0x0u), uint2(0x1dfffdc0u, 0x0u),
+    uint2(0x00000000u, 0x0u), uint2(0x00000000u, 0x0u), uint2(0x00000000u, 0x0u), uint2(0x00000000u, 0x0u),
+    uint2(0x00000000u, 0x0u), uint2(0x00000000u, 0x0u), uint2(0x00000000u, 0x0u), uint2(0x00000000u, 0x0u),
+    uint2(0x00000000u, 0x0u), uint2(0x000f8000u, 0x0u), uint2(0x8c000000u, 0x1u), uint2(0x42222210u, 0x0u),
+    uint2(0xa33ae62eu, 0x3u), uint2(0x884210c4u, 0x3u), uint2(0xc444422eu, 0x7u), uint2(0xa304111fu, 0x3u),
+    uint2(0x11f4a988u, 0x2u), uint2(0xa3083c3fu, 0x3u), uint2(0xa317844cu, 0x3u), uint2(0x8422221fu, 0x0u),
+    uint2(0xa317462eu, 0x3u), uint2(0x910f462eu, 0x1u), uint2(0x08401080u, 0x0u), uint2(0x00000000u, 0x0u),
+    uint2(0x00000000u, 0x0u), uint2(0x3fffffe0u, 0x0u), uint2(0x00000000u, 0x0u), uint2(0x00000000u, 0x0u),
+    uint2(0x00000000u, 0x0u), uint2(0x631fc62eu, 0x4u), uint2(0xe317c62fu, 0x3u), uint2(0xa210862eu, 0x3u),
+    uint2(0xd318c527u, 0x1u), uint2(0xc217843fu, 0x7u), uint2(0x4217843fu, 0x0u), uint2(0xa31e862eu, 0x7u),
+    uint2(0x631fc631u, 0x4u), uint2(0x8842108eu, 0x3u), uint2(0x9284211cu, 0x1u), uint2(0x52519531u, 0x4u),
+    uint2(0xc2108421u, 0x7u), uint2(0x631ad771u, 0x4u), uint2(0x639ace31u, 0x4u), uint2(0xa318c62eu, 0x3u),
+    uint2(0x4217c62fu, 0x0u), uint2(0x9358c62eu, 0x5u), uint2(0x5257c62fu, 0x4u), uint2(0xe107043eu, 0x3u),
+    uint2(0x0842109fu, 0x1u), uint2(0xa318c631u, 0x3u), uint2(0x1518c631u, 0x1u), uint2(0xab5ac631u, 0x2u),
+    uint2(0x62a22a31u, 0x4u), uint2(0x08422a31u, 0x1u), uint2(0xc222221fu, 0x7u), uint2(0xc210843fu, 0x7u),
+    uint2(0x00000000u, 0x0u), uint2(0xd18c610fu, 0x3u), uint2(0x00000000u, 0x0u), uint2(0x00000000u, 0x0u),
+};
+
+float glyph_bit(uint code, int fx, int fy)
+{
+    uint index = (code >= 32u && code < 96u) ? code - 32u : 0u;
+    uint bit = (uint)(fy * 5 + fx);
+    uint2 g = FONT[index];
+    return (float)(bit < 32u ? (g.x >> bit) & 1u : (g.y >> (bit - 32u)) & 1u);
 }
 
-float capsule(float2 p, float2 a, float2 b, float r)
+uint text_char(int line, int column)
+{
+    uint word = (uint)(line * 3 + (column >> 2));
+    uint4 v = T[word >> 2];
+    uint w = v[word & 3u];
+    return (w >> (8u * (uint)(column & 3))) & 0xffu;
+}
+
+// x: lit, y: the record dot (red).
+float2 text_at(float2 q)
+{
+    float gp = L6.x;
+    float left = -L0.w + 0.14, right = L0.w - 0.14 - 72.0 * gp;
+    float top = -0.88, bottom = 0.88 - 7.0 * gp;
+    int line = -1;
+    float2 origin = float2(0.0, 0.0);
+    if (q.y >= top && q.y < top + 7.0 * gp) { line = q.x < 0.0 ? 0 : 1; origin = float2(q.x < 0.0 ? left : right, top); }
+    else if (q.y >= bottom && q.y < bottom + 7.0 * gp) { line = q.x < 0.0 ? 2 : 4; origin = float2(q.x < 0.0 ? left : right, bottom); }
+    else if (q.x >= 0.0 && q.y >= bottom - 9.0 * gp && q.y < bottom - 2.0 * gp) { line = 3; origin = float2(right, bottom - 9.0 * gp); }
+    if (line < 0) return float2(0.0, 0.0);
+    float2 cell = (q - origin) / gp;
+    int column = (int)floor(cell.x / 6.0);
+    int fx = (int)floor(cell.x) - column * 6;
+    int fy = (int)floor(cell.y);
+    if (column < 0 || column >= 12 || fx < 0 || fx >= 5 || fy < 0 || fy >= 7) return float2(0.0, 0.0);
+    uint code = text_char(line, column);
+    float lit = glyph_bit(code, fx, fy);
+    return float2(lit, code == 35u ? lit : 0.0);
+}
+
+// Premultiplied white (or red) text with the dark edge the camcorder gives it.
+float4 text_sample(float2 q)
+{
+    float2 f = text_at(q);
+    float shadow = text_at(q - L6.x * 0.9).x * 0.75 * (1.0 - f.x);
+    float3 tint = f.y > 0.5 ? float3(0.95, 0.12, 0.08) : float3(1.0, 1.0, 1.0);
+    return float4(tint * L6.y * f.x, f.x + shadow);
+}
+
+// ---- a hand right in front of the lens: palm towards it, fingers up (hand units: about a palm wide)
+float capsule(float2 p, float2 a, float2 b, float r, out float along)
 {
     float2 pa = p - a, ba = b - a;
-    float h = saturate(dot(pa, ba) / dot(ba, ba));
-    return length(pa - ba * h) - r;
+    along = saturate(dot(pa, ba) / dot(ba, ba));
+    return length(pa - ba * along) - r;
 }
-
-// A hand right against the lens: palm, four fingers and a thumb, far too close to be in focus.
-float hand_distance(float2 p)
+float rounded_box(float2 p, float2 centre, float2 half_size, float r)
 {
-    float palm = length((p - float2(0.0, -0.25)) / float2(0.58, 0.68)) - 1.0;
-    palm *= 0.6;
-    float d = palm;
-    d = min(d, capsule(p, float2(-0.36, 0.25), float2(-0.42, 1.05), 0.12));
-    d = min(d, capsule(p, float2(-0.12, 0.30), float2(-0.13, 1.25), 0.13));
-    d = min(d, capsule(p, float2(0.12, 0.30), float2(0.14, 1.20), 0.13));
-    d = min(d, capsule(p, float2(0.35, 0.22), float2(0.44, 0.95), 0.11));
-    d = min(d, capsule(p, float2(-0.50, -0.35), float2(-1.00, 0.10), 0.14));
-    return d;
+    float2 d = abs(p - centre) - half_size + r;
+    return length(max(d, 0.0)) + min(max(d.x, d.y), 0.0) - r;
+}
+float sq(float x) { return x * x; }
+float smooth_min(float a, float b, float k)
+{
+    float h = saturate(0.5 + 0.5 * (b - a) / k);
+    return lerp(b, a, h) - k * h * (1.0 - h);
+}
+// x: distance (negative inside), y: creases (finger joints, palm lines)
+float2 hand(float2 p)
+{
+    float d = rounded_box(p, float2(0.0, -0.16), float2(0.34, 0.37), 0.14);
+    float4 fa = float4(-0.25, -0.085, 0.085, 0.24), fay = float4(0.16, 0.20, 0.20, 0.15);
+    float4 fb = float4(-0.33, -0.11, 0.10, 0.33), fby = float4(0.80, 0.93, 0.89, 0.70);
+    float4 fr = float4(0.082, 0.088, 0.087, 0.074);
+    float fingers = 9.0, crease = 0.0;
+    [unroll] for (int i = 0; i < 4; ++i)
+    {
+        float along;
+        float f = capsule(p, float2(fa[i], fay[i]), float2(fb[i], fby[i]), fr[i], along);
+        float c = exp(-sq((along - 0.36) / 0.035)) + exp(-sq((along - 0.66) / 0.035));
+        if (f < fingers) { fingers = f; crease = c; }
+    }
+    float along_thumb;
+    float thumb = min(capsule(p, float2(-0.30, -0.38), float2(-0.55, -0.08), 0.105, along_thumb),
+                      capsule(p, float2(-0.55, -0.08), float2(-0.70, 0.18), 0.09, along_thumb));
+    d = smooth_min(d, fingers, 0.05);
+    d = smooth_min(d, thumb, 0.06);
+    crease = fingers <= d + 0.02 ? crease : 0.0;
+    if (d < 0.0 && fingers > 0.01)
+    {
+        float l1 = abs(length(p - float2(-0.05, 0.55)) - 0.62);
+        float l2 = abs(length(p - float2(-0.45, -0.05)) - 0.42);
+        crease += exp(-sq(l1 / 0.02)) * 0.6 + exp(-sq(l2 / 0.02)) * 0.5;
+    }
+    return float2(d, crease);
 }
 
 float3 fetch(float2 uv)
@@ -58,12 +152,13 @@ float3 fetch(float2 uv)
 
 float4 ps_main(Interpolated i) : SV_Target
 {
-    float screen_aspect = L3.z / max(L3.w, 1.0);
+    float screen_aspect = L1.x;
     float2 c = i.uv * 2.0 - 1.0;
     float2 q = float2(c.x * screen_aspect, c.y);
     // 4:3: black at the sides.
     if (L1.y > 0.5 && abs(q.x) > L0.w)
         return float4(0.0, 0.0, 0.0, 1.0);
+    bool sdr = L3.x < 0.5;
     // The bend: the MK1 squeezes a wide view into the frame. A point at radius r (half heights) sees
     // the direction r * the half angle off the axis; the game drew that direction at tan(angle) / tan(FOV / 2).
     float r = length(q);
@@ -75,41 +170,71 @@ float4 ps_main(Interpolated i) : SV_Target
         rs = lerp(r, tan(theta) / L0.z, L0.x);
     }
     float2 s = along * rs;
-    float2 uv = float2(s.x / L1.x, s.y) * 0.5 + 0.5;
+    float2 uv = float2(s.x / screen_aspect, s.y) * 0.5 + 0.5;
     float2 inside = min(uv, 1.0 - uv);
     float margin = min(inside.x, inside.y);
-    if (margin < 0.0)
-        return float4(0.0, 0.0, 0.0, 1.0);
-    float2 texel = 1.0 / max(L5.zw, 1.0);
-    // Standard definition: a few hundred lines, soft, with the camcorder's sharpening halo.
-    float sd = max(L5.w / 480.0, 1.0);
-    float3 colour;
-    if (L2.w > 0.5)
+    float2 texel = 1.0 / max(L3.zw, 1.0);
+    float sd = max(L3.w / 480.0, 1.0); // standard definition: a few hundred lines
+    float3 colour = float3(0.0, 0.0, 0.0);
+    if (margin >= 0.0)
     {
-        float2 close_tap = texel * sd * 0.6;
-        float2 wide = texel * sd * 1.8;
-        float3 soft = (fetch(uv + float2(close_tap.x, 0)) + fetch(uv - float2(close_tap.x, 0)) + fetch(uv + float2(0, close_tap.y)) + fetch(uv - float2(0, close_tap.y))) * 0.25;
-        float3 blur = (fetch(uv + float2(wide.x, wide.y)) + fetch(uv + float2(-wide.x, wide.y)) + fetch(uv + float2(wide.x, -wide.y)) + fetch(uv - wide)) * 0.25;
-        colour = soft + (soft - blur) * 0.55;
-        // Colour bleeds sideways on tape: the chroma comes from a little to the right.
-        float3 right = fetch(uv + float2(texel.x * sd * 2.5, 0.0));
-        float3 weights = float3(0.299, 0.587, 0.114);
-        float luma = dot(colour, weights);
-        float3 chroma = lerp(colour, right, 0.5) - dot(lerp(colour, right, 0.5), weights);
-        colour = luma + chroma;
+        if (L2.w > 0.5)
+        {
+            // Soft, with the camcorder's sharpening halo; colour bleeds sideways on tape.
+            float2 close_tap = texel * sd * 0.6;
+            float2 wide = texel * sd * 1.8;
+            float3 soft = (fetch(uv + float2(close_tap.x, 0)) + fetch(uv - float2(close_tap.x, 0)) + fetch(uv + float2(0, close_tap.y)) + fetch(uv - float2(0, close_tap.y))) * 0.25;
+            float3 blur = (fetch(uv + float2(wide.x, wide.y)) + fetch(uv + float2(-wide.x, wide.y)) + fetch(uv + float2(wide.x, -wide.y)) + fetch(uv - wide)) * 0.25;
+            colour = soft + (soft - blur) * 0.55;
+            float3 right = fetch(uv + float2(texel.x * sd * 2.5, 0.0));
+            float3 weights = float3(0.299, 0.587, 0.114);
+            float luma = dot(colour, weights);
+            float3 mixed = lerp(colour, right, 0.5);
+            colour = luma + (mixed - dot(mixed, weights));
+        }
+        else
+        {
+            colour = fetch(uv);
+        }
     }
-    else
+    // The hand in front of the lens: lit by the scene, then dark and glowing red through the skin
+    // once it is pressed over the glass.
+    if (L4.w > 0.0)
     {
-        colour = fetch(uv);
+        float2 p = q - L4.xy;
+        p.x *= L5.x > 0.5 ? -1.0 : 1.0;
+        float ca = cos(-L4.z), sa = sin(-L4.z);
+        p = float2(p.x * ca - p.y * sa, p.x * sa + p.y * ca) / L4.w;
+        p.y = -p.y; // the picture's y runs down; the fingers point up
+        float2 h = hand(p);
+        float blur = 0.012 + L5.y;
+        float cover = 1.0 - smoothstep(-blur, blur, h.x);
+        if (cover > 0.0)
+        {
+            const float e = 0.004;
+            float2 gradient = float2(hand(p + float2(e, 0.0)).x - h.x, hand(p + float2(0.0, e)).x - h.x) / e;
+            float depth = saturate(-h.x / 0.1);
+            float3 n = normalize(float3(gradient * (1.0 - depth), sqrt(saturate(1.0 - (1.0 - depth) * (1.0 - depth))) * 0.9 + 0.1));
+            float3 light = normalize(float3(-0.35, 0.55, 0.76));
+            float3 weights = float3(0.299, 0.587, 0.114);
+            float ambient = (dot(fetch(float2(0.5, 0.5)), weights) + dot(fetch(float2(0.25, 0.3)), weights) + dot(fetch(float2(0.75, 0.3)), weights) +
+                             dot(fetch(float2(0.25, 0.75)), weights) + dot(fetch(float2(0.75, 0.75)), weights)) * 0.2;
+            float3 skin = float3(0.80, 0.58, 0.47) * (0.35 + 0.85 * saturate(dot(n, light))) * (0.5 + ambient) * (1.0 - 0.22 * saturate(h.y));
+            float pressed = saturate((L4.w - 2.6) / 1.4);
+            float glow = exp(-abs(h.x) * 14.0);
+            float3 dark = float3(0.05, 0.02, 0.015) + float3(0.5, 0.1, 0.04) * glow * 0.6;
+            skin = lerp(skin, dark, pressed);
+            if (!sdr)
+                skin *= 0.5;
+            colour = lerp(colour, skin, cover);
+        }
     }
-    bool sdr = L3.x < 0.5;
     if (sdr && L2.x > 0.5)
     {
         // The VX's colour: saturated, contrasty, warm, blacks a touch crushed.
         colour = saturate(colour);
         float luma = dot(colour, float3(0.299, 0.587, 0.114));
-        colour = lerp(luma.xxx, colour, 1.2);
-        colour = saturate(colour);
+        colour = saturate(lerp(luma.xxx, colour, 1.2));
         float3 curve = colour * colour * (3.0 - 2.0 * colour);
         colour = lerp(colour, curve, 0.4);
         colour *= float3(1.05, 1.01, 0.93);
@@ -124,6 +249,32 @@ float4 ps_main(Interpolated i) : SV_Target
         float falloff = 1.0 - 0.4 * smoothstep(0.75, 1.85, r * (L0.x > 0.0 ? 1.0 : 0.85));
         colour *= edge * falloff;
     }
+    else if (margin < 0.0)
+    {
+        colour = float3(0.0, 0.0, 0.0);
+    }
+    // The date and the viewfinder: burnt in by the electronics, so straight (no bend) and over the
+    // hood, but softened by the tape like everything else.
+    if (L6.z > 0.5 && abs(q.y) > 0.88 - 18.0 * L6.x)
+    {
+        float4 text;
+        if (L2.w > 0.5)
+        {
+            float px = 2.0 / max(L3.w, 1.0) * sd;
+            float4 near_taps = (text_sample(q + float2(px * 0.6, 0.0)) + text_sample(q - float2(px * 0.6, 0.0)) +
+                                text_sample(q + float2(0.0, px * 0.6)) + text_sample(q - float2(0.0, px * 0.6))) * 0.25;
+            float4 wide_taps = (text_sample(q + px * 1.8) + text_sample(q - px * 1.8) +
+                                text_sample(q + float2(px * 1.8, -px * 1.8)) + text_sample(q + float2(-px * 1.8, px * 1.8))) * 0.25;
+            text = near_taps + (near_taps - wide_taps) * 0.55;
+            text.a = saturate(text.a);
+            text.rgb = max(text.rgb, 0.0);
+        }
+        else
+        {
+            text = text_sample(q);
+        }
+        colour = colour * (1.0 - text.a) + text.rgb;
+    }
     // Interlaced fields: every other line a little darker.
     if (L2.y > 0.5)
     {
@@ -132,25 +283,8 @@ float4 ps_main(Interpolated i) : SV_Target
     }
     if (sdr && L2.z > 0.5)
     {
-        float n = hash(floor(i.uv * float2(720.0, 480.0)) + frac(L1.w * 37.0) * 91.0) - 0.5;
+        float n = frac(sin(dot(floor(i.uv * float2(720.0, 480.0)) + frac(L1.w * 37.0) * 91.0, float2(12.9898, 78.233))) * 43758.5453) - 0.5;
         colour += n * 0.045;
-    }
-    // The hand over the lens.
-    if (L4.w > 0.0)
-    {
-        float2 p = q - L4.xy;
-        p.x *= L5.y > 0.5 ? -1.0 : 1.0;
-        float ca = cos(-L4.z), sa = sin(-L4.z);
-        p = float2(p.x * ca - p.y * sa, p.x * sa + p.y * ca) / max(L5.x, 0.1);
-        p.y = -p.y; // the picture's y runs down; the fingers point up
-        float d = hand_distance(p);
-        float cover = 1.0 - smoothstep(-0.12, 0.12, d);
-        // Light comes through the skin at the edges and between the fingers: a red glow.
-        float glow = exp(-abs(d) * 7.0) * (1.0 - cover * 0.6);
-        float3 skin = float3(0.035, 0.022, 0.018) + float3(0.55, 0.12, 0.05) * glow * 0.6;
-        if (!sdr)
-            skin *= 0.5;
-        colour = lerp(colour, skin, saturate(cover * L4.w + glow * 0.25 * L4.w));
     }
     return float4(colour, 1.0);
 }
