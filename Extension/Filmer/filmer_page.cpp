@@ -106,9 +106,13 @@ void filmer_page(SkateMenu &menu, const Model &, const CallbacksV3 &callbacks) {
         int style = static_cast<int>(r.style);
         if (choice(menu, "style", style, {"Auto", "Behind", "Side", "Ahead"}))
             filmer_command(menu, callbacks, std::string("set style ") + filmer::style_name(static_cast<filmer::Style>(style)));
+        field(menu, "Side", "Which side of you the AI filmer keeps to. Auto: wherever they happen to be.");
+        int side = static_cast<int>(r.side);
+        if (choice(menu, "side", side, {"Auto", "Left", "Right"}))
+            filmer_command(menu, callbacks, std::string("set side ") + (side == 1 ? "left" : side == 2 ? "right" : "auto"));
         filmer_slider(menu, callbacks, "Distance", "How close they ride (metres; the long lens rides about 3x further).", "distance", r.distance, 0.6f, 6.0f, "%.1f m");
         filmer_slider(menu, callbacks, "Camera height", "Above the ground. About a foot (0.3 m) is the classic fisheye angle; the board-level shots go lower.", "height", r.height, 0.08f, 2.5f, "%.2f m");
-        filmer_toggle(menu, callbacks, "Lunge", "Fisheye: the moment you pop, the filmer pushes in close and low under the trick, then pulls back as you land.", "lunge", r.lunge, r.lens == filmer::Lens::fisheye);
+        filmer_toggle(menu, callbacks, "Lunge", "Fisheye, flatground tricks only: as you pop, the filmer pushes in a little closer and lower, then eases back out as you land.", "lunge", r.lunge, r.lens == filmer::Lens::fisheye);
         filmer_toggle(menu, callbacks, "Stop at drops", "The filmer only rides where you rolled: at a set or a gap you jumped they stop at the edge, film you land and ride away, then catch up.", "drops", r.stop_at_drops);
         filmer_toggle(menu, callbacks, "Stick clicks", "While the AI films: click the left stick to have them stop and film from where they are (again to ride on), the right stick to slap the lens. The game does not get those clicks while this is on.", "clicks", s.stick_clicks);
         if (s.mode == filmer::Mode::follow && primary_button(menu, v.planted ? "RIDE AGAIN" : "STOP AND FILM FROM HERE", v.active))

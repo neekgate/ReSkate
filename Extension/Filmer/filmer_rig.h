@@ -26,6 +26,8 @@ enum class Mode : std::uint8_t { off, follow, film };
 // Where the AI filmer rides relative to the skater. Auto moves between the others the way a filmer
 // picks angles through a line.
 enum class Style : std::uint8_t { automatic, behind, side, ahead };
+// Which side of the skater the AI filmer keeps to (auto: wherever they happen to be).
+enum class Side : std::uint8_t { automatic, left, right };
 // fisheye: a Century MK1 on the VX, ridden close. long_lens: the VX's own lens from further away.
 enum class Lens : std::uint8_t { fisheye, long_lens };
 // The lens slap that marks a clip: how long it takes (seconds), and when the palm hits the glass.
@@ -33,6 +35,7 @@ constexpr double slap_duration = 0.6, slap_contact = 0.13;
 
 struct RigSettings {
     Style style = Style::automatic;
+    Side side = Side::automatic;
     Lens lens = Lens::fisheye;
     float distance = 1.8f;  // metres from the skater with the fisheye (the long lens rides about 3x as far)
     float height = 0.3f;    // camera above the ground: about a foot, the classic fisheye angle
@@ -110,8 +113,15 @@ private:
         double last_seen{};
     };
     // Where the skater has been, at their feet. `air`: they were in the air there (a gap, a set, an
-    // ollie); `takeoff` the ground they left from.
-    struct TrailPoint { Vec3 at{}; bool air{}; float takeoff{}; };
+    // ollie); `takeoff` the ground they left from. `id` counts up for as long as the trail is kept.
+    struct TrailPoint { Vec3 at{}; bool air{}; float takeoff{}; std::uint64_t id{}; };
+    // Walking the trail from where the filmer is towards where they want to be: the level they stay
+    // at (they ride slopes and banks, not up onto ledges), and where they must stop (a drop, a gap,
+    // or a jump you have not landed yet).
+    struct Walk { std::size_t reach{}; float level{}; bool edge{}, hold{}; };
+    Walk walk(std::size_t from, std::size_t to, float level, bool stop_at_drops) const;
+    std::optional<std::size_t> trail_index_near(float x, float z, float within) const;
+    std::size_t trail_index_back(float arc) const;
     struct Aim {
         float yaw{}, pitch{}, yaw_rate{}, pitch_rate{};
         bool have{};
@@ -150,7 +160,14 @@ private:
     float last_operator_yaw_{}, lean_{};
     float operator_ground_{};       // the ground under the filmer (probed)
     float lunge_{}, lunge_rate_{};  // 0..1: how far into a lunge under an air
-    bool planted_{}, edge_{};
+    float side_lock_{};             // +1 the skater's left, -1 their right, 0 either
+    bool planted_{}, edge_{}, holding_{};
+    float level_{};                 // the ground level the filmer rides at
+    std::size_t last_index_{};      // the trail point nearest the filmer, last tick
+    Vec3 edge_point_{}, edge_dir_{0, 0, 1}; // where the filmer stopped, and which way is over it
+    std::uint64_t next_trail_id_{};
+    bool flat_air_{};               // the jump in progress is a flatground trick (the lunge)
+    float takeoff_height_{};
     double edge_since_{}, landed_since_{}, unseen_since_{-1.0};
     // Auto: the angle ridden round the skater (radians) and the one being moved to.
     float angle_{}, angle_target_{}, angle_rate_{};

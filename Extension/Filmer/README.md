@@ -6,11 +6,14 @@ skate. filmed the way a skater with a VX1000 films a line.
 
 - **AI filmer** (`filmer mode follow`): a virtual filmer rides with a skater and films them while
   you play normally. It rides the trail the skater left, checking every step against the game's
-  own collision: real ground under it, no walls, nothing a board would not roll over. Where you
-  flew (a set, a gap) it stops at the edge, films you land and ride away, then cuts back in behind
-  you. It pushes to keep up, picks angles through a line (Auto), keeps your board in frame (Tilt),
+  own collision: real ground under it, no walls, nothing a board would not roll over. It stays at
+  the level it rides at: up banks and slopes with you, but alongside a ledge or rail rather than up
+  on it. Where you came down from its level in one go (a set, a drop) or jumped a gap, it stops at
+  the edge, films you land and ride away, and cuts back in behind you once you are 25 m off. This
+  goes by your trail, so it works even where the game's collision gives no answer. It pushes to keep up, picks angles through a line (Auto), keeps your board in frame (Tilt),
   and points the camera like a person: a beat late, a loose frame, a hand that is never still, but
-  it whips back before a trick leaves the frame. Film yourself, or anyone in the session
+  it whips back before a trick leaves the frame. It keeps to whichever side you choose (Side: Auto,
+  Left, Right, or a bindable swap). Film yourself, or anyone in the session
   (`filmer subject <name>`). Click the left stick to have it stop and film from where it is (again
   to ride on); click the right stick to slap the lens.
 - **You film** (`filmer mode film`): your skater is the filmer. The left stick rides; the right
