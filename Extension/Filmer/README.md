@@ -14,8 +14,9 @@ skate. filmed the way a skater with a VX1000 films a line.
   and points the camera like a person: a beat late, a loose frame, a hand that is never still, but
   it whips back before a trick leaves the frame. It keeps to whichever side you choose (Side: Auto,
   Left, Right, or a bindable swap). Film yourself, or anyone in the session
-  (`filmer subject <name>`). Click the left stick to have it stop and film from where it is (again
-  to ride on); click the right stick to slap the lens.
+  (`filmer subject <name>`). Click the left stick to have it stop and hold the camera on the framing
+  it has (a locked-off shot: it no longer turns to follow you; again to ride on); click the right stick
+  to slap the lens.
 - **You film** (`filmer mode film`): your skater is the filmer. The left stick rides; the right
   stick points the camera (the game stops seeing it, so no flicks while you film). The aim assist
   keeps a friend in frame (the closest one ahead, or `filmer target <name>`) and the stick shifts
@@ -64,6 +65,7 @@ Filmer's own camera does not run in replays yet.
 | `filmer plant [on\|off]` | The AI filmer stops and films from where it is, or rides again |
 | `filmer slap` | End the clip |
 | `filmer clips` | This session's clips |
+| `filmer trace` | Records what the filmer sees for 30 seconds to `%LOCALAPPDATA%\ReSkate\filmer\trace.csv` (for tuning) |
 | `filmer status`, `filmer reset` | |
 
 Settings are kept in `%LOCALAPPDATA%\ReSkate\filmer\filmer.json`.

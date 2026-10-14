@@ -11,6 +11,7 @@
 #include <array>
 #include <cstdint>
 #include <deque>
+#include <vector>
 #include <functional>
 #include <optional>
 #include <random>
@@ -39,7 +40,7 @@ struct RigSettings {
     Side side = Side::automatic;
     Lens lens = Lens::fisheye;
     float distance = 1.8f;  // metres from the skater with the fisheye (the long lens rides about 3x as far)
-    float height = 0.3f;    // camera above the ground: about a foot, the classic fisheye angle
+    float height = 0.15f;   // camera above the ground: down by the board, the classic fisheye angle
     float tilt = 0.5f;      // framing: 0 the board near the centre, 1 the board low in the frame (more skater)
     bool stop_at_drops = true; // the filmer stops at the top of a set or a gap you jumped, and films from there
     bool lunge = true;      // fisheye: on an air the filmer pushes in close and low under the trick, then pulls back
@@ -50,7 +51,7 @@ struct RigSettings {
     float sensitivity = 1.0f;
     bool invert_y = false;
     bool recenter = false;  // without assist, the aim drifts back ahead when the stick is let go
-    float hold_height = 0.45f; // camera above your own skater's feet: held low, out at arm's length
+    float hold_height = 0.2f;  // camera above the ground under you: held low by the board, out at arm's length
 };
 
 // One skater as the rig sees it.
@@ -91,6 +92,17 @@ public:
     bool planted() const noexcept { return planted_; }
     // follow: stopped at the top of a drop you went over (stop_at_drops).
     bool at_edge() const noexcept { return edge_; }
+    // What the operator is working from, for `filmer trace`.
+    struct Debug {
+        Vec3 subject{}, operator_at{};
+        float ground{}, floor{}, level{}, root_above_ground{}, sample_interval{}, aim_yaw{}, aim_pitch{};
+        bool world{}, root_known{}, airborne{}, edge{}, hold{}, planted{};
+    };
+    Debug debug() const noexcept {
+        return {subject_.position, operator_, operator_ground_, operator_floor_, level_, root_above_ground_,
+                static_cast<float>(subject_.interval), aim_.yaw, aim_.pitch, world_answers(), root_known_,
+                subject_.airborne, edge_, holding_, planted_};
+    }
     // Forget everything: the next frame starts the filmer afresh behind the skater.
     void reset() noexcept;
     // AI filmer on `subject`. `now` in seconds on any steady clock, `dt` the seconds since the last call.
@@ -112,6 +124,11 @@ private:
         bool airborne{};
         double air_since{};
         double last_seen{};
+        // The game's samples of the skater as they arrived: it can hand over the same position for a
+        // frame or two (its physics steps slower than the picture). Between them the skater is
+        // placed as the game draws them, so nothing steps.
+        std::deque<std::pair<double, Vec3>> samples;
+        double interval{1.0 / 60.0};
     };
     // Where the skater has been, at their feet. `air`: they were in the air there (a gap, a set, an
     // ollie); `takeoff` the ground they left from. `id` counts up for as long as the trail is kept.
@@ -133,7 +150,8 @@ private:
     };
     struct Delayed { double time{}; Vec3 point{}; };
 
-    void track(double now, float dt, const Subject &subject, Tracked &tracked, bool own_trail);
+    void track(double now, float dt, const Subject &subject, Tracked &tracked, bool own_trail, bool learn_root);
+    void learn_root(float dt, const Vec3 &root);
     std::optional<float> ground_at(float x, float z, float near_y) const;
     bool blocked(const Vec3 &from, const Vec3 &to, Vec3 *hit = nullptr) const;
     const TrailPoint *nearest_trail(float x, float z, float within) const;
@@ -159,8 +177,17 @@ private:
     // The skater's position is their body's root, a little above the ground the game reports under
     // them. Heights from the trail are in the first, heights from the game in the second: this is
     // the difference, measured as they ride.
+    // Learnt from a run of probes (the median), then only nudged by answers near it, so a rail or a
+    // ledge under the skater never moves it.
     float root_above_ground_{};
+    bool root_known_{};
+    std::vector<float> root_samples_;
     float world(float trail_y) const noexcept { return trail_y - root_above_ground_; }
+    // How often the game answers when asked for the ground (eased). Next to never: its collision is
+    // not there (not loaded, or not reachable), so the ground is taken as level and the trail decides.
+    mutable float ground_answers_{1.0f};
+    mutable unsigned ground_asked_{};
+    bool world_answers() const noexcept { return ground_asked_ < 40 || ground_answers_ > 0.1f; }
     float side_keep_{1.0f};         // how much of the side offset is used, eased (never jumps)
     float raised_offset_{};         // the side offset in use, eased (beside a ledge or a planter it grows)
     std::mt19937 random_;
@@ -174,6 +201,7 @@ private:
     float operator_height_{}, operator_height_rate_{};
     float last_operator_yaw_{}, lean_{};
     float operator_ground_{};       // the ground under the filmer (probed)
+    float operator_floor_{};        // the same, eased: a one-tick odd answer never lifts the camera
     float lunge_{}, lunge_rate_{};  // 0..1: how far into a lunge under an air
     float side_lock_{};             // +1 the skater's left, -1 their right, 0 either
     bool planted_{}, edge_{}, holding_{};
