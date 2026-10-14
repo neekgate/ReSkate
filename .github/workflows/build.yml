@@ -28,9 +28,14 @@ jobs:
       # Files unchanged since the cached build get an old timestamp; changed ones stay new.
       - name: Keep unchanged files older than the cached build
         run: |
-          $stamp = 'build/vs2022-x64/.cached-sha'
-          if (-not (Test-Path $stamp)) { Write-Output 'No cached build: full build.'; exit 0 }
-          $old = (Get-Content $stamp).Trim()
+          # .built-sha: the last commit that built successfully. Older caches only have .cached-sha,
+          # which was also written by failed builds: step back a few commits from it to be safe.
+          $stamp = 'build/vs2022-x64/.built-sha'
+          $legacy = 'build/vs2022-x64/.cached-sha'
+          if (Test-Path $stamp) { $old = (Get-Content $stamp).Trim() }
+          elseif (Test-Path $legacy) { $old = (git rev-parse "$((Get-Content $legacy).Trim())~3" 2>$null) }
+          else { Write-Output 'No cached build: full build.'; exit 0 }
+          if (-not $old) { Write-Output 'Cached commit not usable: full build.'; Remove-Item -Recurse -Force build/vs2022-x64; exit 0 }
           git cat-file -e "$old^{commit}" 2>$null
           if ($LASTEXITCODE -ne 0) { Write-Output "Cached commit $old not in history: full build."; Remove-Item -Recurse -Force build/vs2022-x64; exit 0 }
           $changed = @{}
@@ -53,7 +58,9 @@ jobs:
         run: |
           cmake --build --preset release --parallel 4 --target dingosdk_launcher dingosdk_runtime dingosdk_drone_radio_tests dingosdk_multiplayer_tests *>&1 | Tee-Object -FilePath build.log
           $code = $LASTEXITCODE
-          Set-Content -Path build/vs2022-x64/.cached-sha -Value (git rev-parse HEAD)
+          # Only a successful build marks its commit as built: after a failed one, everything changed
+          # since the last good build is compiled again, not only what the fix touched.
+          if ($code -eq 0) { Set-Content -Path build/vs2022-x64/.built-sha -Value (git rev-parse HEAD) }
           if ($code -ne 0) {
             $errors = (Select-String -Path build.log -Pattern ' error | error [A-Z]*[0-9]+:' | Select-Object -First 40 | ForEach-Object { $_.Line }) -join '%0A'
             Write-Output "::error::$errors"
