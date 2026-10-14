@@ -94,6 +94,74 @@ void Rig::reset() noexcept {
     angle_until_ = 0;
     offset_yaw_ = offset_pitch_ = 0;
     pushing_ = false;
+    planted_ = edge_ = false;
+    unseen_since_ = -1.0;
+}
+
+void Rig::set_planted(bool planted) noexcept {
+    if (planted_ && !planted && operator_have_) {
+        // Riding again: from far off the filmer cuts to a new spot behind you instead of a long chase.
+        const float away = flat_length(sub(subject_.position, operator_));
+        if (away > 12.0f) operator_have_ = false;
+    }
+    planted_ = planted;
+    edge_ = false;
+}
+
+std::optional<float> Rig::ground_at(float x, float z, float near_y) const {
+    if (!cast_) return std::nullopt;
+    Vec3 hit{};
+    if (cast_(Vec3{x, near_y + 0.9f, z}, Vec3{x, near_y - 6.0f, z}, hit) && std::isfinite(hit[1])) return hit[1];
+    return std::nullopt;
+}
+
+bool Rig::blocked(const Vec3 &from, const Vec3 &to, Vec3 *hit) const {
+    if (!cast_) return false;
+    Vec3 found{};
+    if (!cast_(from, to, found)) return false;
+    if (hit) *hit = found;
+    return true;
+}
+
+const Rig::TrailPoint *Rig::nearest_trail(float x, float z, float within) const {
+    const TrailPoint *best{};
+    float best_distance = within * within;
+    for (const auto &point : trail_) {
+        const float dx = point.at[0] - x, dz = point.at[2] - z, d = dx * dx + dz * dz;
+        if (d < best_distance) {
+            best_distance = d;
+            best = &point;
+        }
+    }
+    return best;
+}
+
+// Whether a filmer on a board could roll from where they are to `to` (with ground at `to_ground`):
+// not up onto anything a board will not roll up, and, with stop_at_drops, not off a drop or over a
+// stretch you flew over (a set, a gap): there they stop at the edge and film.
+bool Rig::step_allowed(const Vec3 &to, float to_ground, bool stop_at_drops) const {
+    const float rise = to_ground - operator_ground_;
+    if (rise > 0.3f) return false;
+    if (!stop_at_drops) return true;
+    if (rise < -0.45f) return false;
+    if (const auto *point = nearest_trail(to[0], to[2], 2.0f); point && point->air && std::abs(to_ground - point->takeoff) > 0.25f)
+        return false;
+    return true;
+}
+
+// The vertical half of the view (radians): the fisheye's frame edge sees half the game camera's FOV.
+float Rig::half_view(const RigSettings &s) const { return render_fov(s.lens) * 0.5f * degrees; }
+
+// The pitch that frames a skater standing at `root` (their feet) from `eye`: the board at a fixed
+// place below the centre (tilt), raised if their head would be cut, but never so far the board leaves.
+float Rig::frame_pitch(const Vec3 &eye, const Vec3 &root, bool, float, const RigSettings &s) const {
+    const float horizontal = std::max(flat_length(sub(root, eye)), 0.3f);
+    const float feet = std::atan2(root[1] + 0.05f - eye[1], horizontal);
+    const float head = std::atan2(root[1] + 1.7f - eye[1], horizontal);
+    const float view = half_view(s);
+    float pitch = feet + mix(0.15f, 0.75f, std::clamp(s.tilt, 0.0f, 1.0f)) * view;
+    pitch = std::max(pitch, head - 0.88f * view);
+    return std::min(pitch, feet + 0.82f * view);
 }
 
 void Rig::slap(double now) noexcept {
@@ -164,9 +232,10 @@ void Rig::track(double now, float dt, const Subject &subject, Tracked &t, bool o
     if (own_trail) {
         const Vec3 foot{p[0], t.ground, p[2]};
         if (trail_.empty() || flat_length(sub(foot, trail_.back().at)) > 0.12f) {
-            trail_.push_back({foot});
+            trail_.push_back({foot, t.airborne, t.ground});
             while (trail_.size() > 600) trail_.pop_front();
         }
+        if (t.airborne) landed_since_ = now;
     }
 }
 
@@ -209,18 +278,14 @@ void Rig::choose_angle(double now, float speed) {
 
 // Where in the skater the filmer points: low on the body with the fisheye (feet and board in frame),
 // a little ahead of where they are going; higher and further ahead through an air.
-Vec3 Rig::aim_point(const Tracked &t, const RigSettings &s) const {
-    const bool fish = s.lens == Lens::fisheye;
-    float height = fish ? 0.62f : 0.85f;
-    float lead = 0.12f;
-    if (t.airborne) {
-        height += 0.25f;
-        lead = 0.16f;
-    }
+// Where the filmer is looking: the skater's feet, a little ahead of where they are going (further ahead
+// through an air). The height of the frame comes from frame_pitch.
+Vec3 Rig::aim_point(const Tracked &t, const RigSettings &) const {
+    const float lead = t.airborne ? 0.16f : 0.12f;
     Vec3 point = t.position;
     point[0] += t.velocity[0] * lead;
     point[2] += t.velocity[2] * lead;
-    point[1] += height + (t.airborne ? std::clamp(t.velocity[1] * 0.08f, -0.4f, 0.4f) : 0.0f);
+    if (t.airborne) point[1] += std::clamp(t.velocity[1] * 0.08f, -0.4f, 0.4f);
     return point;
 }
 
@@ -279,15 +344,17 @@ void Rig::shake(double now, float speed, float human, float &yaw, float &pitch, 
     pitch += (wobble_[1].sample(now) * 0.9f * h + wobble_[4].sample(now) * 0.4f * h + wobble_[7].sample(now) * 0.3f * rattle) * degrees;
     roll += (wobble_[2].sample(now) * 1.6f * h + wobble_[5].sample(now) * 0.5f * h + wobble_[8].sample(now) * 0.25f * rattle) * degrees;
     eye[1] += wobble_[7].sample(now * 0.5) * 0.008f * rattle + wobble_[1].sample(now) * 0.02f * h;
-    // The knock: a sharp shove one way, then the hand pulls back.
-    const double since = now - slap_at_;
-    if (since >= 0 && since < 0.7) {
+    // The smack: the palm hits the glass 0.1 s after the slap starts and knocks the camera back hard,
+    // it shakes while the hand is held there, and recovers as the hand comes off.
+    const double since = now - slap_at_ - 0.1;
+    if (since >= 0 && since < 0.6) {
         const float t = static_cast<float>(since);
-        const float kick = std::sin(std::min(t / 0.7f, 1.0f) * pi) * std::exp(-t * 4.0f);
-        yaw += slap_yaw_ * kick * 7.0f * degrees;
-        pitch += slap_pitch_ * kick * 6.0f * degrees;
-        roll += slap_yaw_ * kick * 5.0f * degrees;
-        eye[1] -= kick * 0.05f;
+        const float kick = (1.0f - std::exp(-t * 60.0f)) * std::exp(-t * 7.0f);
+        const float buzz = std::sin(t * 70.0f) * std::exp(-t * 10.0f);
+        yaw += slap_yaw_ * (kick * 5.0f + buzz * 0.8f) * degrees;
+        pitch += slap_pitch_ * (kick * 6.0f + buzz * 0.6f) * degrees;
+        roll += slap_yaw_ * kick * 4.0f * degrees;
+        eye[1] -= kick * 0.04f;
     }
 }
 
@@ -299,7 +366,7 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
     const float speed = flat_length(t.velocity);
     const float human = std::clamp(s.human, 0.0f, 1.0f), reaction = std::clamp(s.reaction, 0.0f, 1.0f);
     const bool fish = s.lens == Lens::fisheye;
-    float distance = std::clamp(s.distance, 0.8f, 6.0f) * (fish ? 1.0f : 3.2f);
+    float distance = std::clamp(s.distance, 0.6f, 6.0f) * (fish ? 1.0f : 3.2f);
     // Pull back a little at speed and in the air, so a trick stays in the frame.
     distance += std::min(speed * 0.04f, 0.5f);
     if (t.airborne) distance += std::clamp(t.position[1] - t.ground, 0.0f, 3.0f) * 0.35f + 0.3f;
@@ -316,7 +383,7 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
     const float wander_angle = wobble_[0].sample(now * 0.31) * 9.0f * degrees * human;
     const float wander_distance = wobble_[1].sample(now * 0.27) * 0.35f * human;
     const float angle = angle_ + wander_angle;
-    const float d = std::max(0.6f, distance + wander_distance);
+    const float d = std::max(0.5f, distance + wander_distance);
     const Vec3 heading{t.heading_x, 0, t.heading_z};
     const Vec3 side{t.heading_z, 0, -t.heading_x};
     Vec3 desired;
@@ -333,35 +400,99 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
         desired = add(Vec3{t.position[0], t.ground, t.position[2]}, add(scale(heading, -d * std::cos(angle)), scale(side, d * std::sin(angle))));
         ground = t.ground;
     }
-    const float height = std::clamp(s.height, 0.2f, 2.5f);
+    const float height = std::clamp(s.height, 0.08f, 2.5f);
+    const Vec3 centre{t.position[0], t.position[1] + 0.9f, t.position[2]};
+    // Never behind a wall: where the spot is out of sight of the skater, it comes in towards them.
+    if (cast_) {
+        const Vec3 spot{desired[0], ground + height + 0.1f, desired[2]};
+        Vec3 hit{};
+        if (blocked(centre, spot, &hit)) {
+            const Vec3 to = sub(spot, centre);
+            const float full = flat_length(to);
+            if (full > 0.01f) {
+                const float keep = std::max(0.5f, flat_length(sub(hit, centre)) - 0.4f);
+                desired = add(Vec3{centre[0], ground, centre[2]}, scale(Vec3{to[0], 0, to[2]}, keep / full));
+            }
+        }
+    }
+    // Rolled on with the filmer stopped at a drop: once you are well away on the ground (or out of
+    // sight), the filmer cuts to a new spot behind you, as if the next clip.
+    if (edge_ && !t.airborne && now - landed_since_ > 1.0 &&
+        (flat_length(sub(t.position, operator_)) > 12.0f || (unseen_since_ >= 0 && now - unseen_since_ > 1.5))) {
+        operator_have_ = false;
+        edge_ = false;
+    }
+    // Lost sight of you for a while when riding (not stopped): cut too.
+    if (!planted_ && !edge_ && unseen_since_ >= 0 && now - unseen_since_ > 2.5) operator_have_ = false;
     // The filmer's own ride: they move with the skater and catch up on the spot they want, but a body
     // on a board cannot jump about.
     if (!operator_have_ || length(sub(operator_, desired)) > 15.0f) {
         operator_ = desired;
         operator_velocity_ = t.velocity;
         operator_velocity_[1] = 0;
-        operator_height_ = ground + height;
+        operator_ground_ = ground_at(desired[0], desired[2], ground).value_or(ground);
+        operator_height_ = operator_ground_ + height;
         operator_height_rate_ = 0;
         last_desired_ = desired;
         operator_have_ = true;
+        edge_ = false;
+        unseen_since_ = -1.0;
     }
     const Vec3 desired_rate = dt > 0 ? scale(sub(desired, last_desired_), 1.0f / std::max(dt, 0.001f)) : Vec3{};
     last_desired_ = desired;
-    const float omega = mix(3.2f, 2.0f, reaction);
-    for (int axis : {0, 2})
-        spring(operator_[static_cast<std::size_t>(axis)], operator_velocity_[static_cast<std::size_t>(axis)],
-               desired[static_cast<std::size_t>(axis)], std::clamp(desired_rate[static_cast<std::size_t>(axis)], -25.0f, 25.0f),
-               omega, 1.0f, dt);
-    // Down a set, the filmer rolls down after the skater: the height follows the trail's ground.
-    spring(operator_height_, operator_height_rate_, ground + height, 0.0f, 5.5f, 0.8f, dt);
+    const Vec3 before = operator_;
+    if (planted_) {
+        operator_velocity_ = {};
+    } else {
+        const float omega = mix(3.2f, 2.0f, reaction);
+        for (std::size_t axis : {std::size_t{0}, std::size_t{2}})
+            spring(operator_[axis], operator_velocity_[axis], desired[axis], std::clamp(desired_rate[axis], -25.0f, 25.0f), omega, 1.0f, dt);
+    }
+    if (cast_ && !planted_) {
+        // Each step is checked against the world: real ground under it, no wall in the way, nothing a
+        // board would not roll over. Blocked, the filmer slides along what stopped them, or stays.
+        const auto try_step = [&](const Vec3 &to, bool &drop) -> bool {
+            const auto g = ground_at(to[0], to[2], operator_ground_);
+            if (!g) { drop = true; return false; }
+            if (!step_allowed(to, *g, s.stop_at_drops)) { drop = *g < operator_ground_; return false; }
+            if (blocked(Vec3{before[0], operator_ground_ + 0.45f, before[2]}, Vec3{to[0], *g + 0.45f, to[2]})) return false;
+            operator_ground_ = *g;
+            return true;
+        };
+        bool drop = false;
+        if (flat_length(sub(operator_, before)) > 0.0005f && !try_step(operator_, drop)) {
+            bool slid_drop = false;
+            const Vec3 along_x{operator_[0], 0, before[2]}, along_z{before[0], 0, operator_[2]};
+            if (try_step(along_x, slid_drop)) { operator_ = along_x; operator_velocity_[2] = 0; }
+            else if (try_step(along_z, slid_drop)) { operator_ = along_z; operator_velocity_[0] = 0; }
+            else { operator_ = before; operator_velocity_ = {}; }
+            if (drop && !edge_) edge_since_ = now;
+            edge_ = edge_ || drop;
+        } else if (flat_length(sub(operator_, before)) > 0.0005f) {
+            edge_ = false;
+        }
+        operator_[1] = 0;
+    } else if (!cast_) {
+        operator_ground_ = ground; // no world to ask: the trail's ground
+    }
+    // The camera's height: over the ground under the filmer, smoothed (rolling down a bank, over a
+    // crack), never below it.
+    spring(operator_height_, operator_height_rate_, operator_ground_ + height, 0.0f, 5.5f, 0.8f, dt);
+    operator_height_ = std::max(operator_height_, operator_ground_ + 0.06f);
     const float operator_speed = flat_length(operator_velocity_);
     // Pushing to keep up: a dip and a nod every stride.
     const float behind = flat_length(sub(desired, operator_));
-    pushing_ = speed > 1.5f && (behind > 0.6f || operator_speed < speed - 0.6f);
+    pushing_ = !planted_ && !edge_ && speed > 1.5f && (behind > 0.6f || operator_speed < speed - 0.6f);
     if (pushing_ || std::fmod(push_phase_, 1.0f) > 0.02f) push_phase_ += dt / 0.95f;
     const float stride = std::fmod(push_phase_, 1.0f);
     const float dip = stride < 0.4f ? std::sin(stride / 0.4f * pi) : 0.0f;
-    Vec3 eye{operator_[0], operator_height_ - dip * 0.045f * (0.4f + human), operator_[2]};
+    Vec3 eye{operator_[0], std::max(operator_height_ - dip * 0.03f * (0.4f + human), operator_ground_ + 0.05f), operator_[2]};
+    // Can the filmer see you? (For the cut when they lose you.)
+    if (cast_) {
+        const bool hidden = blocked(eye, centre);
+        if (!hidden) unseen_since_ = -1.0;
+        else if (unseen_since_ < 0) unseen_since_ = now;
+    }
     // Aim: at where the skater was a moment ago (reaction), a little off-centre (a person framing),
     // caught up hard when the skater is about to leave the frame (a filmer never loses a trick).
     const Vec3 now_point = aim_point(t, s);
@@ -370,25 +501,28 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
     const Vec3 late = delayed_point(now, 0.04f + 0.16f * reaction * (0.5f + human));
     const Vec3 to_late = sub(late, eye), to_now = sub(now_point, eye);
     float want_yaw = yaw_of(to_late[0], to_late[2]);
-    float want_pitch = std::atan2(to_late[1], std::max(flat_length(to_late), 0.05f));
+    float want_pitch = frame_pitch(eye, late, t.airborne, 0.0f, s);
     want_yaw += wobble_[2].sample(now * 0.4) * 3.5f * degrees * human;
     want_pitch += wobble_[3].sample(now * 0.17) * 2.5f * degrees * human;
     const float true_yaw = yaw_of(to_now[0], to_now[2]);
-    const float true_pitch = std::atan2(to_now[1], std::max(flat_length(to_now), 0.05f));
+    const float true_pitch = frame_pitch(eye, now_point, t.airborne, 0.0f, s);
     // How far off the skater is, against how much of the frame there is to the edge.
-    const float half_view = (fish ? 52.0f : 20.0f) * degrees;
+    const float view = half_view(s) * (fish ? 1.0f : 0.95f);
     const float off = aim_.have ? std::max(std::abs(wrap_angle(true_yaw - aim_.yaw)), std::abs(true_pitch - aim_.pitch)) : 0.0f;
-    const float slack = half_view * mix(0.3f, 0.55f, human);
+    const float slack = view * mix(0.3f, 0.55f, human);
     const float catch_up = off > slack ? std::clamp((off - slack) / slack * 3.0f, 0.0f, 5.0f) : 0.0f;
     const float aim_omega = mix(9.0f, 4.2f, reaction) * (1.0f + catch_up);
     const float aim_damping = mix(0.95f, 0.62f, human);
     steer_aim(dt, want_yaw, want_pitch, aim_omega, aim_damping);
-    // Never let them out of the frame: past 85% of the way to the edge, the aim is dragged back in.
+    // Never let them out of the frame: past 85% of the way to the edge sideways, or the board about to
+    // leave the bottom or the top, the aim is dragged back in.
     if (aim_.have) {
-        const float limit = half_view * 0.85f;
-        const float dy = wrap_angle(true_yaw - aim_.yaw), dp = true_pitch - aim_.pitch;
+        const float limit = view * 0.85f;
+        const float dy = wrap_angle(true_yaw - aim_.yaw);
         if (std::abs(dy) > limit) aim_.yaw = wrap_angle(true_yaw - std::copysign(limit, dy));
-        if (std::abs(dp) > limit * 0.75f) aim_.pitch = true_pitch - std::copysign(limit * 0.75f, dp);
+        const float horizontal = std::max(flat_length(to_now), 0.3f);
+        const float feet = std::atan2(now_point[1] + 0.05f - eye[1], horizontal);
+        aim_.pitch = std::clamp(aim_.pitch, feet - 0.85f * half_view(s), feet + 0.85f * half_view(s));
     }
     // Leaning into the turns the filmer rides.
     const float operator_yaw = operator_speed > 0.5f ? yaw_of(operator_velocity_[0], operator_velocity_[2]) : last_operator_yaw_;
@@ -433,9 +567,23 @@ Frame Rig::film(double now, float dt, const Subject &self, const Subject *target
         operator_have_ = true;
     }
     spring(operator_height_, operator_height_rate_, me.position[1], 0.0f, 9.0f, 0.75f, dt);
-    const Vec3 body{me.position[0], operator_height_ + std::clamp(s.hold_height, 0.3f, 1.8f), me.position[2]};
+    // Held low and out at arm's length, towards where it points: never inside your own head, arms or
+    // board, whichever way you turn it. A wall in the way brings it in; it never goes under the ground.
+    const float hold = std::clamp(s.hold_height, 0.1f, 1.8f);
+    const Vec3 body{me.position[0], operator_height_ + hold, me.position[2]};
     const float reach_yaw = aim_.have ? aim_.yaw : heading;
-    Vec3 eye = add(body, Vec3{std::sin(reach_yaw) * 0.42f, 0, std::cos(reach_yaw) * 0.42f});
+    const float reach = 0.62f;
+    Vec3 eye = add(body, Vec3{std::sin(reach_yaw) * reach, 0, std::cos(reach_yaw) * reach});
+    if (cast_) {
+        const Vec3 chest{me.position[0], operator_height_ + std::max(hold, 0.9f), me.position[2]};
+        Vec3 hit{};
+        if (blocked(chest, eye, &hit)) {
+            const Vec3 to = sub(eye, chest);
+            const float full = length(to);
+            if (full > 0.01f) eye = add(chest, scale(to, std::max(0.0f, length(sub(hit, chest)) - 0.12f) / full));
+        }
+        if (const auto g = ground_at(eye[0], eye[2], me.position[1])) eye[1] = std::max(eye[1], *g + 0.06f);
+    }
     if (s.assist && aiming_at) {
         // Framing a skater: the aim keeps on them as a person would (late, a little loose), and the
         // stick shifts the framing; let go and it settles back on them.
@@ -445,7 +593,7 @@ Frame Rig::film(double now, float dt, const Subject &self, const Subject *target
         const Vec3 late = delayed_point(now, 0.03f + 0.12f * std::clamp(s.reaction, 0.0f, 1.0f));
         const Vec3 to = sub(late, eye);
         want_yaw = yaw_of(to[0], to[2]) + offset_yaw_;
-        want_pitch = std::atan2(to[1], std::max(flat_length(to), 0.05f)) + offset_pitch_;
+        want_pitch = frame_pitch(eye, late, subject_.airborne, 0.0f, s) + offset_pitch_;
         if (!touched && now - stick_idle_since_ > 0.35) {
             const float k = ease(dt, 0.9f);
             offset_yaw_ = mix(offset_yaw_, 0.0f, k);

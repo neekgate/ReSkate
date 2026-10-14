@@ -648,7 +648,7 @@ void render(IDXGISwapChain* presented, UINT flags) {
     const bool item_browser_frame = item_browser_pending();
     const bool perf_frame = perf_hud_pending() || trainer_hud_pending();
     const bool hub_frame = hub_page_pending();
-    // The Filmer's VX look is drawn over every frame while it films.
+    // The Filmer's VX look is drawn over every frame while it films (or always, if asked).
     const bool filmer_frame = dingosdk::filmer::look::pending();
     if (trainer_open_requested()) s.visible.store(true);
     const bool menu_frame = interactive_visible(s);
@@ -712,7 +712,6 @@ void render(IDXGISwapChain* presented, UINT flags) {
     update_menu_pointer();
     fit_display_to_buffer(s, frame.buffer.Get());
     ImGui::NewFrame();
-    if (filmer_frame) dingosdk::filmer::look::draw_overlay(s.menu.bold);
     if (menu_frame) {
         draw_menu();
         draw_console();

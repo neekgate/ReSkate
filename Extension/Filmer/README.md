@@ -5,11 +5,14 @@ skate. filmed the way a skater with a VX1000 films a line.
 ## Modes
 
 - **AI filmer** (`filmer mode follow`): a virtual filmer rides with a skater and films them while
-  you play normally. It rides the trail the skater left (ground they just skated, so it rarely
-  clips into walls), rolls down a set after them, pushes to keep up, picks angles through a line
-  (Auto), and points the camera like a person: a beat late, a loose frame, a hand that is never
-  still, but it whips back before a trick leaves the frame. Film yourself, or anyone in the
-  session (`filmer subject <name>`).
+  you play normally. It rides the trail the skater left, checking every step against the game's
+  own collision: real ground under it, no walls, nothing a board would not roll over. Where you
+  flew (a set, a gap) it stops at the edge, films you land and ride away, then cuts back in behind
+  you. It pushes to keep up, picks angles through a line (Auto), keeps your board in frame (Tilt),
+  and points the camera like a person: a beat late, a loose frame, a hand that is never still, but
+  it whips back before a trick leaves the frame. Film yourself, or anyone in the session
+  (`filmer subject <name>`). Click the left stick to have it stop and film from where it is (again
+  to ride on); click the right stick to slap the lens.
 - **You film** (`filmer mode film`): your skater is the filmer. The left stick rides; the right
   stick points the camera (the game stops seeing it, so no flicks while you film). The aim assist
   keeps a friend in frame (the closest one ahead, or `filmer target <name>`) and the stick shifts
@@ -25,14 +28,20 @@ colour and grain are SDR only. The game's HUD is hidden while filming (switchabl
 
 ## Marking clips
 
-Slap the lens: a hand covers it, the iris closes and overshoots as it comes off, the camera jolts,
-and the clip ends. Clips are numbered and logged with their end time in
+Slap the lens: a hand rushes at it and smacks it, the camera is knocked back, the iris shuts while
+the palm is on the glass and overshoots as it comes off, and the clip ends. Clips are numbered and logged with their end time in
 `%LOCALAPPDATA%\ReSkate\filmer\clips.csv`, so they can be found in a recording.
 
-- While you film: click the right stick.
+- Click the right stick (filming, or following with Stick clicks on).
 - Any time: bind **Filmer: slap the lens** in Settings > Binds, or `filmer slap`.
 
-**Filmer on / off** can be bound too.
+**Filmer on / off** and **Filmer: stop and film / ride again** can be bound too.
+
+The date and the viewfinder text are drawn by the shader in a 5x7 camcorder font, burnt in after the
+lens (straight, over the hood) and before the tape (softened, interlaced, grainy).
+
+**Over any camera** draws the look whatever has the camera, including the replay editor's. The
+Filmer's own camera does not run in replays yet.
 
 ## Commands
 
@@ -42,7 +51,8 @@ and the clip ends. Clips are numbered and logged with their end time in
 | `filmer mode off\|follow\|film` | |
 | `filmer subject me\|<player>` | Whom the AI filmer films |
 | `filmer target auto\|<player>` | Whom the assist frames while you film |
-| `filmer set <option> <value>` | `style auto\|behind\|side\|ahead`, `lens fisheye\|long`, `distance`, `height`, `human`, `reaction`, `sensitivity`, `hold`, `bend`; switches `assist`, `invert`, `recenter`, `hidehud`, `stick`, `look`, `fisheye`, `bars`, `hood`, `grade`, `soft`, `scanlines`, `grain`, `date`, `viewfinder` |
+| `filmer set <option> <value>` | `style auto\|behind\|side\|ahead`, `lens fisheye\|long`, `distance`, `height`, `tilt`, `human`, `reaction`, `sensitivity`, `hold`, `bend`; switches `assist`, `invert`, `recenter`, `hidehud`, `stick`, `clicks`, `drops`, `look`, `anywhere`, `fisheye`, `bars`, `hood`, `grade`, `soft`, `scanlines`, `grain`, `date`, `viewfinder` |
+| `filmer plant [on\|off]` | The AI filmer stops and films from where it is, or rides again |
 | `filmer slap` | End the clip |
 | `filmer clips` | This session's clips |
 | `filmer status`, `filmer reset` | |

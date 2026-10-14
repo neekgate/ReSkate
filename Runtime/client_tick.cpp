@@ -1343,7 +1343,7 @@ void tick(std::uintptr_t client, std::uintptr_t update) {
             // Filmer's camera follows them, so it runs every client tick, and also out of play, to give
             // the camera back.
             dingosdk::filmer::tick(r.base, client,
-                r.spectate_ready && r.spectate_client == client && (state == 13 || state == 21), camera_phase);
+                r.spectate_ready && r.spectate_client == client && (state == 13 || state == 21), camera_phase, static_cast<int>(state));
         }
         {
             DINGO_PROFILE_ZONE("tick/Steam friend join");
