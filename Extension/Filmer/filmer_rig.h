@@ -14,6 +14,7 @@
 #include <functional>
 #include <optional>
 #include <random>
+#include <unordered_map>
 
 namespace dingosdk::filmer {
 using Vec3 = std::array<float, 3>;
@@ -148,6 +149,20 @@ private:
     void shake(double now, float speed, float human, float &yaw, float &pitch, float &roll, Vec3 &eye) const;
 
     Cast cast_;
+    // The game's answers, kept a couple of seconds per 25 cm cell (they are slow, and asking the same
+    // question every tick only adds noise), and a budget of new questions per tick.
+    struct Probe { bool hit{}; float y{}; double time{}; };
+    mutable std::unordered_map<std::uint64_t, Probe> probes_;
+    mutable unsigned probe_budget_{}, ray_budget_{};
+    double now_{};
+    void begin_tick(double now) noexcept;
+    // The skater's position is their body's root, a little above the ground the game reports under
+    // them. Heights from the trail are in the first, heights from the game in the second: this is
+    // the difference, measured as they ride.
+    float root_above_ground_{};
+    float world(float trail_y) const noexcept { return trail_y - root_above_ground_; }
+    float side_keep_{1.0f};         // how much of the side offset is used, eased (never jumps)
+    float raised_offset_{};         // the side offset in use, eased (beside a ledge or a planter it grows)
     std::mt19937 random_;
     Tracked subject_, self_;
     std::deque<TrailPoint> trail_;
