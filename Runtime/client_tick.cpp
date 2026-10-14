@@ -20,6 +20,7 @@
 #include "Extension/BoardBreak/board_break.h"
 #include "Extension/BoardBreak/board_break_audio.h"
 #include "Extension/Skater/grind_exit_control.h"
+#include "Extension/Filmer/filmer.h"
 #include "Extension/Skater/camera_observer.h"
 #include "Extension/UI/NativeMenu/native_menu.h"
 #include "Extension/Multiplayer/Hud/native_party.h"
@@ -1451,6 +1452,14 @@ void tick(std::uintptr_t client, std::uintptr_t update) {
             DINGO_PROFILE_ZONE("tick/trainer");
             // A custom map is a sublevel of the root level: that is the map the player means.
             dingosdk::trainer::tick(r.base, client, multiplayer_ready, r.catalog_level.empty() ? r.last_level : r.catalog_level);
+        }
+        {
+            DINGO_PROFILE_ZONE("tick/filmer");
+            // After the session placed the other skaters and the trainer measured the local one: the
+            // Filmer's camera follows them, so it runs every client tick, and also out of play, to give
+            // the camera back.
+            dingosdk::filmer::tick(r.base, client,
+                r.spectate_ready && r.spectate_client == client && (state == 13 || state == 21), camera_phase);
         }
         {
             DINGO_PROFILE_ZONE("tick/Steam friend join");

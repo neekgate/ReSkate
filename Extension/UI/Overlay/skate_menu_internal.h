@@ -67,4 +67,6 @@ void drone_page(SkateMenu&, const Model&, const CallbacksV3&);
 // Extension/Trainer/trainer_page.cpp
 void trainer_page(SkateMenu&, const Model&, const CallbacksV3&);
 bool trainer_page_wanted();
+// Extension/Filmer/filmer_page.cpp
+void filmer_page(SkateMenu&, const Model&, const CallbacksV3&);
 }
