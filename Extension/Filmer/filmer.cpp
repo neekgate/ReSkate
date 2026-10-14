@@ -223,14 +223,24 @@ Vec3 facing_of(const multiplayer::Transform &root) {
     return l > 0.01f ? Vec3{x / l, 0, z / l} : Vec3{0, 0, 1};
 }
 
+// Your skater: the pose the session notes each tick when there is one, otherwise (skating alone, with
+// no session at all) the trainer's measurement of the skater, taken every tick while you play.
 Subject local_subject() {
     Subject result;
-    multiplayer::Transform root;
-    if (!multiplayer::latest_local_skater(root)) return result;
-    result.valid = true;
-    result.position = root.position;
-    result.facing = facing_of(root);
     const auto telemetry = trainer::telemetry();
+    multiplayer::Transform root;
+    if (multiplayer::latest_local_skater(root)) {
+        result.valid = true;
+        result.position = root.position;
+        result.facing = facing_of(root);
+    } else if (telemetry.skater) {
+        const float heading = telemetry.heading * 3.14159265f / 180.0f;
+        result.valid = true;
+        result.position = telemetry.position;
+        result.facing = {std::sin(heading), 0, std::cos(heading)};
+    } else {
+        return result;
+    }
     if (telemetry.skater) {
         result.airborne = telemetry.airborne;
         // 300s are a wipeout (Extension/Trainer/trainer.cpp).
@@ -393,6 +403,8 @@ void set_status(State &s, std::string text) {
     if (text == s.status) return;
     s.status = std::move(text);
     s.view_due = true;
+    // In the log too: what the Filmer is doing, or why it is not filming.
+    say(logging::Level::info, "Filmer: " + s.status);
 }
 
 // The right stick and its click are the camera's while you film; nothing is taken otherwise.
