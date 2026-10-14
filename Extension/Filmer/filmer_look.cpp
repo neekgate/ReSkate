@@ -290,40 +290,34 @@ bool ensure_copy(const Target &t) {
 }
 
 
-// The hand marking a clip, moved along a path in front of the lens (metres: x right, y down, z away
-// from the glass) and seen in perspective: small and off in a lower corner where the free arm reaches
-// round the camera, growing fast as it closes in. Slap: it accelerates onto the glass, is pressed there
-// a beat, sliding a little, and is pulled away. Hover: it comes in close, backs off, comes in again,
-// and goes, never touching.
+// The hand slapping the lens, moved along a path in front of it (metres: x right, y down, z away from
+// the glass) and seen in perspective: small and off in a lower corner where the free arm reaches round
+// the camera, growing fast as it accelerates onto the glass; pressed there a beat, sliding a little;
+// pulled away.
 struct Hand { float x{}, y{}, angle{}, size{}, blur{}; bool mirrored{}; };
 struct Key { double time; float x, y, z, angle; };
 constexpr std::array<Key, 4> slap_keys{{{0.0, 0.55f, 0.45f, 0.36f, -0.62f}, {slap_contact, 0.015f, 0.010f, 0.050f, -0.45f},
                                        {0.25, 0.023f, 0.016f, 0.052f, -0.43f}, {0.60, 0.62f, 0.55f, 0.40f, -0.70f}}};
-constexpr std::array<Key, 5> hover_keys{{{0.0, 0.55f, 0.45f, 0.36f, -0.62f}, {0.20, 0.035f, 0.025f, 0.100f, -0.48f},
-                                        {0.38, 0.070f, 0.060f, 0.190f, -0.52f}, {0.55, 0.025f, 0.020f, 0.088f, -0.46f},
-                                        {0.90, 0.62f, 0.55f, 0.40f, -0.70f}}};
 constexpr float hand_scale = 0.225f; // size at 1 m (it fills the frame from about 3: 7.5 cm off the glass)
 float smooth(float u) { u = std::clamp(u, 0.0f, 1.0f); return u * u * (3.0f - 2.0f * u); }
-template <std::size_t N> std::optional<Key> along(const std::array<Key, N> &keys, double since, bool slap) {
+std::optional<Key> slap_key(double since) {
+    const auto &keys = slap_keys;
     if (since < 0.0 || since > keys.back().time) return std::nullopt;
-    for (std::size_t i = 0; i + 1 < N; ++i) {
+    for (std::size_t i = 0; i + 1 < keys.size(); ++i) {
         const auto &a = keys[i], &b = keys[i + 1];
         if (since > b.time) continue;
         float u = static_cast<float>((since - a.time) / (b.time - a.time));
-        if (i == 0) u = slap ? std::pow(u, 2.2f) : 1.0f - (1.0f - u) * (1.0f - u); // slap: accelerating; hover: slowing
-        else if (!(slap && i == 1)) u = smooth(u);                                    // (pressed: a steady slide)
+        if (i == 0) u = std::pow(u, 2.2f); // accelerating onto the glass
+        else if (i != 1) u = smooth(u);    // (pressed: a steady slide)
         return Key{since, a.x + (b.x - a.x) * u, a.y + (b.y - a.y) * u, a.z + (b.z - a.z) * u, a.angle + (b.angle - a.angle) * u};
     }
     return std::nullopt;
 }
-std::optional<Key> marker_key(Marker marker, double since) {
-    return marker == Marker::hover ? along(hover_keys, since, false) : along(slap_keys, since, true);
-}
-Hand hand_at(Marker marker, double since, std::uint64_t serial) {
+Hand hand_at(double since, std::uint64_t serial) {
     Hand hand;
-    const auto key = marker_key(marker, since);
+    const auto key = slap_key(since);
     if (!key) return hand;
-    const auto next = marker_key(marker, since + 0.01).value_or(*key);
+    const auto next = slap_key(since + 0.01).value_or(*key);
     hand.mirrored = (serial & 1u) != 0;
     const float side = hand.mirrored ? -1.0f : 1.0f;
     constexpr float lens = 0.84f; // half heights per unit of x / z
@@ -336,13 +330,12 @@ Hand hand_at(Marker marker, double since, std::uint64_t serial) {
     return hand;
 }
 
-// The camcorder's iris: closing down as the hand covers the lens; after a slap it overshoots as the
-// palm comes off.
-float exposure_at(Marker marker, double since) {
-    const Hand hand = hand_at(marker, since, 0);
+// The camcorder's iris: closing down as the hand covers the lens, overshooting as the palm comes off.
+float exposure_at(double since) {
+    const Hand hand = hand_at(since, 0);
     const float covered = std::clamp((hand.size - 2.0f) / 2.5f, 0.0f, 1.0f);
     float exposure = 1.0f - 0.4f * covered;
-    if (marker == Marker::slap && since > 0.25 && since < 1.5) {
+    if (since > 0.25 && since < 1.5) {
         const float t = static_cast<float>(since - 0.25);
         exposure += 0.3f * std::exp(-t * 4.0f) * std::min(t / 0.1f, 1.0f);
     }
@@ -408,8 +401,7 @@ bool record(const Target &t) noexcept {
         const float frame_seconds = static_cast<float>(std::clamp(seconds - g.last_seconds, 0.0, 0.25));
         g.last_seconds = seconds;
         const double since = seconds - v->slap_at;
-        const Marker marker = v->settings.marker;
-        const Hand hand = hand_at(marker, since, v->slap_serial);
+        const Hand hand = hand_at(since, v->slap_serial);
         // The bend can only squeeze what the game drew: with the Filmer's camera that is the fisheye's
         // wide view; over any other camera (a replay's), whatever that camera's own field of view is.
         const bool fish = (v->active ? rig.lens == Lens::fisheye : true) && look.fisheye;
@@ -424,7 +416,7 @@ bool record(const Target &t) noexcept {
             bits(fish ? std::clamp(look.bend, 0.0f, 1.0f) : 0.0f), bits(fov * 0.5f), bits(std::tan(fov * 0.5f)), bits(look.bars ? 4.0f / 3.0f : screen_aspect),
             bits(screen_aspect), bits(look.bars ? 1.0f : 0.0f), bits(look.hood ? 1.0f : 0.0f), bits(static_cast<float>(std::fmod(seconds, 1000.0))),
             bits(look.grade ? 1.0f : 0.0f), bits(look.scanlines ? 1.0f : 0.0f), bits(look.grain ? 1.0f : 0.0f), bits(look.soft ? 1.0f : 0.0f),
-            bits(static_cast<float>(t.transfer)), bits(exposure_at(marker, since)), bits(width), bits(height),
+            bits(static_cast<float>(t.transfer)), bits(exposure_at(since)), bits(width), bits(height),
             bits(hand.x), bits(hand.y), bits(hand.angle), bits(hand.size),
             bits(hand.mirrored ? 1.0f : 0.0f), bits(hand.blur), bits(0.0f), bits(0.0f),
             bits(2.0f / 150.0f), bits(white), bits(any_text ? 1.0f : 0.0f), bits(0.0f),
