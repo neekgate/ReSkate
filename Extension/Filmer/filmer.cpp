@@ -48,6 +48,9 @@ void filter_pad(unsigned, overlay::GamepadValues &pad) noexcept {
 
 struct State {
     bool loaded{};
+    // `filmer trace`: every tick of the next 30 seconds to trace.csv, to see what the filmer saw.
+    std::ofstream trace;
+    double trace_until{};
     Settings settings;
     Mode last_mode = Mode::follow; // what `filmer toggle` turns on
     Rig rig;
@@ -144,13 +147,14 @@ void load_store() {
         r.sensitivity = clamped(o, "sensitivity", d.rig.sensitivity, 0.2f, 3.0f);
         r.invert_y = flag(o, "invert", d.rig.invert_y);
         r.recenter = flag(o, "recenter", d.rig.recenter);
-        r.hold_height = clamped(o, "hold", d.rig.hold_height, 0.1f, 1.8f);
+        r.hold_height = clamped(o, "hold", d.rig.hold_height, 0.05f, 1.8f);
         r.tilt = clamped(o, "tilt", d.rig.tilt, 0.0f, 1.0f);
         r.stop_at_drops = flag(o, "stop_at_drops", d.rig.stop_at_drops);
         r.lunge = flag(o, "lunge", d.rig.lunge);
         s.settings.stick_clicks = flag(o, "stick_clicks", d.stick_clicks);
         // Settings saved before the camera could go this low keep their old height: start them low.
-        if (o.value("schema", 1) < 2) {
+        // (Schema 3: lower again, and the hold height now measured from the ground, not the hips.)
+        if (o.value("schema", 1) < 3) {
             r.height = d.rig.height;
             r.hold_height = d.rig.hold_height;
         }
@@ -190,7 +194,7 @@ void save_store() {
     try {
         const auto &r = s.settings.rig;
         Json json = Json::object();
-        json["schema"] = 2;
+        json["schema"] = 3;
         json["style"] = style_name(r.style);
         json["side"] = r.side == Side::left ? "left" : r.side == Side::right ? "right" : "auto";
         json["lens"] = lens_name(r.lens);
@@ -605,6 +609,19 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready, bool camera_ph
                 const StickInput stick = read_stick(s);
                 frame = s.rig.film(t, dt, self, target ? &target_subject : nullptr, stick, s.settings.rig);
             }
+            if (s.trace.is_open()) {
+                if (t > s.trace_until) {
+                    s.trace.close();
+                    say(logging::Level::info, "Filmer: trace written to %LOCALAPPDATA%\\ReSkate\\filmer\\trace.csv.");
+                } else {
+                    const auto d = s.rig.debug();
+                    s.trace << std::format("{:.4f},{:.4f},{},{:.3f},{:.3f},{:.3f},{:.3f},{:.3f},{:.3f},{:.3f},{:.3f},{:.3f},{:.3f},{:.3f},{:.4f},{:.4f},{:.4f},{},{},{},{},{},{},{:.3f},{:.3f},{:.3f},{}\n",
+                        t, dt, s.settings.mode == Mode::follow ? "follow" : "film", self.position[0], self.position[1], self.position[2],
+                        d.subject[0], d.subject[1], d.subject[2], d.operator_at[0], d.operator_at[2], d.ground, d.floor, d.level,
+                        d.root_above_ground, d.aim_yaw, d.aim_pitch, d.world ? 1 : 0, d.root_known ? 1 : 0, d.airborne ? 1 : 0,
+                        d.edge ? 1 : 0, d.hold ? 1 : 0, d.planted ? 1 : 0, frame.camera[12], frame.camera[13], frame.camera[14], frame.valid ? 1 : 0);
+                }
+            }
             if (name != s.subject_name) {
                 s.subject_name = name;
                 s.view_due = true;
@@ -736,7 +753,7 @@ std::string set_option(State &s, const std::string &key, const std::string &valu
     if (key == "human") return real(r.human, 0.0f, 1.0f);
     if (key == "reaction") return real(r.reaction, 0.0f, 1.0f);
     if (key == "sensitivity") return real(r.sensitivity, 0.2f, 3.0f);
-    if (key == "hold") return real(r.hold_height, 0.1f, 1.8f);
+    if (key == "hold") return real(r.hold_height, 0.05f, 1.8f);
     if (key == "tilt") return real(r.tilt, 0.0f, 1.0f);
     if (key == "drops") return toggle(r.stop_at_drops);
     if (key == "clicks") return toggle(s.settings.stick_clicks);
@@ -824,6 +841,21 @@ std::string command(std::string_view verb, const std::vector<std::string> &argum
             const bool plant = wanted == "on" || wanted == "1" ? true : wanted == "off" || wanted == "0" ? false : !s.rig.planted();
             s.rig.set_planted(plant);
             reply = plant ? "The filmer stops and films from here." : "The filmer rides with you again.";
+        }
+    } else if (verb == "trace") {
+        try {
+            const auto directory = data_directory();
+            std::error_code error;
+            std::filesystem::create_directories(directory, error);
+            if (s.trace.is_open()) s.trace.close();
+            s.trace.open(directory / L"trace.csv", std::ios::binary | std::ios::trunc);
+            s.trace << "time,dt,mode,game_x,game_y,game_z,skater_x,skater_y,skater_z,filmer_x,filmer_z,ground,floor,level,root_above_ground,"
+                       "aim_yaw,aim_pitch,world,root_known,airborne,edge,hold,planted,eye_x,eye_y,eye_z,valid\n";
+            s.trace_until = now() + 30.0;
+            reply = s.trace ? "Tracing the Filmer for 30 seconds to %LOCALAPPDATA%\\ReSkate\\filmer\\trace.csv: skate a line now."
+                            : "error: could not write trace.csv.";
+        } catch (...) {
+            reply = "error: could not write trace.csv.";
         }
     } else if (verb == "slap") {
         reply = slap(s);

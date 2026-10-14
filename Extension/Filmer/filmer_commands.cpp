@@ -25,6 +25,7 @@ void register_filmer_commands(Commands &registry) {
         {"plant", "The AI filmer stops and films from where they are, or rides again", "[on|off]", false},
         {"slap", "Slap the lens: ends the clip", nullptr, false},
         {"clips", "The clips marked this session", nullptr, false},
+        {"trace", "Record what the Filmer sees for 30 seconds (trace.csv), to send for tuning", nullptr, false},
         {"reset", "Put every Filmer option back to its default", nullptr, false},
     };
     for (const auto &verb : verbs) {
