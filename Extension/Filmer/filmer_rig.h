@@ -152,7 +152,8 @@ private:
 
     void track(double now, float dt, const Subject &subject, Tracked &tracked, bool own_trail, bool learn_root);
     void learn_root(float dt, const Vec3 &root);
-    std::optional<float> ground_at(float x, float z, float near_y) const;
+    // `always`: the ground under the lens itself, asked whatever is left of this tick's budget.
+    std::optional<float> ground_at(float x, float z, float near_y, bool always = false) const;
     bool blocked(const Vec3 &from, const Vec3 &to, Vec3 *hit = nullptr) const;
     const TrailPoint *nearest_trail(float x, float z, float within) const;
     bool step_allowed(const Vec3 &to, float to_ground, bool stop_at_drops) const;
@@ -202,9 +203,12 @@ private:
     float last_operator_yaw_{}, lean_{};
     float operator_ground_{};       // the ground under the filmer (probed)
     float operator_floor_{};        // the same, eased: a one-tick odd answer never lifts the camera
+    float film_floor_{};            // film mode: the ground under the lens, the same way
+    bool film_floor_known_{};
     float lunge_{}, lunge_rate_{};  // 0..1: how far into a lunge under an air
     float side_lock_{};             // +1 the skater's left, -1 their right, 0 either
     bool planted_{}, edge_{}, holding_{};
+    bool edge_locked_{};            // stopped at a drop and come to a standstill: the framing is held
     float level_{};                 // the ground level the filmer rides at
     std::size_t last_index_{};      // the trail point nearest the filmer, last tick
     Vec3 edge_point_{}, edge_dir_{0, 0, 1}; // where the filmer stopped, and which way is over it

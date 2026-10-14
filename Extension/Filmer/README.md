@@ -8,7 +8,8 @@ skate. filmed the way a skater with a VX1000 films a line.
   you play normally. It rides the trail the skater left, checking every step against the game's
   own collision: real ground under it, no walls, nothing a board would not roll over. It stays at
   the level it rides at: up banks and slopes with you, but alongside a ledge or rail rather than up
-  on it. Where you came down from its level in one go (a set, a drop) or jumped a gap, it stops at
+  on it. Where you came down from its level in one go (a set, a drop) or jumped a gap, it stops (and, once
+  stopped, holds its framing like a locked-off shot) at
   the edge, films you land and ride away, and cuts back in behind you once you are 25 m off. This
   goes by your trail, so it works even where the game's collision gives no answer. It pushes to keep up, picks angles through a line (Auto), keeps your board in frame (Tilt),
   and points the camera like a person: a beat late, a loose frame, a hand that is never still, but
