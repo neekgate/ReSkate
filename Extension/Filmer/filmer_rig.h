@@ -205,6 +205,14 @@ private:
     float operator_floor_{};        // the same, eased: a one-tick odd answer never lifts the camera
     float film_floor_{};            // film mode: the ground under the lens, the same way
     bool film_floor_known_{};
+    // The lens's own way (follow): along the path the body rode, at the body's eased speed, so a
+    // refused step never shows. `along`: metres along it.
+    struct LensPoint { Vec3 at{}; float along{}; };
+    std::deque<LensPoint> lens_path_;
+    float lens_at_{}, lens_speed_{};
+    Vec3 eye_last_{};
+    bool eye_have_{};
+    float lens_ground_{};
     float lunge_{}, lunge_rate_{};  // 0..1: how far into a lunge under an air
     float side_lock_{};             // +1 the skater's left, -1 their right, 0 either
     bool planted_{}, edge_{}, holding_{};

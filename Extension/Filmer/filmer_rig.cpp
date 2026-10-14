@@ -86,6 +86,7 @@ void Rig::reset() noexcept {
     history_.clear();
     aim_ = {};
     operator_have_ = false;
+    eye_have_ = false;
     operator_velocity_ = {};
     operator_height_rate_ = 0;
     lean_ = 0;
@@ -764,7 +765,7 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
         // Each step is checked against the world: real ground under it, no wall in the way, nothing a
         // board would not roll up or off. Blocked, the filmer slides along what stopped them, or stays.
         const auto try_step = [&](const Vec3 &to) -> bool {
-            const auto g = ground_at(to[0], to[2], operator_ground_, true);
+            const auto g = ground_at(to[0], to[2], operator_ground_ + 0.5f, true); // from well above: a rise is found, never missed
             if (!g || !step_allowed(to, *g, s.stop_at_drops)) return false;
             if (blocked(Vec3{before[0], operator_ground_ + 0.45f, before[2]}, Vec3{to[0], *g + 0.45f, to[2]})) return false;
             operator_ground_ = *g;
@@ -805,6 +806,45 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
     const float stride = std::fmod(push_phase_, 1.0f);
     const float dip = stride < 0.4f ? std::sin(stride / 0.4f * pi) : 0.0f;
     Vec3 eye{operator_[0], std::max(operator_height_ - dip * 0.03f * (0.4f + human), operator_floor_ + lens_clearance), operator_[2]};
+    // The lens travels along the path the filmer rode, at their eased speed: a step the world refused
+    // for a tick (and the catch-up after it) is never a jolt in the picture, and as the path is ground
+    // they rode, it never cuts a corner over something.
+    {
+        const Vec3 here{operator_[0], operator_floor_, operator_[2]};
+        if (!eye_have_ || lens_path_.empty() || flat_length(sub(here, lens_path_.back().at)) > 2.0f) {
+            lens_path_.clear();
+            lens_path_.push_back({here, 0.0f});
+            lens_at_ = 0.0f;
+            lens_speed_ = 0.0f;
+            eye_have_ = true;
+        } else if (flat_length(sub(here, lens_path_.back().at)) > 0.002f) {
+            lens_path_.push_back({here, lens_path_.back().along + flat_length(sub(here, lens_path_.back().at))});
+        } else {
+            lens_path_.back().at[1] = operator_floor_;
+        }
+        const float end = lens_path_.back().along;
+        const float body_speed = dt > 0.0f ? flat_length(sub(here, eye_last_)) / dt : 0.0f;
+        eye_last_ = here;
+        // Eased speed, a hand's length behind at a roll (so a stalled tick has slack to ride through),
+        // and a pull on the gap, so they never fall further behind and close it when stopped.
+        lens_speed_ += (std::min(body_speed, 25.0f) - lens_speed_) * ease(dt, 0.3f);
+        const float slack = std::min(0.25f, lens_speed_ * 0.05f);
+        lens_at_ = std::min(end, lens_at_ + std::max(0.0f, lens_speed_ + (end - lens_at_ - slack) * 2.0f) * dt);
+        if (end - lens_at_ > 0.6f) lens_at_ = end - 0.6f; // never far off the body
+        while (lens_path_.size() > 2 && lens_path_[1].along <= lens_at_) lens_path_.pop_front();
+        Vec3 at = lens_path_.back().at;
+        for (std::size_t i = 1; i < lens_path_.size(); ++i)
+            if (lens_path_[i].along >= lens_at_) {
+                const auto &p0 = lens_path_[i - 1], &p1 = lens_path_[i];
+                const float span = p1.along - p0.along;
+                at = lerp(p0.at, p1.at, span > 1e-5f ? std::clamp((lens_at_ - p0.along) / span, 0.0f, 1.0f) : 1.0f);
+                break;
+            }
+        eye[0] = at[0];
+        eye[2] = at[2];
+        lens_ground_ = std::max(at[1], operator_floor_ - 0.3f);
+    }
+    eye[1] = std::max(eye[1], lens_ground_ + lens_clearance);
     // Can the filmer see you? (For the cut when they lose you.)
     if (cast_) {
         const bool hidden = blocked(eye, centre);
@@ -855,7 +895,7 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
     lean_ = mix(lean_, std::clamp(-turn * operator_speed * 0.012f, -0.12f, 0.12f), ease(dt, 0.25f));
     float yaw = aim_.yaw, pitch = aim_.pitch, roll = lean_;
     shake(now, operator_speed, human, yaw, pitch, roll, eye);
-    eye[1] = std::max(eye[1], operator_floor_ + lens_clearance); // the hand's shake never takes it under
+    eye[1] = std::max(eye[1], lens_ground_ + lens_clearance); // the hand's shake never takes it under
     Frame frame;
     frame.camera = build(eye, yaw, std::clamp(pitch, -1.45f, 1.45f), roll);
     frame.fov = render_fov(s.lens);
