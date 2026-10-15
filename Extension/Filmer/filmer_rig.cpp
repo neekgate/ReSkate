@@ -30,9 +30,9 @@ void spring(float &x, float &v, float target, float target_rate, float omega, fl
     }
 }
 // The same, for an angle: the target is reached the short way round.
-void angle_spring(float &x, float &v, float target, float omega, float damping, float dt) {
+void angle_spring(float &x, float &v, float target, float omega, float damping, float dt, float target_rate = 0.0f) {
     const float goal = x + wrap_angle(target - x);
-    spring(x, v, goal, 0.0f, omega, damping, dt);
+    spring(x, v, goal, target_rate, omega, damping, dt);
     x = wrap_angle(x);
 }
 float yaw_of(float x, float z) { return std::atan2(x, z); }
@@ -174,7 +174,7 @@ bool Rig::step_allowed(const Vec3 &, float to_ground, bool stop_at_drops) const 
 }
 
 // The vertical half of the view (radians): the fisheye's frame edge sees half the game camera's FOV.
-float Rig::half_view(const RigSettings &s) const { return render_fov(s.lens) * 0.5f * degrees; }
+float Rig::half_view(const RigSettings &s) const { return render_fov(s.lens) / zoom_ * 0.5f * degrees; }
 
 // The pitch that frames a skater standing at `root` (their feet) from `eye`: the board at a fixed
 // place below the centre (tilt), raised if their head would be cut, but never so far the board leaves.
@@ -196,6 +196,51 @@ void Rig::slap(double now) noexcept {
 }
 
 float Rig::angle_degrees() const noexcept { return angle_ / degrees; }
+
+// The zoom eases to where it is wanted, as a servo zoom does; riding again (or the fisheye on), back
+// out to the long lens's widest.
+void Rig::ease_zoom(float dt, const RigSettings &s) noexcept {
+    if (s.lens != Lens::long_lens || !stationary()) zoom_target_ = 1.0f;
+    zoom_ += (zoom_target_ - zoom_) * ease(dt, 0.15f);
+    if (std::abs(zoom_ - zoom_target_) < 0.002f) zoom_ = zoom_target_;
+}
+
+bool Rig::stationary() const noexcept {
+    if (filming_) return self_.have && flat_length(self_.velocity) < 0.5f;
+    return operator_have_ && (planted_ || edge_locked_);
+}
+
+void Rig::look(float right, float down) noexcept {
+    if (!stationary() || !std::isfinite(right) || !std::isfinite(down)) return;
+    if (filming_) {
+        // As the right stick does: the framing's offset (the assist keeps framing them past it).
+        offset_yaw_ = wrap_angle(offset_yaw_ - right);
+        offset_pitch_ = std::clamp(offset_pitch_ - down, -1.2f, 1.2f);
+        stick_idle_since_ = now_;
+    } else if (aim_.have) {
+        aim_.yaw = wrap_angle(aim_.yaw - right);
+        aim_.pitch = std::clamp(aim_.pitch - down, -1.35f, 1.35f);
+        aim_.yaw_rate = aim_.pitch_rate = 0.0f;
+    }
+}
+
+void Rig::zoom_by(float factor, const RigSettings &settings) noexcept {
+    if (settings.lens != Lens::long_lens || !stationary() || !(factor > 0.0f) || !std::isfinite(factor)) return;
+    zoom_target_ = std::clamp(zoom_target_ * factor, 1.0f, max_zoom);
+}
+
+Rig::Cruise Rig::cruise(float gap) const noexcept {
+    if (!filming_ || !framing_ || !self_.have || !subject_.have) return {};
+    // How far they are ahead of you along the way they ride (behind you: negative).
+    const Vec3 heading{subject_.heading_x, 0.0f, subject_.heading_z};
+    const Vec3 rel{subject_.position[0] - self_.position[0], 0.0f, subject_.position[2] - self_.position[2]};
+    const float ahead = rel[0] * heading[0] + rel[2] * heading[2];
+    const float their_speed = flat_length(subject_.velocity), my_speed = flat_length(self_.velocity);
+    if (their_speed < 1.0f) return {}; // they have stopped: nothing to keep up with
+    // Their speed, and a pull on the gap: closing at up to 4 m/s, falling back at up to 3.
+    const float want = std::clamp(their_speed + std::clamp((ahead - gap) * 0.8f, -3.0f, 4.0f), 0.0f, 14.0f);
+    return {true, want, want < my_speed - 0.5f && ahead < gap, ahead};
+}
 
 // How far the skater's root (where the game says they are) is above the ground under their board.
 // The game's root can sit at the hips: everything that compares the trail (roots) with the ground the
@@ -505,13 +550,13 @@ Vec3 Rig::delayed_point(double now, float delay) const {
     return history_.front().point;
 }
 
-void Rig::steer_aim(float dt, float want_yaw, float want_pitch, float omega, float damping) {
+void Rig::steer_aim(float dt, float want_yaw, float want_pitch, float omega, float damping, float yaw_rate, float pitch_rate) {
     if (!aim_.have) {
         aim_ = {want_yaw, want_pitch, 0, 0, true};
         return;
     }
-    angle_spring(aim_.yaw, aim_.yaw_rate, want_yaw, omega, damping, dt);
-    spring(aim_.pitch, aim_.pitch_rate, std::clamp(want_pitch, -1.35f, 1.35f), 0.0f, omega, damping, dt);
+    angle_spring(aim_.yaw, aim_.yaw_rate, want_yaw, omega, damping, dt, yaw_rate);
+    spring(aim_.pitch, aim_.pitch_rate, std::clamp(want_pitch, -1.35f, 1.35f), pitch_rate, omega, damping, dt);
     aim_.pitch = std::clamp(aim_.pitch, -1.4f, 1.4f);
 }
 
@@ -560,7 +605,10 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
     if (!subject.valid || !finite(subject.position)) return {};
     dt = std::clamp(dt, 0.0f, 0.1f);
     begin_tick(now);
+    filming_ = framing_ = false;
+    ff_have_ = false;
     track(now, dt, subject, subject_, true, true);
+    ease_zoom(dt, s);
     const auto &t = subject_;
     const float speed = flat_length(t.velocity);
     const float human = std::clamp(s.human, 0.0f, 1.0f), reaction = std::clamp(s.reaction, 0.0f, 1.0f);
@@ -970,7 +1018,7 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
     eye[1] = std::max(eye[1], lens_ground_ + lens_clearance); // the hand's shake never takes it under
     Frame frame;
     frame.camera = build(eye, yaw, std::clamp(pitch, -1.45f, 1.45f), roll);
-    frame.fov = render_fov(s.lens);
+    frame.fov = render_fov(s.lens) / zoom_;
     frame.valid = valid_camera(frame.camera);
     return frame;
 }
@@ -980,9 +1028,13 @@ Frame Rig::film(double now, float dt, const Subject &self, const Subject *target
     if (!self.valid || !finite(self.position)) return {};
     dt = std::clamp(dt, 0.0f, 0.1f);
     begin_tick(now);
+    filming_ = true;
     track(now, dt, self, self_, false, true);
     const bool aiming_at = target && target->valid && finite(target->position);
     if (aiming_at) track(now, dt, *target, subject_, true, false);
+    if (aiming_at != framing_) ff_have_ = false;
+    framing_ = aiming_at;
+    ease_zoom(dt, s);
     const float human = std::clamp(s.human, 0.0f, 1.0f) * 0.6f; // your own hands add the rest
     const auto &me = self_;
     const float speed = flat_length(me.velocity);
@@ -1028,24 +1080,46 @@ Frame Rig::film(double now, float dt, const Subject &self, const Subject *target
             eye[1] = std::max(eye[1], film_floor_ + lens_clearance);
         }
     }
+    float yaw_rate = 0.0f, pitch_rate = 0.0f;
     if (s.assist && aiming_at) {
-        // Framing a skater: the aim keeps on them as a person would (late, a little loose), and the
-        // stick shifts the framing; let go and it settles back on them.
+        // Framing a skater: the aim keeps on them as a person would (a beat late), and the stick
+        // shifts the framing; let go and it settles back on them. Worked out from where the camera is
+        // held from (your body), not the lens out at arm's length (which swings with the aim, and
+        // would chase itself). How fast their bearing moves is fed forward, so the aim turns with them
+        // at their pace (less lag, no overshoot) and only small errors are corrected; the hand's shake
+        // comes after, from shake().
         const Vec3 now_point = aim_point(subject_, s);
         history_.push_back({now, now_point});
         while (!history_.empty() && now - history_.front().time > 0.6) history_.pop_front();
         const Vec3 late = delayed_point(now, 0.03f + 0.12f * std::clamp(s.reaction, 0.0f, 1.0f));
-        const Vec3 to = sub(late, eye);
+        const Vec3 pivot{body[0], eye[1], body[2]};
+        const Vec3 to = sub(late, pivot);
         want_yaw = yaw_of(to[0], to[2]) + offset_yaw_;
-        want_pitch = frame_pitch(eye, late, subject_.airborne, 0.0f, s) + offset_pitch_;
+        want_pitch = frame_pitch(pivot, late, subject_.airborne, 0.0f, s) + offset_pitch_;
         if (!touched && now - stick_idle_since_ > 0.35) {
             const float k = ease(dt, 0.9f);
             offset_yaw_ = mix(offset_yaw_, 0.0f, k);
             offset_pitch_ = mix(offset_pitch_, 0.0f, k);
         }
+        if (ff_have_ && dt > 0.0f) {
+            const float raw_yaw = std::clamp(wrap_angle(want_yaw - ff_last_yaw_) / dt, -8.0f, 8.0f);
+            const float raw_pitch = std::clamp((want_pitch - ff_last_pitch_) / dt, -4.0f, 4.0f);
+            ff_yaw_rate_ += (raw_yaw - ff_yaw_rate_) * ease(dt, 0.2f);
+            ff_pitch_rate_ += (raw_pitch - ff_pitch_rate_) * ease(dt, 0.2f);
+        } else {
+            ff_yaw_rate_ = ff_pitch_rate_ = 0.0f;
+        }
+        ff_last_yaw_ = want_yaw;
+        ff_last_pitch_ = want_pitch;
+        ff_have_ = true;
+        // Half of it: all of it amplifies the small noise in where they are (measured on a trace:
+        // half frames them closer than none, as smoothly).
+        yaw_rate = ff_yaw_rate_ * 0.5f;
+        pitch_rate = ff_pitch_rate_ * 0.5f;
         omega = mix(11.0f, 5.5f, std::clamp(s.reaction, 0.0f, 1.0f));
-        damping = mix(0.95f, 0.7f, human);
+        damping = 1.0f;
     } else {
+        ff_have_ = false;
         // Your own framing, held relative to the way you ride: turn and the camera turns with you.
         if (s.recenter && !touched && now - stick_idle_since_ > 0.6) {
             const float k = ease(dt, 0.8f);
@@ -1055,7 +1129,7 @@ Frame Rig::film(double now, float dt, const Subject &self, const Subject *target
         want_yaw = heading + offset_yaw_;
         want_pitch = offset_pitch_;
     }
-    steer_aim(dt, want_yaw, want_pitch, omega, damping);
+    steer_aim(dt, want_yaw, want_pitch, omega, damping, yaw_rate, pitch_rate);
     const float turn = dt > 0 ? wrap_angle(heading - last_operator_yaw_) / std::max(dt, 0.001f) : 0.0f;
     last_operator_yaw_ = heading;
     lean_ = mix(lean_, std::clamp(-turn * speed * 0.012f, -0.12f, 0.12f), ease(dt, 0.25f));
@@ -1066,7 +1140,7 @@ Frame Rig::film(double now, float dt, const Subject &self, const Subject *target
     if (film_floor_known_) eye[1] = std::max(eye[1], film_floor_ + lens_clearance);
     Frame frame;
     frame.camera = build(eye, yaw, std::clamp(pitch, -1.45f, 1.45f), roll);
-    frame.fov = render_fov(s.lens);
+    frame.fov = render_fov(s.lens) / zoom_;
     frame.valid = valid_camera(frame.camera);
     return frame;
 }

@@ -275,6 +275,11 @@ constexpr int held_steps = 36;       // a push flagged this long is held (a tap 
 constexpr int hold_steps = 360;      // how long after a push the game holds its speed
 struct PushSpeed {
     std::atomic<float> factor{1}, stock{9.25f}, cruise{};
+    // The Filmer's cruise control: the speed to ride at (0 none), whether it may ease the skater off
+    // (riding up on top of the skater being filmed), and until when it holds (set every client tick).
+    std::atomic<float> filmer{};
+    std::atomic<bool> filmer_slow{};
+    std::atomic<ULONGLONG> filmer_expires{};
     std::uintptr_t client{}, entity{};
     std::atomic<ULONGLONG> expires{};
     // Physics thread only.
@@ -285,7 +290,10 @@ PushSpeed& push_speed() { static auto* value = new PushSpeed; return *value; }
 void trainer_push_speed(std::uintptr_t core) noexcept {
     auto& p = push_speed();
     const float factor = p.factor.load(std::memory_order_relaxed), cruise = p.cruise.load(std::memory_order_relaxed);
-    if ((factor == 1 && cruise <= 0) || GetTickCount64() >= p.expires.load(std::memory_order_acquire)) return;
+    const ULONGLONG ticks = GetTickCount64();
+    const float filmer = ticks < p.filmer_expires.load(std::memory_order_acquire) ? p.filmer.load(std::memory_order_relaxed) : 0.0f;
+    const bool filmer_slow = filmer > 0 && p.filmer_slow.load(std::memory_order_relaxed);
+    if ((factor == 1 && cruise <= 0 && filmer <= 0) || ticks >= p.expires.load(std::memory_order_acquire)) return;
     const auto watch = watched_physics_state();
     if (!watch.valid || watch.state != 100) return; // riding the ground
     SourceLastError error;
@@ -324,12 +332,17 @@ void trainer_push_speed(std::uintptr_t core) noexcept {
         else if (p.pushing >= held_steps) p.carried = true;
         float change = 0;
         if (braking) {
+        } else if (filmer_slow && !pushed && speed > filmer + 0.3f) {
+            // Filming someone and riding up on them: ease off (never while you push).
+            change = -std::min(0.1f, speed - filmer);
         } else if (pushed && factor > 1 && p.carried) {
             change = std::min(push_gain, target * factor - speed);
         } else if (pushed && factor > 1 && speed >= tap_speed * 0.85f && speed < tap_speed * factor) {
             change = std::min(push_gain, tap_speed * factor - speed);
         } else if (pushed && factor < 1 && speed > target * factor && speed <= target * 1.1f) {
             change = -std::min(push_gain, speed - target * factor); // pushed speed only: a hill's is faster than the target
+        } else if (filmer > 0 && speed >= 1.0f && speed < filmer) {
+            change = std::min(cruise_gain, filmer - speed); // the Filmer's cruise control, before auto push
         } else if (cruise > 0 && speed >= 1.0f && speed < cruise) {
             change = std::min(cruise_gain, cruise - speed);
         }
@@ -474,6 +487,12 @@ void set_push_speed(std::uintptr_t client, std::uintptr_t entity, float factor, 
     p.stock.store(stock > 1 && stock < 100 ? stock : 9.25f, std::memory_order_relaxed);
     p.factor.store(factor > 0.02f && factor <= 50 ? factor : 1.0f, std::memory_order_relaxed);
     p.expires.store(GetTickCount64() + 500, std::memory_order_release);
+}
+void set_filmer_cruise(float speed, bool may_slow) noexcept {
+    auto& p = push_speed();
+    p.filmer.store(speed > 0 && speed < 30 ? speed : 0.0f, std::memory_order_relaxed);
+    p.filmer_slow.store(may_slow, std::memory_order_relaxed);
+    p.filmer_expires.store(speed > 0 ? GetTickCount64() + 300 : 0, std::memory_order_release);
 }
 JumpScaleResult take_jump_scale_result() noexcept {
     auto& j = jump_scale();

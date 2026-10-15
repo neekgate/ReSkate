@@ -7,6 +7,7 @@
 #include "Extension/Multiplayer/Net/protocol.h"
 #include "Extension/Profile/local_profile_runtime.h"
 #include "Engine/Game/UI/game_view.h"
+#include "Engine/Game/Multiplayer/session_tools.h"
 #include "Extension/Skater/client_source_spawn.h"
 #include "Extension/Trainer/trainer.h"
 #include "Extension/UI/Overlay/overlay.h"
@@ -79,6 +80,10 @@ struct State {
     bool filter_installed{};
     bool world_set{};
     bool planted_shown{}, edge_shown{};
+    // What the menu was last shown of the stationary camera's zoom and the cruise control.
+    bool stationary_shown{}, cruising_shown{};
+    float zoom_shown{1.0f};
+    std::string cruise_note;
     float camera_fov{};
 };
 State &state() {
@@ -150,6 +155,10 @@ void load_store() {
         r.hold_height = clamped(o, "hold", d.rig.hold_height, 0.05f, 1.8f);
         r.tilt = clamped(o, "tilt", d.rig.tilt, 0.0f, 1.0f);
         r.stop_at_drops = flag(o, "stop_at_drops", d.rig.stop_at_drops);
+        r.cruise = flag(o, "cruise", d.rig.cruise);
+        r.cruise_gap = clamped(o, "cruise_gap", d.rig.cruise_gap, 1.0f, 12.0f);
+        r.mouse_look = flag(o, "mouse_look", d.rig.mouse_look);
+        r.mouse_sensitivity = clamped(o, "mouse_sensitivity", d.rig.mouse_sensitivity, 0.1f, 5.0f);
         r.lunge = flag(o, "lunge", d.rig.lunge);
         s.settings.stick_clicks = flag(o, "stick_clicks", d.stick_clicks);
         // Settings saved before the camera could go this low keep their old height: start them low.
@@ -209,6 +218,10 @@ void save_store() {
         json["hold"] = r.hold_height;
         json["tilt"] = r.tilt;
         json["stop_at_drops"] = r.stop_at_drops;
+        json["cruise"] = r.cruise;
+        json["cruise_gap"] = r.cruise_gap;
+        json["mouse_look"] = r.mouse_look;
+        json["mouse_sensitivity"] = r.mouse_sensitivity;
         json["lunge"] = r.lunge;
         json["stick_clicks"] = s.settings.stick_clicks;
         json["hide_hud"] = s.settings.hide_hud;
@@ -316,8 +329,10 @@ std::optional<std::uint64_t> match_player(const State &s, const std::string &tex
     return std::nullopt;
 }
 
+// The menu's list of players (who is there, how far): a few times a second is plenty. The positions
+// the camera frames are fetched every tick (tick()): from a snapshot this old the assist jumped
+// after them four times a second.
 void refresh_players(State &s, const Subject &self) {
-    s.others = multiplayer::filmable_players();
     std::vector<PlayerRow> rows;
     rows.reserve(s.others.size());
     for (const auto &player : s.others) {
@@ -434,6 +449,10 @@ void publish_view(State &s) {
     next->planted = s.rig.planted();
     next->at_edge = s.rig.at_edge();
     next->camera_fov = s.camera_fov;
+    next->stationary = s.stationary_shown;
+    next->zoom = s.zoom_shown;
+    next->cruising = s.cruising_shown;
+    next->cruise_note = s.cruise_note;
     next->rolling_since = s.rolling_since;
     next->slap_at = s.slap_at;
     next->slap_serial = s.slap_serial;
@@ -557,6 +576,8 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready, bool camera_ph
         s.last_time = t;
         const auto ticks = GetTickCount64();
         const Subject self = local_subject();
+        // Where everyone is this frame (the session places them every frame).
+        s.others = multiplayer::filmable_players();
         if (ticks >= s.players_at) {
             s.players_at = ticks + 250;
             refresh_players(s, self);
@@ -581,6 +602,19 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready, bool camera_ph
         } else {
             Frame frame;
             std::string name;
+            // The mouse, while the camera is held still: it turns the camera, and the wheel zooms the
+            // long lens (the rig ignores both otherwise). Read every tick so nothing piles up.
+            {
+                overlay::MouseLook mouse;
+                if (DingoSDKOverlayReadMouseLook(&mouse) && s.settings.rig.mouse_look && s.held) {
+                    // About a third of a degree a count at 1x, slower zoomed in (the same feel on screen).
+                    const float per_count = 0.0022f * s.settings.rig.mouse_sensitivity / s.rig.zoom();
+                    if (mouse.x || mouse.y)
+                        s.rig.look(static_cast<float>(mouse.x) * per_count,
+                                   static_cast<float>(mouse.y) * per_count * (s.settings.rig.invert_y ? -1.0f : 1.0f));
+                    if (mouse.wheel) s.rig.zoom_by(std::pow(1.15f, static_cast<float>(mouse.wheel) / 120.0f), s.settings.rig);
+                }
+            }
             if (s.settings.mode == Mode::follow) {
                 Subject subject = self;
                 name = "you";
@@ -608,6 +642,35 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready, bool camera_ph
                 name = target ? target->name : "your own framing";
                 const StickInput stick = read_stick(s);
                 frame = s.rig.film(t, dt, self, target ? &target_subject : nullptr, stick, s.settings.rig);
+            }
+            // Cruise control: filming a friend, you ride at the speed that keeps you the gap behind them
+            // (the game's own push speed carrier, the trainer's auto push's; your push and brake still
+            // work). Off where the session's host has turned boosts off: it is a speed boost.
+            {
+                float cruise_speed = 0.0f;
+                bool cruise_slow = false;
+                std::string note;
+                if (s.settings.mode == Mode::film && s.settings.rig.cruise && s.held) {
+                    if (multiplayer_session_active() && !session_boosts_allowed()) {
+                        note = "Cruise control is off in this session: the host has turned boosts off.";
+                    } else if (const auto c = s.rig.cruise(s.settings.rig.cruise_gap); c.active) {
+                        cruise_speed = c.speed;
+                        cruise_slow = c.slow;
+                    } else {
+                        note = "Cruise control waits for someone to frame, rolling.";
+                    }
+                }
+                set_filmer_cruise(cruise_speed, cruise_slow);
+                if ((cruise_speed > 0.0f) != s.cruising_shown || note != s.cruise_note) {
+                    s.cruising_shown = cruise_speed > 0.0f;
+                    s.cruise_note = std::move(note);
+                    s.view_due = true;
+                }
+            }
+            if (s.rig.stationary() != s.stationary_shown || std::abs(s.rig.zoom() - s.zoom_shown) > 0.05f) {
+                s.stationary_shown = s.rig.stationary();
+                s.zoom_shown = s.rig.zoom();
+                s.view_due = true;
             }
             if (s.trace.is_open()) {
                 if (t > s.trace_until) {
@@ -638,6 +701,11 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready, bool camera_ph
                         s.view_due = true;
                         s.rolling_since = t;
                         say(logging::Level::info, std::format("Filmer: rolling ({}).", mode_name(s.settings.mode)));
+                    }
+                    // The field of view it is filming at (the long lens zoomed in, say), for the look.
+                    if (std::abs(frame.fov - s.camera_fov) > 0.3f) {
+                        s.camera_fov = frame.fov;
+                        s.view_due = true;
                     }
                     std::string where;
                     if (s.settings.mode == Mode::follow && s.rig.planted()) where = " (stopped: click the left stick to ride again)";
@@ -759,6 +827,10 @@ std::string set_option(State &s, const std::string &key, const std::string &valu
     if (key == "clicks") return toggle(s.settings.stick_clicks);
     if (key == "anywhere") return toggle(k.anywhere);
     if (key == "lunge") return toggle(r.lunge);
+    if (key == "cruise") return toggle(r.cruise);
+    if (key == "gap") return real(r.cruise_gap, 1.0f, 12.0f);
+    if (key == "mouse") return toggle(r.mouse_look);
+    if (key == "mousesens") return real(r.mouse_sensitivity, 0.1f, 5.0f);
     if (key == "age") return real(k.age, 0.0f, 1.0f);
     if (key == "dropouts") return toggle(k.dropouts);
     if (key == "headswitch") return toggle(k.head_switching);
@@ -841,6 +913,23 @@ std::string command(std::string_view verb, const std::vector<std::string> &argum
             const bool plant = wanted == "on" || wanted == "1" ? true : wanted == "off" || wanted == "0" ? false : !s.rig.planted();
             s.rig.set_planted(plant);
             reply = plant ? "The filmer stops and films from here." : "The filmer rides with you again.";
+        }
+    } else if (verb == "cruise") {
+        const auto wanted = lower(arg(0));
+        auto &r = s.settings.rig;
+        r.cruise = wanted == "on" || wanted == "1" ? true : wanted == "off" || wanted == "0" ? false : !r.cruise;
+        changed(s);
+        reply = r.cruise ? std::format("Cruise control on: filming someone, you hold {:.1f} m behind them (you steer and aim).", r.cruise_gap)
+                         : "Cruise control off.";
+    } else if (verb == "zoom") {
+        const auto wanted = lower(arg(0));
+        const float factor = wanted == "in" ? 1.25f : wanted == "out" ? 0.8f : wanted == "reset" ? 0.0001f : 0.0f;
+        if (factor == 0.0f) reply = "error: filmer zoom in|out|reset.";
+        else if (s.settings.rig.lens != Lens::long_lens) reply = "The zoom is the long lens's: filmer set lens long.";
+        else if (!s.rig.stationary()) reply = "The zoom works while the camera is held still (stopped, or you standing still filming).";
+        else {
+            s.rig.zoom_by(factor, s.settings.rig);
+            reply = std::format("Zoom {:.1f}x.", s.rig.zoom_target());
         }
     } else if (verb == "trace") {
         try {

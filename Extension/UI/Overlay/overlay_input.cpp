@@ -144,6 +144,7 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wp, LPARAM lp) {
         if (message == WM_INPUT && note_raw_mouse(reinterpret_cast<HRAWINPUT>(lp), pointer_owned))
             noted_raw_input = reinterpret_cast<HRAWINPUT>(lp);
         if (message == WM_KILLFOCUS) s.raw_mouse_buttons.store(0);
+        if (message == WM_MOUSEWHEEL) s.look_wheel_message.fetch_add(GET_WHEEL_DELTA_WPARAM(wp));
         if (pointer_message) window_cursor_input(window, message, wp, pointer_owned);
         else window_cursor_input(window, message, wp);
         const bool key = message == WM_KEYDOWN || message == WM_SYSKEYDOWN;
@@ -575,6 +576,26 @@ extern "C" bool DingoSDKOverlayReadGamepad(dingosdk::overlay::GamepadValues* out
 }
 
 // Raw mouse packets arrived recently enough to trust the tracked buttons.
+static bool raw_mouse_live(const State& s);
+
+extern "C" bool DingoSDKOverlayReadMouseLook(dingosdk::overlay::MouseLook* output) {
+    if (!output) return false;
+    struct PreserveError { DWORD value = GetLastError(); ~PreserveError() { SetLastError(value); } } preserve_error;
+    *output = {};
+    auto& s = state();
+    // Taken whatever happens next, so nothing piles up while a menu is open.
+    const long x = s.look_mouse_x.exchange(0), y = s.look_mouse_y.exchange(0);
+    const long wheel_raw = s.look_wheel_raw.exchange(0), wheel_message = s.look_wheel_message.exchange(0);
+    const HWND window = s.window.load();
+    if (!window || s.stop.load() || s.failed.load() || interactive_visible(s) || !game_window_foreground(window)) return false;
+    output->x = x;
+    output->y = y;
+    // The same notch can arrive both ways: the raw count where raw packets come in, else the message's.
+    output->wheel = raw_mouse_live(s) && wheel_raw != 0 ? wheel_raw : wheel_message;
+    return true;
+}
+
+
 static bool raw_mouse_live(const State& s) {
     const auto time = s.raw_mouse_time.load();
     return time && GetTickCount64() < time + 10000;

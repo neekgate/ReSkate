@@ -405,7 +405,7 @@ bool record(const Target &t) noexcept {
         // The bend can only squeeze what the game drew: with the Filmer's camera that is the fisheye's
         // wide view; over any other camera (a replay's), whatever that camera's own field of view is.
         const bool fish = (v->active ? rig.lens == Lens::fisheye : true) && look.fisheye;
-        const float fov_degrees = v->active ? render_fov(rig.lens) : (v->camera_fov > 10.0f ? v->camera_fov : 60.0f);
+        const float fov_degrees = v->camera_fov > 5.0f ? v->camera_fov : v->active ? render_fov(rig.lens) : 60.0f;
         const float fov = fov_degrees * std::numbers::pi_v<float> / 180.0f;
         const float screen_aspect = width / height;
         // Text white: the overlay's output (SDR, scRGB in units of 80 nits, or HDR10's PQ code for 200 nits).

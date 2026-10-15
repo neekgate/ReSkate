@@ -115,6 +115,9 @@ struct State {
     std::atomic<long> raw_mouse_x{0}, raw_mouse_y{0};
     std::atomic<unsigned> raw_mouse_buttons{0}; // physical: 1 left, 2 right, 4 middle
     std::atomic<ULONGLONG> raw_mouse_time{0};
+    // The Filmer's mouse look and zoom (DingoSDKOverlayReadMouseLook): raw movement and the wheel
+    // (from raw packets, or WM_MOUSEWHEEL where the game takes none), kept apart from the editor's.
+    std::atomic<long> look_mouse_x{0}, look_mouse_y{0}, look_wheel_raw{0}, look_wheel_message{0};
     // The mouse registration in effect has RIDEV_NOLEGACY: Windows does not
     // move the cursor, so the overlay moves it from raw input while it owns it.
     std::atomic<bool> mouse_legacy_blocked{false};

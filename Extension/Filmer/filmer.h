@@ -82,6 +82,10 @@ struct View {
     bool planted{};           // follow: the filmer was told to stop and film from where they stand
     bool at_edge{};           // follow: the filmer stopped where you went over a drop or a gap
     float camera_fov{};       // the game camera's own field of view (the look over another camera)
+    bool stationary{};        // the camera is held still: mouse look and the long lens's zoom work
+    float zoom{1.0f};         // the long lens's zoom
+    bool cruising{};          // cruise control is holding your speed
+    std::string cruise_note;  // why cruise control is not, when it is switched on
     // The overlay's clock (now()): when the camera started rolling this clip and when the lens was
     // last slapped.
     double rolling_since{}, slap_at{-100.0};
