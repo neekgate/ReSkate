@@ -22,7 +22,9 @@ skate. filmed the way a skater with a VX1000 films a line.
 - **You film** (`filmer mode film`): your skater is the filmer. The left stick rides; the right
   stick points the camera (the game stops seeing it, so no flicks while you film). The aim assist
   keeps a friend in frame (the closest one ahead, or `filmer target <name>`) and the stick shifts
-  the framing. Click the right stick to slap the lens.
+  the framing. It smooths out the uneven steps a friend's position arrives in over the network and
+  turns with them as they go, so it keeps up without shaking (Reaction sets how late it is). Click the
+  right stick to slap the lens.
 
 ## The look
 

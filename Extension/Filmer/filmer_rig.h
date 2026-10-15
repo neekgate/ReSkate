@@ -162,7 +162,8 @@ private:
     void choose_angle(double now, float speed);
     Vec3 aim_point(const Tracked &tracked, const RigSettings &settings) const;
     Vec3 delayed_point(double now, float delay) const;
-    void steer_aim(float dt, float want_yaw, float want_pitch, float omega, float damping);
+    void steer_aim(float dt, float want_yaw, float want_pitch, float omega, float damping, float yaw_rate = 0.0f,
+                   float pitch_rate = 0.0f);
     float half_view(const RigSettings &settings) const;
     Matrix build(const Vec3 &eye, float yaw, float pitch, float roll) const;
     void shake(double now, float speed, float human, float &yaw, float &pitch, float &roll, Vec3 &eye) const;
@@ -234,6 +235,18 @@ private:
     // Film mode: the stick's own offset from the assist's aim, and from straight ahead without it.
     float offset_yaw_{}, offset_pitch_{};
     double stick_idle_since_{};
+    // Film mode, the assist: the skater it frames, smoothed (an alpha-beta tracker: position and
+    // velocity, no lag behind steady motion), so a friend's position arriving in uneven steps over the
+    // network never shakes the aim. The aim it wants and how fast that is turning, fed forward to the
+    // aim's spring so it keeps up without having to be stiff. Where the arm reaches, eased, so the
+    // lens's own swing never feeds back into the aim.
+    struct Smoothed { bool have{}; Vec3 position{}, velocity{}; };
+    Smoothed framed_;
+    float framed_air_{};
+    bool want_have_{};
+    float want_yaw_{}, want_pitch_{}, want_yaw_rate_{}, want_pitch_rate_{};
+    float reach_yaw_{};
+    bool reach_have_{};
     float push_phase_{};
     bool pushing_{};
     double slap_at_{-100.0};

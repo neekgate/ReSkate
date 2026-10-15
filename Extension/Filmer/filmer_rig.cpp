@@ -30,9 +30,9 @@ void spring(float &x, float &v, float target, float target_rate, float omega, fl
     }
 }
 // The same, for an angle: the target is reached the short way round.
-void angle_spring(float &x, float &v, float target, float omega, float damping, float dt) {
+void angle_spring(float &x, float &v, float target, float omega, float damping, float dt, float target_rate = 0.0f) {
     const float goal = x + wrap_angle(target - x);
-    spring(x, v, goal, 0.0f, omega, damping, dt);
+    spring(x, v, goal, target_rate, omega, damping, dt);
     x = wrap_angle(x);
 }
 float yaw_of(float x, float z) { return std::atan2(x, z); }
@@ -94,6 +94,9 @@ void Rig::reset() noexcept {
     angle_rate_ = 0;
     angle_until_ = 0;
     offset_yaw_ = offset_pitch_ = 0;
+    framed_ = {};
+    framed_air_ = 0;
+    want_have_ = reach_have_ = false;
     pushing_ = false;
     planted_ = edge_ = holding_ = false;
     flat_air_ = false;
@@ -505,13 +508,14 @@ Vec3 Rig::delayed_point(double now, float delay) const {
     return history_.front().point;
 }
 
-void Rig::steer_aim(float dt, float want_yaw, float want_pitch, float omega, float damping) {
+void Rig::steer_aim(float dt, float want_yaw, float want_pitch, float omega, float damping, float yaw_rate,
+                    float pitch_rate) {
     if (!aim_.have) {
-        aim_ = {want_yaw, want_pitch, 0, 0, true};
+        aim_ = {want_yaw, want_pitch, yaw_rate, pitch_rate, true};
         return;
     }
-    angle_spring(aim_.yaw, aim_.yaw_rate, want_yaw, omega, damping, dt);
-    spring(aim_.pitch, aim_.pitch_rate, std::clamp(want_pitch, -1.35f, 1.35f), 0.0f, omega, damping, dt);
+    angle_spring(aim_.yaw, aim_.yaw_rate, want_yaw, omega, damping, dt, yaw_rate);
+    spring(aim_.pitch, aim_.pitch_rate, std::clamp(want_pitch, -1.35f, 1.35f), pitch_rate, omega, damping, dt);
     aim_.pitch = std::clamp(aim_.pitch, -1.4f, 1.4f);
 }
 
@@ -1009,7 +1013,12 @@ Frame Rig::film(double now, float dt, const Subject &self, const Subject *target
     // board, whichever way you turn it. A wall in the way brings it in; it never goes under the ground.
     const float hold = std::clamp(s.hold_height, 0.05f, 1.8f);
     const Vec3 body{me.position[0], operator_height_ + hold, me.position[2]};
-    const float reach_yaw = aim_.have ? aim_.yaw : heading;
+    // The arm follows the aim a beat behind: if the lens's own swing moved where it looks from at once,
+    // every turn of the aim would shift the angle to the skater it frames and the two would chase.
+    const float aimed = aim_.have ? aim_.yaw : heading;
+    if (!reach_have_) { reach_yaw_ = aimed; reach_have_ = true; }
+    reach_yaw_ = wrap_angle(reach_yaw_ + wrap_angle(aimed - reach_yaw_) * ease(dt, 0.12f));
+    const float reach_yaw = reach_yaw_;
     const float reach = 0.62f;
     Vec3 eye = add(body, Vec3{std::sin(reach_yaw) * reach, 0, std::cos(reach_yaw) * reach});
     if (cast_) {
@@ -1028,24 +1037,78 @@ Frame Rig::film(double now, float dt, const Subject &self, const Subject *target
             eye[1] = std::max(eye[1], film_floor_ + lens_clearance);
         }
     }
+    float want_yaw_rate = 0.0f, want_pitch_rate = 0.0f;
     if (s.assist && aiming_at) {
-        // Framing a skater: the aim keeps on them as a person would (late, a little loose), and the
-        // stick shifts the framing; let go and it settles back on them.
-        const Vec3 now_point = aim_point(subject_, s);
+        // Framing a skater: the aim keeps on them as a person would (a beat late, a little loose), and
+        // the stick shifts the framing; let go and it settles back on them.
+        //
+        // Their board, smoothed first. Another skater's position comes over the network in uneven
+        // steps (a packet late, two at once), and aiming straight at that shakes the picture however
+        // soft the aim is. The tracker keeps a position and a velocity: steady riding passes through
+        // with no lag, the steps are taken out, and it tightens up when they move sharply.
+        Vec3 board = subject_.position;
+        board[1] -= root_above_ground_;
+        if (!framed_.have || length(sub(board, framed_.position)) > 3.0f) {
+            framed_ = {true, board, subject_.velocity};
+            framed_air_ = subject_.airborne ? 1.0f : 0.0f;
+            history_.clear();
+            want_have_ = false;
+        } else {
+            const float w = 6.0f;
+            const int steps = std::clamp(static_cast<int>(std::ceil(dt * w / 0.25f)), 1, 8);
+            const float h = dt / static_cast<float>(steps);
+            for (int i = 0; i < steps; ++i) {
+                const Vec3 e = sub(board, framed_.position);
+                framed_.position = add(framed_.position, scale(add(framed_.velocity, scale(e, 2.0f * w)), h));
+                framed_.velocity = add(framed_.velocity, scale(e, w * w * h));
+            }
+        }
+        // Into and out of an air, the lead and the lift blend over a tenth of a second: a friend's
+        // air is guessed from their height and can flicker.
+        framed_air_ = mix(framed_air_, subject_.airborne ? 1.0f : 0.0f, ease(dt, 0.1f));
+        Vec3 now_point = framed_.position;
+        const float lead = mix(0.1f, 0.14f, framed_air_);
+        now_point[0] += framed_.velocity[0] * lead;
+        now_point[2] += framed_.velocity[2] * lead;
+        now_point[1] += framed_air_ * std::clamp(framed_.velocity[1] * 0.08f, -0.4f, 0.4f);
         history_.push_back({now, now_point});
         while (!history_.empty() && now - history_.front().time > 0.6) history_.pop_front();
-        const Vec3 late = delayed_point(now, 0.03f + 0.12f * std::clamp(s.reaction, 0.0f, 1.0f));
+        const float reaction = std::clamp(s.reaction, 0.0f, 1.0f);
+        const Vec3 late = delayed_point(now, 0.02f + 0.1f * reaction);
         const Vec3 to = sub(late, eye);
         want_yaw = yaw_of(to[0], to[2]) + offset_yaw_;
         want_pitch = frame_pitch(eye, late, subject_.airborne, 0.0f, s) + offset_pitch_;
+        // How fast the framing it wants is turning, fed forward: the aim turns with the skater as they
+        // go instead of trailing them, so it can be soft (no shake) and still keep up.
+        // Sideways, from the tracker's velocity against your own (no differencing noise); the stick's
+        // own turn on top. Up and down, from how the framing changes, eased.
+        {
+            const Vec3 rel = sub(framed_.velocity, me.velocity);
+            const float d2 = std::max(to[0] * to[0] + to[2] * to[2], 0.25f);
+            want_yaw_rate_ = std::clamp((rel[0] * to[2] - rel[2] * to[0]) / d2 - sx * rate, -8.0f, 8.0f);
+        }
+        if (want_have_ && dt > 0.0005f)
+            want_pitch_rate_ = mix(want_pitch_rate_, std::clamp((want_pitch - want_pitch_) / dt, -6.0f, 6.0f), ease(dt, 0.1f));
+        else
+            want_pitch_rate_ = 0.0f;
+        want_yaw_ = want_yaw;
+        want_pitch_ = want_pitch;
+        want_have_ = true;
+        want_yaw_rate = want_yaw_rate_;
+        want_pitch_rate = want_pitch_rate_;
         if (!touched && now - stick_idle_since_ > 0.35) {
             const float k = ease(dt, 0.9f);
             offset_yaw_ = mix(offset_yaw_, 0.0f, k);
             offset_pitch_ = mix(offset_pitch_, 0.0f, k);
         }
-        omega = mix(11.0f, 5.5f, std::clamp(s.reaction, 0.0f, 1.0f));
-        damping = mix(0.95f, 0.7f, human);
+        // Falling behind (a skater whipping past close): the aim tightens until it is back on them.
+        const float off = aim_.have ? std::max(std::abs(wrap_angle(want_yaw - aim_.yaw)), std::abs(want_pitch - aim_.pitch)) : 0.0f;
+        const float catch_up = std::clamp((off - 0.12f) / 0.15f, 0.0f, 1.5f);
+        omega = mix(12.0f, 6.0f, reaction) * (1.0f + catch_up);
+        damping = mix(1.0f, 0.75f, human);
     } else {
+        framed_.have = false;
+        want_have_ = false;
         // Your own framing, held relative to the way you ride: turn and the camera turns with you.
         if (s.recenter && !touched && now - stick_idle_since_ > 0.6) {
             const float k = ease(dt, 0.8f);
@@ -1055,7 +1118,7 @@ Frame Rig::film(double now, float dt, const Subject &self, const Subject *target
         want_yaw = heading + offset_yaw_;
         want_pitch = offset_pitch_;
     }
-    steer_aim(dt, want_yaw, want_pitch, omega, damping);
+    steer_aim(dt, want_yaw, want_pitch, omega, damping, want_yaw_rate, want_pitch_rate);
     const float turn = dt > 0 ? wrap_angle(heading - last_operator_yaw_) / std::max(dt, 0.001f) : 0.0f;
     last_operator_yaw_ = heading;
     lean_ = mix(lean_, std::clamp(-turn * speed * 0.012f, -0.12f, 0.12f), ease(dt, 0.25f));
