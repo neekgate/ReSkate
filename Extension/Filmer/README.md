@@ -24,6 +24,18 @@ skate. filmed the way a skater with a VX1000 films a line.
   keeps a friend in frame (the closest one ahead, or `filmer target <name>`) and the stick shifts
   the framing. Click the right stick to slap the lens.
 
+## Cruise control, mouse look and zoom
+
+- **Cruise control** (film mode, framing a friend; `filmer cruise`, bindable): you ride at the speed
+  that keeps you the gap behind them (`filmer set gap`, 3 m by default). You steer and aim; your own
+  push and brake still work, and riding up on them it eases you off. It moves your speed the way the
+  trainer's auto push does, so push once to get rolling. A speed boost: off in a session whose host
+  has turned boosts off.
+- **Mouse look**: while the camera is held still (the AI filmer stopped with the left stick or at a
+  drop, or you standing still filming), the mouse turns it (`filmer set mouse`, `mousesens`).
+- **Zoom**: with the long lens, while the camera is held still, the mouse wheel zooms (up to 4x), as
+  do `filmer zoom in|out|reset` and their binds. Riding again, it eases back out.
+
 ## The look
 
 Drawn over the game's frame by the overlay while the Filmer has the camera, one switch each:

@@ -103,6 +103,12 @@ struct GamepadValues {
 };
 using GamepadFilter = void (*)(unsigned user, GamepadValues& pad) noexcept;
 
+// The mouse since the last read, for the Filmer's mouse look: raw counts right and down, and the
+// wheel in WHEEL_DELTA steps of 120 (away from you positive).
+struct MouseLook {
+    long x = 0, y = 0, wheel = 0;
+};
+
 struct DebugModel {
     bool available = false;
     bool camera_available = false;
@@ -560,6 +566,9 @@ extern "C" void DingoSDKOverlaySetGamepadFilterSlot(unsigned slot, dingosdk::ove
 // game is told. False and zeros while the game is not in front, a menu is open or no pad is there.
 // Client update thread.
 extern "C" bool DingoSDKOverlayReadGamepad(dingosdk::overlay::GamepadValues* pad);
+// The mouse since the last call (MouseLook). False and zeros while the game is not in front or a
+// menu, the console or chat is open (what moved meanwhile is dropped). Client update thread.
+extern "C" bool DingoSDKOverlayReadMouseLook(dingosdk::overlay::MouseLook* look);
 
 // Optional direct integration for a host that already knows its exact pair.
 struct IDXGISwapChain;

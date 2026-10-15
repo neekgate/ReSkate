@@ -128,6 +128,18 @@ void filmer_page(SkateMenu &menu, const Model &, const CallbacksV3 &callbacks) {
         filmer_toggle(menu, callbacks, "Recenter", "Without the assist: let go and the camera drifts back to where you ride.", "recenter", r.recenter, !r.assist);
         filmer_slider(menu, callbacks, "Hold height", "Where you hold the camera above the ground: low by the board and out at arm's length, clear of your body.", "hold", r.hold_height, 0.05f, 1.8f, "%.2f m");
         filmer_toggle(menu, callbacks, "Take the right stick", "Keep the right stick (and its click) from the game while you film. Off: it also flicks tricks.", "stick", s.take_stick);
+        filmer_toggle(menu, callbacks, "Cruise control", "Filming a friend, you ride at the speed that keeps you the gap behind them: you steer and aim, your push and brake still work. Off in a session whose host has turned boosts off. Bindable.", "cruise", r.cruise);
+        filmer_slider(menu, callbacks, "Cruise gap", "How far behind the skater cruise control holds you.", "gap", r.cruise_gap, 1.0f, 12.0f, "%.1f m");
+        if (r.cruise && !v.cruise_note.empty()) note(v.cruise_note.c_str());
+    }
+    filmer_toggle(menu, callbacks, "Mouse look", "While the camera is held still (the AI filmer stopped, or you standing still filming), the mouse turns it, and with the long lens the wheel zooms.", "mouse", r.mouse_look);
+    filmer_slider(menu, callbacks, "Mouse speed", "How fast the mouse turns the camera.", "mousesens", r.mouse_sensitivity, 0.1f, 5.0f, "x %.2f");
+    if (r.lens == filmer::Lens::long_lens) {
+        field(menu, "Zoom", "Long lens, while the camera is held still: the wheel, or the zoom binds. Riding again, it eases back out.");
+        const bool can = v.active && v.stationary;
+        int pick = -1; // neither shown as chosen: two buttons
+        if (choice(menu, "zoom", pick, {"Zoom out", "Zoom in"}, can) && pick >= 0) filmer_command(menu, callbacks, pick ? "zoom in" : "zoom out");
+        note(std::format("{:.1f}x{}", v.zoom, can ? "" : "  (hold the camera still to zoom)").c_str());
     }
     end_card();
 

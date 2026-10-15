@@ -52,6 +52,14 @@ struct RigSettings {
     bool invert_y = false;
     bool recenter = false;  // without assist, the aim drifts back ahead when the stick is let go
     float hold_height = 0.2f;  // camera above the ground under you: held low by the board, out at arm's length
+    // Cruise control (film mode, framing a friend): you ride at the speed that holds you `cruise_gap`
+    // metres behind them; you steer and aim. Your own push and brake still work.
+    bool cruise = false;
+    float cruise_gap = 3.0f;
+    // The mouse turns the camera while it is held still (the AI filmer stopped, or you standing still
+    // filming); the wheel zooms the long lens then.
+    bool mouse_look = true;
+    float mouse_sensitivity = 1.0f;
 };
 
 // One skater as the rig sees it.
@@ -78,6 +86,8 @@ struct Frame {
 constexpr float fisheye_render_fov = 100.0f;
 constexpr float long_lens_fov = 46.0f;
 constexpr float render_fov(Lens lens) noexcept { return lens == Lens::long_lens ? long_lens_fov : fisheye_render_fov; }
+// The long lens's zoom range, as a multiple of its widest (46 degrees down to about 11.5).
+constexpr float max_zoom = 4.0f;
 
 // The game's collision: the first surface on the segment from `from` to `to`, if any. Without it the
 // rig rides blind (the tests).
@@ -114,6 +124,20 @@ public:
     void slap(double now) noexcept;
     // For the menu: where auto is riding (degrees round the skater; 0 behind, 180 ahead).
     float angle_degrees() const noexcept;
+    // The camera is held still: the AI filmer stopped (the left stick, or braked at a drop), or you
+    // standing still filming. Mouse look and the zoom work then.
+    bool stationary() const noexcept;
+    // Mouse look, radians: right and down positive (as the mouse moves). Ignored unless stationary.
+    void look(float right, float down) noexcept;
+    // The long lens's zoom, by a factor (above 1 in, below out). Ignored unless stationary with the
+    // long lens; once riding again it eases back out.
+    void zoom_by(float factor, const RigSettings &settings) noexcept;
+    float zoom() const noexcept { return zoom_; }
+    float zoom_target() const noexcept { return zoom_target_; }
+    // Cruise control (film mode, framing someone): the speed you should ride at to hold `gap` metres
+    // behind them, and whether to ease off (you are on top of them). `active` false: nothing to hold.
+    struct Cruise { bool active{}; float speed{}; bool slow{}; float behind{}; };
+    Cruise cruise(float gap) const noexcept;
 
 private:
     struct Tracked {
@@ -162,7 +186,8 @@ private:
     void choose_angle(double now, float speed);
     Vec3 aim_point(const Tracked &tracked, const RigSettings &settings) const;
     Vec3 delayed_point(double now, float delay) const;
-    void steer_aim(float dt, float want_yaw, float want_pitch, float omega, float damping);
+    void ease_zoom(float dt, const RigSettings &settings) noexcept;
+    void steer_aim(float dt, float want_yaw, float want_pitch, float omega, float damping, float yaw_rate = 0.0f, float pitch_rate = 0.0f);
     float half_view(const RigSettings &settings) const;
     Matrix build(const Vec3 &eye, float yaw, float pitch, float roll) const;
     void shake(double now, float speed, float human, float &yaw, float &pitch, float &roll, Vec3 &eye) const;
@@ -217,6 +242,14 @@ private:
     float side_lock_{};             // +1 the skater's left, -1 their right, 0 either
     bool planted_{}, edge_{}, holding_{};
     bool edge_locked_{};
+    // Which of follow / film last ran, and whether film had someone to frame.
+    bool filming_{}, framing_{};
+    // Film mode's aim: how fast the target's bearing is moving (fed forward, so the aim keeps up
+    // without lag or overshoot), from the last want.
+    float ff_yaw_rate_{}, ff_pitch_rate_{}, ff_last_yaw_{}, ff_last_pitch_{};
+    bool ff_have_{};
+    // The long lens's zoom: wanted and eased.
+    float zoom_{1.0f}, zoom_target_{1.0f};
     // Steering round obstacles: the angle off the way to the spot (eased), the one being steered to,
     // the side being taken round (+1/-1, 0 none) and until when it is kept.
     float steer_angle_{}, steer_target_{}, steer_side_{};
