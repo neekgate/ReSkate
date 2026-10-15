@@ -216,7 +216,11 @@ private:
     float lunge_{}, lunge_rate_{};  // 0..1: how far into a lunge under an air
     float side_lock_{};             // +1 the skater's left, -1 their right, 0 either
     bool planted_{}, edge_{}, holding_{};
-    bool edge_locked_{};            // stopped at a drop and come to a standstill: the framing is held
+    bool edge_locked_{};
+    // Steering round obstacles: the angle off the way to the spot (eased), the one being steered to,
+    // the side being taken round (+1/-1, 0 none) and until when it is kept.
+    float steer_angle_{}, steer_target_{}, steer_side_{};
+    double steer_next_{}, steer_hold_{};            // stopped at a drop and come to a standstill: the framing is held
     float level_{};                 // the ground level the filmer rides at
     std::size_t last_index_{};      // the trail point nearest the filmer, last tick
     Vec3 edge_point_{}, edge_dir_{0, 0, 1}; // where the filmer stopped, and which way is over it

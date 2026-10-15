@@ -112,8 +112,8 @@ void Rig::set_planted(bool planted) noexcept {
 
 void Rig::begin_tick(double now) noexcept {
     now_ = now;
-    probe_budget_ = 8;
-    ray_budget_ = 4;
+    probe_budget_ = 12;
+    ray_budget_ = 12;
     if (probes_.size() > 4096) probes_.clear();
 }
 
@@ -420,7 +420,7 @@ Rig::Walk Rig::walk(std::size_t from, std::size_t to, float level, bool stop_at_
             if (span > 1.2f) {
                 for (const float u : {0.33f, 0.5f, 0.67f}) {
                     const auto g = ground_at(a[0] + (point.at[0] - a[0]) * u, a[2] + (point.at[2] - a[2]) * u, result.level);
-                    if (!g || *g < world(result.level) - 0.8f) {
+                    if (!g || *g < world(a[1]) - 0.8f) { // well below where you took off: a gap
                         if (stop_at_drops) { result.edge = true; result.reach = before; return result; }
                         break;
                     }
@@ -434,14 +434,15 @@ Rig::Walk Rig::walk(std::size_t from, std::size_t to, float level, bool stop_at_
         air_start = none;
         result.reach = k;
     }
-    // Still in the air at the end: if the ground under the jump so far is the filmer's level (an
-    // ollie on flat), they ride on; otherwise (or with no way to tell) they wait at the takeoff until
-    // you land.
+    // Still in the air at the end: if there is ground under the jump so far, not far below where you
+    // took off (an ollie on flat, on a slope, up onto something), they ride on; over a gap or off a
+    // drop (or with no way to tell) they wait at the takeoff until you land.
     if (air_start != none) {
         bool level_ground = static_cast<bool>(cast_);
+        const float takeoff = world(trail_[air_start > 0 ? air_start - 1 : 0].at[1]);
         for (std::size_t k = air_start; level_ground && k <= to && k < trail_.size(); k += 3) {
-            const auto g = ground_at(trail_[k].at[0], trail_[k].at[2], result.level);
-            if (!g || std::abs(*g - world(result.level)) > 0.3f) level_ground = false;
+            const auto g = ground_at(trail_[k].at[0], trail_[k].at[2], trail_[k].at[1]);
+            if (!g || *g < takeoff - 0.8f) level_ground = false;
         }
         if (!level_ground) {
             result.hold = true;
@@ -616,6 +617,10 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
             level_ = walk(last_index_, *at_index, level_, false).level;
         }
         if (at_index) last_index_ = *at_index;
+        // And the ground the filmer is actually on, where the game answers: the level never drifts
+        // from it (riding up a long gentle slope, it would, and everything ahead would look raised).
+        if (cast_ && world_answers() && root_known_ && !edge_ && !holding_)
+            level_ += (operator_floor_ + root_above_ground_ - level_) * ease(dt, 0.3f);
     }
     Vec3 desired;
     float ground = level_;
@@ -737,6 +742,73 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
         operator_have_ = true;
         edge_ = holding_ = false;
         unseen_since_ = -1.0;
+    }
+    // Steering round what is in the way (a pole, a bench, a bin, a low wall): a few times a second
+    // they look ahead the way they are riding, and if it is not clear, take the nearest way round that
+    // is (towards their spot first), keeping to that side until they are past it (no dithering).
+    if (cast_ && !planted_ && !edge_ && !holding_) {
+        const Vec3 to{desired[0] - operator_[0], 0.0f, desired[2] - operator_[2]};
+        const float dist = flat_length(to);
+        const float riding = flat_length(operator_velocity_);
+        Vec3 way{};
+        if (riding > 0.8f) way = scale(Vec3{operator_velocity_[0], 0.0f, operator_velocity_[2]}, 1.0f / riding);
+        else if (speed > 0.8f) way = Vec3{t.heading_x, 0.0f, t.heading_z};
+        else if (dist > 0.4f) way = scale(to, 1.0f / dist);
+        if (flat_length(way) > 0.5f) {
+            const auto rotated = [](const Vec3 &v, float a) {
+                return Vec3{v[0] * std::cos(a) - v[2] * std::sin(a), 0.0f, v[0] * std::sin(a) + v[2] * std::cos(a)};
+            };
+            if (now >= steer_next_) {
+                steer_next_ = now + 0.1;
+                const float look = std::clamp(0.8f + std::max(riding, speed) * 0.25f, 1.2f, 2.5f);
+                probe_budget_ += 30; // the look round has its own questions
+                const auto clear = [&](const Vec3 &heading_way) {
+                    // Ground at a third, two thirds and the end: each step up or down from the last no
+                    // more than a kerb (a slope is many small steps; a bench or a planter is one big one).
+                    float last = operator_floor_;
+                    for (const float u : {1.0f / 3.0f, 2.0f / 3.0f, 1.0f}) {
+                        const Vec3 at = add(operator_, scale(heading_way, look * u));
+                        const auto g = ground_at(at[0], at[2], last + 0.5f);
+                        if (!g || *g - last > 0.25f) return false;
+                        if (s.stop_at_drops && *g < operator_floor_ - 0.85f) return false;
+                        last = *g;
+                    }
+                    const Vec3 end = add(operator_, scale(heading_way, look));
+                    return !blocked(Vec3{operator_[0], operator_floor_ + 0.3f, operator_[2]}, Vec3{end[0], last + 0.3f, end[2]});
+                };
+                if (clear(way)) {
+                    if (now >= steer_hold_) { steer_target_ = 0.0f; steer_side_ = 0.0f; }
+                } else {
+                    // The smallest turn that is clear, either side; the side already being taken
+                    // round first at each angle, else the one towards their spot.
+                    float first = steer_side_;
+                    if (first == 0.0f) first = (way[0] * to[2] - way[2] * to[0]) >= 0.0f ? 1.0f : -1.0f;
+                    bool found = false;
+                    for (const float a : {25.0f, 45.0f, 65.0f, 90.0f, 120.0f}) {
+                        for (const float side_sign : {first, -first}) {
+                            if (clear(rotated(way, a * degrees * side_sign))) {
+                                steer_target_ = a * degrees * side_sign;
+                                steer_side_ = side_sign;
+                                found = true;
+                                break;
+                            }
+                        }
+                        if (found) break;
+                    }
+                    if (!found) steer_target_ = 90.0f * degrees * first;
+                    steer_hold_ = now + 0.35;
+                }
+            }
+            steer_angle_ += (steer_target_ - steer_angle_) * ease(dt, 0.1f);
+            if (std::abs(steer_angle_) > 0.5f * degrees) {
+                // Ride that way at their pace, then back towards the spot once past.
+                const Vec3 turned = rotated(way, steer_angle_);
+                desired = add(Vec3{operator_[0], desired[1], operator_[2]}, scale(turned, std::max(dist, 1.2f)));
+            }
+        }
+    } else {
+        steer_angle_ = steer_target_ = 0.0f;
+        steer_side_ = 0.0f;
     }
     // Riding with you: at your speed (not the spot's jumps from tick to tick).
     const Vec3 desired_rate{t.velocity[0], 0.0f, t.velocity[2]};
