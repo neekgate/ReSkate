@@ -6,7 +6,8 @@ skate. filmed the way a skater with a VX1000 films a line.
 
 - **AI filmer** (`filmer mode follow`): a virtual filmer rides with a skater and films them while
   you play normally. It rides the trail the skater left, checking every step against the game's
-  own collision: real ground under it, no walls, nothing a board would not roll over. It stays at
+  own collision: real ground under it, no walls, nothing a board would not roll over. It looks ahead
+  as it rides and steers round poles, bins, benches and low walls, keeping to one side until past. It stays at
   the level it rides at: up banks and slopes with you, but alongside a ledge or rail rather than up
   on it. Where you came down from its level in one go (a set, a drop) or jumped a gap, it stops (and, once
   stopped, holds its framing like a locked-off shot) at
