@@ -723,7 +723,7 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
     if (edge && !edge_) edge_since_ = now;
     edge_ = edge;
     // A new spot: far off the one wanted (a teleport, a respawn), or after a cut. Never while stopped.
-    if (!operator_have_ || (!planted_ && !edge_ && !holding_ && length(sub(operator_, desired)) > 15.0f)) {
+    if (!operator_have_ || (!planted_ && !edge_ && !holding_ && flat_length(sub(operator_, desired)) > 15.0f)) {
         operator_ = desired;
         operator_velocity_ = t.velocity;
         operator_velocity_[1] = 0;
