@@ -268,10 +268,10 @@ private:
     // Stair stop: rolling to a halt at stop_point_ (along stop_dir_), the framing it then pans to, and
     // how far the camera has risen (eased).
     bool stair_style_{}, rolling_stop_{}, stop_due_{}, framed_{}, pan_active_{};
-    // ...and while it composes the shot after stopping: still panning with the skater (the set kept in
-    // frame) until the framing settles, then it is held. set_yaw_: the way the set goes.
+    // ...and while it turns to frame the set after stopping (then held). set_yaw_: the way the set goes.
     bool composing_{};
-    double compose_start_{}, calm_since_{-1.0};
+    double compose_start_{};
+    bool settled_pitch_{};
     float set_yaw_{};
     Vec3 stop_point_{}, stop_dir_{0, 0, 1};
     float roll_speed_{}, pan_pitch_{}, stop_lift_{}, stop_lift_rate_{};

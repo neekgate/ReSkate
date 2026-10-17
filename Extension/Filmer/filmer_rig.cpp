@@ -1075,37 +1075,37 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
     if (!edge_) edge_locked_ = false;
     else if (operator_speed < 0.5f) edge_locked_ = true; // braked to a stop at the lip
     const bool frozen = (planted_ && !rolling_stop_) || edge_locked_;
-    if (!frozen) {
+    // Stair stop: from the moment you stop them (still braking), they stop following you and frame the set.
+    const bool framing_set = stair_style_ && planted_;
+    if (!frozen && !framing_set) {
         framed_ = pan_active_ = composing_ = false;
     } else if (!framed_ && aim_.have) {
-        // Just stopped. Stair stop: the shot is composed: the camera keeps panning with you, the set
-        // (the way they were riding, or over the lip they stopped at) kept in frame and the tilt going
-        // down over it from where the camera will have risen to; held once it settles.
+        // Just stopped. Stair stop: the shot is framed on the set (the way they were riding, or over the
+        // lip they stopped at), tilted down over it from where the camera will have risen to, and held.
         framed_ = true;
         if (stair_style_) {
-            const Vec3 &way = edge_locked_ ? edge_dir_ : stop_dir_;
-            set_yaw_ = flat_length(way) > 0.5f ? yaw_of(way[0], way[2]) : aim_.yaw;
+            // The way they were riding (braking along it), over the lip they stopped at, or, stopped
+            // standing, the way the camera already looks.
+            set_yaw_ = edge_locked_ ? yaw_of(edge_dir_[0], edge_dir_[2]) : rolling_stop_ ? yaw_of(stop_dir_[0], stop_dir_[2]) : aim_.yaw;
             pan_pitch_ = stair_pan_pitch(Vec3{eye[0], eye[1] + std::clamp(s.stop_lift, 0.0f, 1.5f), eye[2]}, set_yaw_, aim_.pitch, operator_floor_);
             pan_active_ = composing_ = true;
             compose_start_ = now;
-            calm_since_ = -1.0;
+            settled_pitch_ = !rolling_stop_;
         }
     }
-    if (frozen && composing_) {
-        const float across = std::atan(std::tan(half_view(s)) * (4.0f / 3.0f));
-        const Vec3 to_late = sub(late, eye);
-        // Towards you, but never so far round that the set leaves the frame; tilted over the set, but
-        // never so far that you leave it.
-        const float you_yaw = yaw_of(to_late[0], to_late[2]);
-        const float off = std::clamp(wrap_angle(you_yaw - set_yaw_), -across * 0.55f, across * 0.55f);
-        const float you_pitch = frame_pitch(eye, late, t.airborne, 0.0f, s);
-        const float tilt = std::clamp(pan_pitch_, you_pitch - half_view(s) * 0.7f, you_pitch + half_view(s) * 0.7f);
-        steer_aim(dt, wrap_angle(set_yaw_ + off), tilt, 4.0f, 1.0f);
-        // Settled: barely moving for a third of a second (after at least half a second), or enough.
-        const bool calm = std::abs(aim_.yaw_rate) + std::abs(aim_.pitch_rate) < 0.12f;
-        if (!calm) calm_since_ = -1.0;
-        else if (calm_since_ < 0) calm_since_ = now;
-        if ((now - compose_start_ > 0.5 && calm_since_ >= 0 && now - calm_since_ > 0.35) || now - compose_start_ > 3.0) {
+    // Braked to a halt: the tilt worked out again from where they actually stopped.
+    if (composing_ && !settled_pitch_ && !rolling_stop_) {
+        pan_pitch_ = stair_pan_pitch(Vec3{eye[0], eye[1] + std::clamp(s.stop_lift, 0.0f, 1.5f) - stop_lift_, eye[2]}, set_yaw_, pan_pitch_ + 0.06f, operator_floor_);
+        settled_pitch_ = true;
+        compose_start_ = now;
+    }
+    if ((frozen || framing_set) && composing_) {
+        // Framing the set: a smooth turn to look along it and tilt down over it, then held. It does not
+        // follow you: you ride into the shot.
+        steer_aim(dt, set_yaw_, pan_pitch_, 4.0f, 1.0f);
+        const bool calm = std::abs(aim_.yaw_rate) + std::abs(aim_.pitch_rate) < 0.05f &&
+                          std::abs(wrap_angle(aim_.yaw - set_yaw_)) < 0.02f && std::abs(aim_.pitch - pan_pitch_) < 0.02f;
+        if (settled_pitch_ && ((now - compose_start_ > 0.3 && calm) || now - compose_start_ > 2.5)) {
             composing_ = pan_active_ = false;
             aim_.yaw_rate = aim_.pitch_rate = 0.0f;
         }
@@ -1113,7 +1113,7 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
         aim_.pitch += (pan_pitch_ - aim_.pitch) * ease(dt, 0.4f);
         aim_.pitch_rate = 0.0f;
     }
-    if (!frozen || !aim_.have) {
+    if ((!frozen && !composing_) || !aim_.have) {
         const Vec3 to_late = sub(late, eye), to_now = sub(now_point, eye);
         float want_yaw = yaw_of(to_late[0], to_late[2]);
         float want_pitch = frame_pitch(eye, late, t.airborne, 0.0f, s);
