@@ -108,19 +108,28 @@ void filmer_page(SkateMenu &menu, const Model &, const CallbacksV3 &callbacks) {
              "Clicking the left stick sets it down where you stand.");
         if (primary_button(menu, "SET IT DOWN WHERE THE CAMERA IS", v.active)) filmer_command(menu, callbacks, "tripod");
         if (primary_button(menu, "SET IT DOWN WHERE I STAND")) filmer_command(menu, callbacks, "tripod here");
+        filmer_toggle(menu, callbacks, "Tracking", "On: it holds its framing until the skater rides into it, then pans with them. Off: a locked-off shot that never moves. Bindable.", "track", r.tripod_track);
         filmer_slider(menu, callbacks, "Tripod height", "Set down where you stand: how high the lens is above the ground.", "tripodheight", r.tripod_height, 0.1f, 2.5f, "%.2f m");
         filmer_toggle(menu, callbacks, "Stick clicks", "On the tripod: click the left stick to set it down where you stand, the right stick to slap the lens. The game does not get those clicks while this is on.", "clicks", s.stick_clicks);
     } else if (s.mode != filmer::Mode::film) {
-        field(menu, "Angle", "Where the AI filmer rides. Auto picks angles through a line like a filmer does.");
-        int style = static_cast<int>(r.style);
-        if (choice(menu, "style", style, {"Auto", "Behind", "Side", "Ahead"}))
-            filmer_command(menu, callbacks, std::string("set style ") + filmer::style_name(static_cast<filmer::Style>(style)));
+        field(menu, "Angles", "Where the AI filmer rides. Switch on the angles you want: one is held; with more, they move between them through a line as a filmer does. Bind \"next angle\" to cycle.");
+        const std::uint8_t angles = r.angles;
+        const auto angle_row = [&](const char *label, const char *hint, const char *name, std::uint8_t bit) {
+            bool on = (angles & bit) != 0;
+            // The last one on stays on: there is always an angle.
+            if (toggle_row(menu, label, hint, on, !(on && angles == bit))) filmer_command(menu, callbacks, std::string("angle toggle ") + name);
+        };
+        angle_row("Behind", "A little off to one side, behind you: the classic follow.", "behind", filmer::angle_behind);
+        angle_row("Side", "Out wide, alongside you.", "side", filmer::angle_side);
+        angle_row("Ahead", "Riding backwards in front of you (only when you are fast enough to stay ahead of).", "ahead", filmer::angle_ahead);
         field(menu, "Side", "Which side of you the AI filmer keeps to. Auto: wherever they happen to be.");
         int side = static_cast<int>(r.side);
         if (choice(menu, "side", side, {"Auto", "Left", "Right"}))
             filmer_command(menu, callbacks, std::string("set side ") + (side == 1 ? "left" : side == 2 ? "right" : "auto"));
         filmer_slider(menu, callbacks, "Distance", "How close they ride (metres; the long lens rides about 3x further).", "distance", r.distance, 0.6f, 6.0f, "%.1f m");
         filmer_slider(menu, callbacks, "Camera height", "Above the ground. Down by the board (0.15 m) is the classic fisheye angle; about a foot (0.3 m) sees more of the spot.", "height", r.height, 0.08f, 2.5f, "%.2f m");
+        filmer_slider(menu, callbacks, "Distance variety", "Through a line the filmer drifts closer and further, slowly. 0: always the distance above; 1: about half of it either way.", "distvariety", r.distance_variety, 0.0f, 1.0f, "%.2f");
+        filmer_slider(menu, callbacks, "Height variety", "Through a line the camera goes lower and higher, slowly (a filmer crouching, then standing a little). 0: always the height above; 1: a foot or so either way.", "heightvariety", r.height_variety, 0.0f, 1.0f, "%.2f");
         filmer_toggle(menu, callbacks, "Lunge", "Fisheye, flatground tricks only: as you pop, the filmer pushes in a little closer and lower, then eases back out as you land.", "lunge", r.lunge, r.lens == filmer::Lens::fisheye);
         filmer_toggle(menu, callbacks, "Stop at drops", "The filmer only rides where you rolled: at a set or a gap you jumped they stop at the edge, film you land and ride away, then catch up.", "drops", r.stop_at_drops);
         field(menu, "Stop", "How the filmer stops (the left stick, or at a drop). Instant: on the spot, holding the framing. Stair: rolls to a halt short of the first step, rises a little and pans down to take in the whole set or rail.");

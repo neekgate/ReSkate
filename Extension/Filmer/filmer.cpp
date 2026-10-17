@@ -14,6 +14,7 @@
 #include <windows.h>
 #include <shlobj.h>
 #include <algorithm>
+#include <utility>
 #include <array>
 #include <atomic>
 #include <cctype>
@@ -161,6 +162,10 @@ void load_store() {
         r.stop_at_drops = flag(o, "stop_at_drops", d.rig.stop_at_drops);
         r.cruise = flag(o, "cruise", d.rig.cruise);
         r.stop_style = o.value("stop_style", std::string("instant")) == "stair" ? StopStyle::stair : StopStyle::instant;
+        r.angles = static_cast<std::uint8_t>(std::clamp(o.value("angles", 7), 1, 7));
+        r.distance_variety = clamped(o, "distance_variety", d.rig.distance_variety, 0.0f, 1.0f);
+        r.height_variety = clamped(o, "height_variety", d.rig.height_variety, 0.0f, 1.0f);
+        r.tripod_track = flag(o, "tripod_track", d.rig.tripod_track);
         r.stop_lift = clamped(o, "stop_lift", d.rig.stop_lift, 0.0f, 1.5f);
         r.tripod_height = clamped(o, "tripod_height", d.rig.tripod_height, 0.1f, 2.5f);
         r.cruise_gap = clamped(o, "cruise_gap", d.rig.cruise_gap, 1.0f, 12.0f);
@@ -228,6 +233,10 @@ void save_store() {
         json["stop_at_drops"] = r.stop_at_drops;
         json["cruise"] = r.cruise;
         json["stop_style"] = r.stop_style == StopStyle::stair ? "stair" : "instant";
+        json["angles"] = static_cast<int>(r.angles);
+        json["distance_variety"] = r.distance_variety;
+        json["height_variety"] = r.height_variety;
+        json["tripod_track"] = r.tripod_track;
         json["stop_lift"] = r.stop_lift;
         json["tripod_height"] = r.tripod_height;
         json["cruise_gap"] = r.cruise_gap;
@@ -844,14 +853,17 @@ std::string set_option(State &s, const std::string &key, const std::string &valu
     };
     if (key == "style") {
         const auto v = lower(value);
-        if (v == "auto") r.style = Style::automatic;
-        else if (v == "behind") r.style = Style::behind;
-        else if (v == "side") r.style = Style::side;
-        else if (v == "ahead") r.style = Style::ahead;
+        if (v == "auto") { r.style = Style::automatic; r.angles = 7; }
+        else if (v == "behind") { r.style = Style::behind; r.angles = angle_behind; }
+        else if (v == "side") { r.style = Style::side; r.angles = angle_side; }
+        else if (v == "ahead") { r.style = Style::ahead; r.angles = angle_ahead; }
         else return "error: style is auto, behind, side or ahead.";
         changed(s);
         return std::string("style = ") + style_name(r.style);
     }
+    if (key == "distvariety") return real(r.distance_variety, 0.0f, 1.0f);
+    if (key == "heightvariety") return real(r.height_variety, 0.0f, 1.0f);
+    if (key == "track") return toggle(r.tripod_track);
     if (key == "side") {
         const auto v = lower(value);
         if (v == "auto") r.side = Side::automatic;
@@ -981,6 +993,43 @@ std::string command(std::string_view verb, const std::vector<std::string> &argum
             s.rig.set_planted(plant);
             reply = plant ? "The filmer stops and films from here." : "The filmer rides with you again.";
         }
+    } else if (verb == "angle") {
+        // The angles the AI filmer films from: one held, or several Auto moves between.
+        auto &r = s.settings.rig;
+        const auto wanted = lower(arg(0)), which = lower(arg(1));
+        const auto bit = [](const std::string &name) -> std::uint8_t {
+            return name == "behind" ? angle_behind : name == "side" ? angle_side : name == "ahead" ? angle_ahead : 0;
+        };
+        if (wanted == "next") {
+            // Auto (all of them), behind, side, ahead, and round again.
+            r.angles = static_cast<std::uint8_t>(r.angles == 7 ? angle_behind : r.angles == angle_behind ? angle_side
+                                                 : r.angles == angle_side ? angle_ahead : 7);
+        } else if (wanted == "auto" || wanted == "all") {
+            r.angles = 7;
+        } else if (bit(wanted)) {
+            r.angles = bit(wanted);
+        } else if (wanted == "toggle" && bit(which)) {
+            const auto toggled = static_cast<std::uint8_t>(r.angles ^ bit(which));
+            if (toggled) r.angles = toggled; // never none
+        } else {
+            reply = "error: filmer angle next|auto|behind|side|ahead|toggle behind|side|ahead.";
+        }
+        if (reply.empty()) {
+            r.style = r.angles == angle_behind ? Style::behind : r.angles == angle_side ? Style::side
+                    : r.angles == angle_ahead ? Style::ahead : Style::automatic;
+            changed(s);
+            std::string names;
+            for (const auto &[b, name] : {std::pair{angle_behind, "behind"}, std::pair{angle_side, "side"}, std::pair{angle_ahead, "ahead"}})
+                if (r.angles & b) names += (names.empty() ? "" : ", ") + std::string(name);
+            reply = r.style == Style::automatic ? "Angles: auto between " + names + "." : "Angle: " + names + ", held.";
+        }
+    } else if (verb == "tripod" && lower(arg(0)) == "track") {
+        auto &r = s.settings.rig;
+        const auto wanted = lower(arg(1));
+        r.tripod_track = wanted == "on" || wanted == "1" ? true : wanted == "off" || wanted == "0" ? false : !r.tripod_track;
+        changed(s);
+        reply = r.tripod_track ? "Tripod tracking on: it pans with the skater once they ride into the frame."
+                               : "Tripod tracking off: a locked-off shot.";
     } else if (verb == "tripod") {
         // Set the tripod down: where the Filmer's camera is now (an AI filmer you stopped where you
         // like, say), or with "here" (or no camera rolling) where you stand, facing your way.

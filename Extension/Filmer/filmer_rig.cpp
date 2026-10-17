@@ -115,7 +115,7 @@ void Rig::set_planted(bool planted) noexcept {
     // Stair stop: still rolling, they brake to a halt (short of a drop ahead) instead of stopping dead.
     rolling_stop_ = planted && stair_style_ && operator_have_ && flat_length(operator_velocity_) > 0.3f;
     stop_due_ = rolling_stop_;
-    if (!planted) framed_ = pan_active_ = false;
+    if (!planted) framed_ = pan_active_ = composing_ = false;
 }
 
 void Rig::begin_tick(double now) noexcept {
@@ -239,7 +239,7 @@ void Rig::look(float right, float down) noexcept {
         aim_.yaw = wrap_angle(aim_.yaw - right);
         aim_.pitch = std::clamp(aim_.pitch - down, -1.35f, 1.35f);
         aim_.yaw_rate = aim_.pitch_rate = 0.0f;
-        pan_active_ = false; // your framing now, not the stair stop's pan
+        pan_active_ = composing_ = false; // your framing now, not the stair stop's
     }
 }
 
@@ -564,19 +564,25 @@ Rig::Walk Rig::walk(std::size_t from, std::size_t to, float level, bool stop_at_
 
 // Auto: a filmer picks angles. Mostly a little off to one side behind, now and then wide, rarely out
 // in front; never for less than a few seconds.
-void Rig::choose_angle(double now, float speed) {
+void Rig::choose_angle(double now, float speed, std::uint8_t angles) {
     if (now < angle_until_) return;
     std::uniform_real_distribution<float> unit(0.0f, 1.0f);
-    const float roll = unit(random_);
+    const float draw = unit(random_);
     const float side = angle_target_ >= 0 ? 1.0f : -1.0f;
     float keep_side = unit(random_) < 0.65f ? side : -side;
     if (side_lock_ != 0.0f) keep_side = side_lock_;
+    // Among the angles chosen (all, if none): behind most, then out to the side, now and then ahead
+    // (only riding fast enough to stay in front; slower, ahead falls back to behind if it can).
+    if ((angles & 7u) == 0) angles = 7;
+    float weight_behind = (angles & angle_behind) ? 0.5f : 0.0f, weight_side = (angles & angle_side) ? 0.35f : 0.0f,
+          weight_ahead = (angles & angle_ahead) && (speed > 3.5f || angles == angle_ahead) ? 0.15f : 0.0f;
+    if (weight_behind + weight_side + weight_ahead <= 0.0f) weight_behind = 1.0f;
+    const float roll = draw * (weight_behind + weight_side + weight_ahead);
     float pick;
     double hold;
-    if (roll < 0.5f) { pick = (18.0f + 22.0f * unit(random_)) * keep_side; hold = 5.0 + 6.0 * unit(random_); }
-    else if (roll < 0.85f) { pick = (55.0f + 25.0f * unit(random_)) * keep_side; hold = 3.5 + 4.0 * unit(random_); }
-    else if (speed > 3.5f) { pick = (160.0f + 15.0f * unit(random_)) * keep_side; hold = 3.0 + 2.5 * unit(random_); }
-    else { pick = 28.0f * keep_side; hold = 4.0; }
+    if (roll < weight_behind) { pick = (18.0f + 22.0f * unit(random_)) * keep_side; hold = 5.0 + 6.0 * unit(random_); }
+    else if (roll < weight_behind + weight_side) { pick = (55.0f + 25.0f * unit(random_)) * keep_side; hold = 3.5 + 4.0 * unit(random_); }
+    else { pick = (160.0f + 15.0f * unit(random_)) * keep_side; hold = 3.0 + 2.5 * unit(random_); }
     angle_target_ = pick * degrees;
     angle_until_ = now + hold;
 }
@@ -694,7 +700,7 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
     // The angle round the skater.
     switch (s.style) {
     case Style::automatic:
-        choose_angle(now, speed);
+        choose_angle(now, speed, s.angles);
         if (side_lock_ != 0.0f) angle_target_ = std::abs(angle_target_) * side_lock_;
         break;
     case Style::behind: angle_target_ = 14.0f * degrees * sign; break;
@@ -705,12 +711,16 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
     spring(angle_, angle_rate_, angle_target_, 0.0f, 0.9f, 1.0f, dt);
     // A filmer never holds exactly the same spot.
     const float wander_angle = wobble_[0].sample(now * 0.31) * 9.0f * degrees * human;
-    const float wander_distance = wobble_[1].sample(now * 0.27) * 0.35f * human;
+    const float wander_distance = wobble_[1].sample(now * 0.27) * 0.35f * human +
+        // Variety: a slow drift closer and further through a line (a filmer moving in and out).
+        distance * 0.45f * std::clamp(s.distance_variety, 0.0f, 1.0f) * wobble_[4].sample(now * 0.06);
     const float angle = angle_ + wander_angle;
     const float d = std::max(0.5f, distance + wander_distance);
     const Vec3 heading{t.heading_x, 0, t.heading_z};
     const Vec3 side{t.heading_z, 0, -t.heading_x};
-    const float height = std::max(0.08f, std::clamp(s.height, 0.08f, 2.5f) * mix(1.0f, 0.75f, lunge_));
+    // Variety: lower and higher through a line, slowly (a filmer crouching, then standing a little).
+    const float height = std::max(0.1f, (std::clamp(s.height, 0.08f, 2.5f) +
+        0.35f * std::clamp(s.height_variety, 0.0f, 1.0f) * wobble_[5].sample(now * 0.05)) * mix(1.0f, 0.75f, lunge_));
     // Stopped at a drop and you rode on: once you are well away on the ground (or long out of sight),
     // the filmer cuts to a new spot behind you, as if the next clip. Stopped by you (the left stick),
     // they stay until you send them riding again.
@@ -1066,16 +1076,40 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
     else if (operator_speed < 0.5f) edge_locked_ = true; // braked to a stop at the lip
     const bool frozen = (planted_ && !rolling_stop_) || edge_locked_;
     if (!frozen) {
-        framed_ = pan_active_ = false;
+        framed_ = pan_active_ = composing_ = false;
     } else if (!framed_ && aim_.have) {
-        // Just stopped. Stair stop: pan down to take in the set, from where the camera will have risen to.
+        // Just stopped. Stair stop: the shot is composed: the camera keeps panning with you, the set
+        // (the way they were riding, or over the lip they stopped at) kept in frame and the tilt going
+        // down over it from where the camera will have risen to; held once it settles.
         framed_ = true;
         if (stair_style_) {
-            pan_pitch_ = stair_pan_pitch(Vec3{eye[0], eye[1] + std::clamp(s.stop_lift, 0.0f, 1.5f), eye[2]}, aim_.yaw, aim_.pitch, operator_floor_);
-            pan_active_ = true;
+            const Vec3 &way = edge_locked_ ? edge_dir_ : stop_dir_;
+            set_yaw_ = flat_length(way) > 0.5f ? yaw_of(way[0], way[2]) : aim_.yaw;
+            pan_pitch_ = stair_pan_pitch(Vec3{eye[0], eye[1] + std::clamp(s.stop_lift, 0.0f, 1.5f), eye[2]}, set_yaw_, aim_.pitch, operator_floor_);
+            pan_active_ = composing_ = true;
+            compose_start_ = now;
+            calm_since_ = -1.0;
         }
     }
-    if (frozen && pan_active_) {
+    if (frozen && composing_) {
+        const float across = std::atan(std::tan(half_view(s)) * (4.0f / 3.0f));
+        const Vec3 to_late = sub(late, eye);
+        // Towards you, but never so far round that the set leaves the frame; tilted over the set, but
+        // never so far that you leave it.
+        const float you_yaw = yaw_of(to_late[0], to_late[2]);
+        const float off = std::clamp(wrap_angle(you_yaw - set_yaw_), -across * 0.55f, across * 0.55f);
+        const float you_pitch = frame_pitch(eye, late, t.airborne, 0.0f, s);
+        const float tilt = std::clamp(pan_pitch_, you_pitch - half_view(s) * 0.7f, you_pitch + half_view(s) * 0.7f);
+        steer_aim(dt, wrap_angle(set_yaw_ + off), tilt, 4.0f, 1.0f);
+        // Settled: barely moving for a third of a second (after at least half a second), or enough.
+        const bool calm = std::abs(aim_.yaw_rate) + std::abs(aim_.pitch_rate) < 0.12f;
+        if (!calm) calm_since_ = -1.0;
+        else if (calm_since_ < 0) calm_since_ = now;
+        if ((now - compose_start_ > 0.5 && calm_since_ >= 0 && now - calm_since_ > 0.35) || now - compose_start_ > 3.0) {
+            composing_ = pan_active_ = false;
+            aim_.yaw_rate = aim_.pitch_rate = 0.0f;
+        }
+    } else if (frozen && pan_active_) {
         aim_.pitch += (pan_pitch_ - aim_.pitch) * ease(dt, 0.4f);
         aim_.pitch_rate = 0.0f;
     }
@@ -1172,7 +1206,7 @@ Frame Rig::tripod(double now, float dt, const Subject &subject, const RigSetting
         const bool visible = distance < 60.0f && !(cast_ && blocked(eye, centre));
         const float bearing = yaw_of(to[0], to[2]), rise = std::atan2(to[1], std::max(flat_length(to), 0.3f));
         const bool in_frame = visible && std::abs(wrap_angle(bearing - aim_.yaw)) < across * 0.9f && std::abs(rise - aim_.pitch) < view * 0.95f;
-        if (!tracking_ && in_frame) {
+        if (!tracking_ && in_frame && s.tripod_track) {
             tracking_ = true;
             lost_since_ = -1.0;
             history_.clear();
@@ -1185,6 +1219,7 @@ Frame Rig::tripod(double now, float dt, const Subject &subject, const RigSetting
     } else {
         tracking_ = false;
     }
+    if (!s.tripod_track) tracking_ = false; // a locked-off shot
     if (tracking_) {
         const Vec3 now_point = aim_point(subject_, s);
         history_.push_back({now, now_point});

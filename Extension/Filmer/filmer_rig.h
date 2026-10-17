@@ -32,6 +32,7 @@ enum class Style : std::uint8_t { automatic, behind, side, ahead };
 // stair: rolls to a halt short of the first step, lifts the camera a little and pans down to take in
 // the whole set or rail.
 enum class StopStyle : std::uint8_t { instant, stair };
+constexpr std::uint8_t angle_behind = 1, angle_side = 2, angle_ahead = 4;
 // Which side of the skater the AI filmer keeps to (auto: wherever they happen to be).
 enum class Side : std::uint8_t { automatic, left, right };
 // fisheye: a Century MK1 on the VX, ridden close. long_lens: the VX's own lens from further away.
@@ -48,6 +49,12 @@ struct RigSettings {
     float tilt = 0.5f;      // framing: 0 the board near the centre, 1 the board low in the frame (more skater)
     bool stop_at_drops = true; // the filmer stops at the top of a set or a gap you jumped, and films from there
     StopStyle stop_style = StopStyle::instant;
+    // The angles Auto moves between (angle_behind | angle_side | angle_ahead): one alone is held.
+    std::uint8_t angles = 7;
+    // Through a line the filmer drifts closer and further (distance) and lower and higher (height): 0
+    // never, 1 a lot (about half the distance either way; a foot or so of height).
+    float distance_variety = 0.0f, height_variety = 0.0f;
+    bool tripod_track = true; // the tripod pans with the skater in frame; off, a locked-off shot
     float stop_lift = 0.3f; // stair stop: how much the camera rises once stopped (metres)
     float tripod_height = 0.5f; // tripod set down where you stand: the lens above the ground
     bool lunge = true;      // fisheye: on an air the filmer pushes in close and low under the trick, then pulls back
@@ -199,7 +206,7 @@ private:
     bool step_allowed(const Vec3 &to, float to_ground, bool stop_at_drops) const;
     float frame_pitch(const Vec3 &eye, const Vec3 &root, bool airborne, float lift, const RigSettings &settings) const;
     Vec3 trail_point(float arc, Vec3 fallback) const;
-    void choose_angle(double now, float speed);
+    void choose_angle(double now, float speed, std::uint8_t angles);
     Vec3 aim_point(const Tracked &tracked, const RigSettings &settings) const;
     Vec3 delayed_point(double now, float delay) const;
     void ease_zoom(float dt, const RigSettings &settings) noexcept;
@@ -261,6 +268,11 @@ private:
     // Stair stop: rolling to a halt at stop_point_ (along stop_dir_), the framing it then pans to, and
     // how far the camera has risen (eased).
     bool stair_style_{}, rolling_stop_{}, stop_due_{}, framed_{}, pan_active_{};
+    // ...and while it composes the shot after stopping: still panning with the skater (the set kept in
+    // frame) until the framing settles, then it is held. set_yaw_: the way the set goes.
+    bool composing_{};
+    double compose_start_{}, calm_since_{-1.0};
+    float set_yaw_{};
     Vec3 stop_point_{}, stop_dir_{0, 0, 1};
     float roll_speed_{}, pan_pitch_{}, stop_lift_{}, stop_lift_rate_{};
     void compute_rolling_stop(float floor) noexcept;
