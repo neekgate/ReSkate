@@ -19,7 +19,8 @@ the launcher, the runtime that loads into the game, and the dedicated server.
 - **In-game menu and console.**
   - Map and fast travel.
   - World: time of day, population, district levels, rotating parks.
-  - The **Park Editor**: place, move and save objects with freecam, snapping and undo.
+  - The **Park Editor**: place, move and save objects with freecam, snapping and undo. Save a selection as a
+    set and place it again anywhere, on any map.
   - Skater options: first person, movement, boosts, noclip.
   - **Hall of Meat** (off by default): bail and see the bones you hurt, with a skate. 3 style Meat card.
   - **Grind exit triggers** (off by default): press LT or RT while grinding to pick the side you pop
@@ -80,6 +81,11 @@ beside `Skate.exe`, as it was set up before, ReSkate 1.1.3 was tested with Proto
 CachyOS: the launcher, the server browser, joining a public server and hosting a lobby. Steam Deck should work the same way but is untested. If you load a
 custom map and then join a server on another map, the screen can stay black
 ([#31](https://github.com/Dingo-Shenanigans/ReSkate/issues/31)): load the server's map first.
+
+### macOS (NotProton / CrossOver)
+
+Steam for Mac with a Wine-based compatibility tool works much the same way; see
+[MACOS-SETUP.md](MACOS-SETUP.md) for its launch option.
 
 ### Multiplayer map downloads
 

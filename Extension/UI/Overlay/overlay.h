@@ -16,6 +16,7 @@
 #include "Engine/Core/Console/console_entry.h"
 
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -256,6 +257,15 @@ struct GrindExitModel {
     int strength = 100; // pop-out strength, percent (10-100)
 };
 
+// Keyframe smoothing (Extension/ReplayKeyframes/replay_keyframes.h): started, switched on, and how
+// smooth (0..1) when on.
+struct KeyframeSmoothingModel {
+    bool available = false, enabled = false;
+    float amount = 1.0f;
+};
+// The smoothness as the menus show it, in percent.
+inline int keyframe_smoothness_percent(const KeyframeSmoothingModel& k) { return static_cast<int>(k.amount * 100.0f + 0.5f); }
+
 struct Model {
     std::string state = "Waiting for native state";
     std::string detail;
@@ -278,9 +288,13 @@ struct Model {
     RoadRashModel road_rash;
     BoardBreakModel board_break;
     GrindExitModel grind_exit;
+    KeyframeSmoothingModel keyframe_smoothing;
     ObjectPersistenceModel object_persistence;
     ParkEditorModel editor;
     float menu_scale = default_menu_scale;
+    float menu_scale_fullscreen = default_menu_scale; // the full screen menu's own size (`ui scalefull`)
+    // The ReSkate menu fills the screen, made for a controller, instead of a window (`ui fullscreen`).
+    bool menu_fullscreen = false;
     // Offline mode: no Steam, so every multiplayer page and control is hidden.
     bool steam_offline = false;
     ControllerBindingsModel bindings;
@@ -354,6 +368,13 @@ struct MapVoteIcon {
     unsigned side{};
 };
 void set_map_vote_icons(const std::vector<MapVoteIcon>& icons) noexcept;
+// The menu's map grid (Map > Travel): the levels it shows ask for their pictures, which
+// Assets/map_icons.cpp finds off the game's thread (MapVoteIcon::name is then the level's asset).
+struct MenuMapWanted {
+    std::string asset, name;
+};
+std::vector<MenuMapWanted> take_menu_map_request() noexcept;
+void set_menu_map_pictures(const std::vector<MapVoteIcon>& pictures) noexcept;
 // That vote's popup (map_download_card.cpp), for the runtime, which reads the controller and
 // holds the game's input while it is up: whether it is, moving the pick, voting for the pick
 // (the popup then closes), and closing it without a vote. Any thread.
@@ -462,6 +483,11 @@ struct ItemBrowserView {
     std::string search, filter; // the search text and the filter's name
     unsigned shown{}, total{};  // tiles in the grid that has the focus
     bool focused_favorite{};    // the highlighted item is a favorite
+    // The mod the highlighted item is from (empty title: the game's own), for its card: its icon
+    // file (UTF-8), how many items it has, and whether it only changes one of the game's.
+    std::string mod_title, mod_author, mod_version, mod_icon;
+    unsigned mod_items{};
+    bool mod_changed{};
 };
 struct ItemBrowserHost {
     ItemBrowserView (*view)(){};
@@ -479,6 +505,10 @@ using ParkSelectionQueue = bool (*)(const EditorSelectionRequest &);
 void set_park_selection_queue(ParkSelectionQueue) noexcept;
 using ParkPasteQueue = bool (*)(const EditorPasteRequest &);
 void set_park_paste_queue(ParkPasteQueue) noexcept;
+using ParkObjectSetQueue = bool (*)(const EditorObjectSetRequest &);
+void set_park_object_set_queue(ParkObjectSetQueue) noexcept;
+using ParkDeleteQueue = bool (*)(const EditorDeleteRequest &);
+void set_park_delete_queue(ParkDeleteQueue) noexcept;
 struct CallbacksV3 {
     void* user = nullptr;
     void (*read_model)(void* user, Model& output) = nullptr;
@@ -497,6 +527,9 @@ struct CallbacksV3 {
 // moving the focus, 7 pressing something, 56 changing tab). Any thread.
 using UiSound = void (*)(std::uint32_t sound) noexcept;
 void set_ui_sound(UiSound) noexcept;
+// One of the game's menu sounds, by its number (UI/NativeMenu/ui_sound.h): 3 moving the focus,
+// 7 pressing, 56 changing tab, as the pause menu's own pages make them.
+void play_ui_sound(std::uint32_t sound) noexcept;
 // What those pages read the game with and act through: callbacks as the overlay's own, with a
 // read_model that takes a snapshot and leaves the console log alone (it is asked a few times a
 // second while a page is drawn).
@@ -543,6 +576,28 @@ struct Gamepad {
     unsigned buttons = 0;
 };
 Gamepad read_gamepad();
+// The full screen menu's page draws its own controls with their own focus (ONLINE: the pause
+// menu's pages): the controller then drives that, not ImGui's navigation.
+inline std::atomic<bool>& menu_page_owns_pad() {
+    static std::atomic<bool> value{false};
+    return value;
+}
+// The controller is in charge of the full screen menu: the pointer is hidden (and points at
+// nothing) until the mouse moves or clicks (overlay_render.cpp sets it, cursor.cpp clears it).
+inline std::atomic<bool>& menu_pad_in_charge() {
+    static std::atomic<bool> value{false};
+    return value;
+}
+// The menu was last drawn full screen (its controller pace, overlay_render.cpp).
+inline std::atomic<bool>& menu_fullscreen_shown() {
+    static std::atomic<bool> value{false};
+    return value;
+}
+// `menu` (and the controller bind for it) asks for the ReSkate menu to open; the overlay takes it.
+inline std::atomic<bool>& menu_open_flag() {
+    static std::atomic<bool> value{false};
+    return value;
+}
 // Reads of a controller between these two calls see the real device even while ReSkate keeps
 // the game from reading it (freecam or drone controller capture). Same thread, paired.
 // The FPV drone reads its controller this way (Skater/drone_radio.h).

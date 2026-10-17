@@ -79,6 +79,7 @@ add_library(dingosdk_runtime SHARED
     Extension/Music/spotify_station.cpp
     Extension/Music/spotify_cover.cpp
     Extension/Music/spotify_web.cpp
+    Extension/Music/plex_web.cpp
     Extension/Music/spotify_device.cpp
     Extension/Music/spotify_dashboard.cpp
     Extension/Music/external_audio.cpp
@@ -90,6 +91,7 @@ add_library(dingosdk_runtime SHARED
     Extension/World/mesh_unload_guard.cpp
     Extension/World/mesh_settings_guard.cpp
     Extension/World/shader_permutation_guard.cpp
+    Extension/World/shader_registry_guard.cpp
     Extension/World/light_table_guard.cpp
     Extension/World/stack_check_report.cpp
     Extension/World/texture_handle_limit.cpp
@@ -128,6 +130,10 @@ add_library(dingosdk_runtime SHARED
     Extension/World/spatial_cull_ids.cpp
     Extension/Rendering/display_startup.cpp
     Extension/Rendering/replay_export.cpp
+    Extension/ReplayKeyframes/replay_curve.cpp
+    Extension/ReplayKeyframes/replay_keyframes.cpp
+    Extension/ReplayKeyframes/replay_keyframes_commands.cpp
+    Extension/ReplayKeyframes/replay_settings.cpp
     Engine/Game/World/world_model.cpp
     Extension/World/level_loading.cpp
     Extension/World/loading_screen.cpp
@@ -191,6 +197,7 @@ add_library(dingosdk_runtime SHARED
     Extension/Profile/local_profile_objects.cpp
     Extension/Profile/local_profile_missions.cpp
     Extension/Customization/local_cosmetic_catalog.cpp
+    Extension/Customization/item_origins.cpp
     Extension/Customization/local_customization_runtime.cpp
     Extension/Customization/item_browser.cpp
     Extension/Progression/local_entitlement_trigger_runtime.cpp
@@ -323,13 +330,14 @@ if(EXISTS "${dingosdk_emotes}/emotes.json" AND EXISTS "${dingosdk_emotes}/emotes
 endif()
 # Game content ReSkate carries itself (Engine/Vfs/builtin_packs.h), one zip each in assets/builtin:
 # the FPV drone's model (tools/models/build_drone_pack.py; without it other players' drones use a
-# stand-in prop), and Fourth Studio's Board Break and Road Rash packs. A missing zip is left out.
+# stand-in prop). A missing zip is left out. (Mods that are content for ReSkate's features, such
+# as Board Break's decks, are official mods the launcher downloads: Launcher/official_mods.h.)
 # Each zip is made into a zstd pack by ReSkateBuiltinPacker as the build goes (again only when the
 # zip changes), which is what the DLL carries: compressed whole, a pack's repeated files cost
-# next to nothing (Board Break's ten decks).
+# next to nothing.
 set(dingosdk_builtin_rc "")
 set(dingosdk_builtin_packs "")
-foreach(pack IN ITEMS "FPV_DRONE fpv_drone" "BOARD_BREAK board_break" "ROAD_RASH road_rash")
+foreach(pack IN ITEMS "FPV_DRONE fpv_drone")
     separate_arguments(pack)
     list(GET pack 0 pack_resource)
     list(GET pack 1 pack_file)

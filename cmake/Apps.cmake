@@ -3,7 +3,8 @@ if(WIN32)
         Launcher/gui.cpp Launcher/gui_launcher.cpp Launcher/gui_renderer.cpp Launcher/gui_home.cpp
         Launcher/gui_settings.cpp Launcher/gui_sign_in.cpp Launcher/gui_mods.cpp Launcher/gui_mods_browse.cpp Launcher/gui_mods_profiles.cpp
         Launcher/gui_gamepad.cpp Launcher/gamepad_input.cpp Launcher/gui_changelog.cpp Launcher/game_settings.cpp
-        Launcher/updater.cpp Launcher/mod_manager.cpp Launcher/mod_profiles.cpp Launcher/thunderstore.cpp Launcher/problem.h)
+        Launcher/updater.cpp Launcher/mod_manager.cpp Launcher/mod_profiles.cpp Launcher/thunderstore.cpp Launcher/official_mods.cpp
+        Launcher/problem.h)
     target_link_libraries(dingosdk_launcher PRIVATE dingosdk_logging dingosdk_content_cache_install dingosdk_world_layer_scan dingosdk_launcher_support dingosdk_initfs
         dingosdk_mod_list dingosdk_mods dingosdk_json dingosdk_miniz dingosdk_imgui dingosdk_playstation_input winhttp shell32 dwmapi windowscodecs ole32)
     set_target_properties(dingosdk_launcher PROPERTIES OUTPUT_NAME "ReSkateLauncher")
@@ -23,8 +24,9 @@ if(DINGOSDK_BUILD_LAUNCHER_TESTS AND WIN32)
     add_dependencies(dingosdk_oodle_path_tests dingosdk_test_oodle_codec)
     add_test(NAME oodle_path COMMAND dingosdk_oodle_path_tests "$<TARGET_FILE_DIR:dingosdk_test_oodle_codec>")
     add_executable(dingosdk_mod_manager_tests Launcher/Test/mod_manager_tests.cpp Launcher/mod_manager.cpp
-        Engine/Vfs/builtin_packs.cpp)
-    target_link_libraries(dingosdk_mod_manager_tests PRIVATE dingosdk_mod_list dingosdk_launcher_support dingosdk_miniz dingosdk_zstd shell32)
+        Launcher/official_mods.cpp Launcher/updater.cpp Launcher/thunderstore.cpp Engine/Vfs/builtin_packs.cpp)
+    target_link_libraries(dingosdk_mod_manager_tests PRIVATE dingosdk_mod_list dingosdk_launcher_support dingosdk_logging dingosdk_json
+        dingosdk_miniz dingosdk_zstd winhttp shell32)
     add_test(NAME launcher_mod_manager COMMAND dingosdk_mod_manager_tests)
     add_executable(dingosdk_thunderstore_tests Launcher/Test/thunderstore_tests.cpp Launcher/thunderstore.cpp)
     target_link_libraries(dingosdk_thunderstore_tests PRIVATE dingosdk_json dingosdk_miniz)
@@ -70,6 +72,16 @@ if(DINGOSDK_BUILD_LAUNCHER_TESTS AND WIN32)
     add_executable(dingosdk_bundle_ref_table_tests Engine/Vfs/Test/bundle_ref_table_tests.cpp)
     target_link_libraries(dingosdk_bundle_ref_table_tests PRIVATE dingosdk_mods)
     add_test(NAME bundle_ref_table COMMAND dingosdk_bundle_ref_table_tests)
+    # The shader program lookup's merge: added rows combined, rows past the base's records left out.
+    add_executable(dingosdk_shader_lookup_tests Engine/Resource/Test/shader_lookup_tests.cpp)
+    target_link_libraries(dingosdk_shader_lookup_tests PRIVATE dingosdk_mods)
+    target_include_directories(dingosdk_shader_lookup_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    add_test(NAME shader_lookup COMMAND dingosdk_shader_lookup_tests)
+    # A type reference on another fixup's slot taken out of an EBX (Master Chief / TASM2 costume crash).
+    add_executable(dingosdk_ebx_fixup_repair_tests Engine/Resource/Test/ebx_fixup_repair_tests.cpp)
+    target_link_libraries(dingosdk_ebx_fixup_repair_tests PRIVATE dingosdk_mods)
+    target_include_directories(dingosdk_ebx_fixup_repair_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    add_test(NAME ebx_fixup_repair COMMAND dingosdk_ebx_fixup_repair_tests)
     add_executable(dingosdk_mod_scoring_tests Engine/Vfs/Test/mod_scoring_tests.cpp)
     target_link_libraries(dingosdk_mod_scoring_tests PRIVATE dingosdk_mods)
     add_test(NAME mod_scoring COMMAND dingosdk_mod_scoring_tests "${DINGOSDK_TEST_GAME_ROOT}")
@@ -102,7 +114,7 @@ if(DINGOSDK_BUILD_LAUNCHER_TESTS AND WIN32)
     target_include_directories(dingosdk_chunk_metadata_merge_tests PRIVATE "${PROJECT_SOURCE_DIR}")
     add_test(NAME chunk_metadata_merge COMMAND dingosdk_chunk_metadata_merge_tests)
     add_executable(dingosdk_mod_merge_added_assets_tests Engine/Vfs/Test/mod_merge_added_assets_tests.cpp)
-    target_link_libraries(dingosdk_mod_merge_added_assets_tests PRIVATE dingosdk_mods)
+    target_link_libraries(dingosdk_mod_merge_added_assets_tests PRIVATE dingosdk_mods dingosdk_game_archives)
     target_include_directories(dingosdk_mod_merge_added_assets_tests PRIVATE "${PROJECT_SOURCE_DIR}")
     add_test(NAME mod_merge_added_assets COMMAND dingosdk_mod_merge_added_assets_tests)
     add_executable(dingosdk_item_list_merge_tests Engine/Vfs/Test/item_list_merge_tests.cpp)

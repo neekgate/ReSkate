@@ -66,7 +66,7 @@ void register_movement_commands(Commands &registry) {
         registry.add(std::move(entry));
     }
     auto drone_mode = variable("dronemode",
-        "Fly the free camera as an FPV drone. Easiest from the DRONE page of the ReSkate menu (Insert): Start flying",
+        "Fly the free camera as an FPV drone. Easiest from Addons > Drone in the ReSkate menu (Insert): Start flying",
         Group::movement, argument("0|1", Type::boolean));
     drone_mode.inspect = [](const Model &m) {
         return boolean_state(m.debug.available, drone::is_enabled(), "Waiting for local player controls.",
@@ -130,13 +130,20 @@ void register_movement_commands(Commands &registry) {
                             : std::format("{} = {:g} (the closest allowed value)", name, value));
     };
     registry.add(std::move(tune));
-    auto menu_command = action("dronemenu", "Open the ReSkate menu on its DRONE page", Group::movement);
+    auto menu_command = action("dronemenu", "Open the ReSkate menu on Addons > Drone", Group::movement);
     menu_command.inspect = [](const Model &) { return State{true, {}, {}, {}, false}; };
     menu_command.run = [](const Model &, const Values &, const Output &out) {
         drone::menu_flag().store(true);
-        out("Opening the DRONE page.");
+        out("Opening Addons > Drone.");
     };
     registry.add(std::move(menu_command));
+    auto open_menu = action("menu", "Open the ReSkate menu (bind it to a controller combo to open it with a pad)", Group::console);
+    open_menu.inspect = [](const Model &) { return State{true, {}, {}, {}, false}; };
+    open_menu.run = [](const Model &, const Values &, const Output &out) {
+        overlay::menu_open_flag().store(true);
+        out("Opening the ReSkate menu.");
+    };
+    registry.add(std::move(open_menu));
     auto arm_command = action("dronearm", "Arm the drone: motors on, ready to fly", Group::movement);
     arm_command.inspect = [](const Model &) { return State{true, {}, {}, {}, false}; };
     arm_command.run = [](const Model &, const Values &, const Output &out) {
@@ -165,7 +172,7 @@ void register_movement_commands(Commands &registry) {
         Group::movement, argument("0|1", Type::boolean));
     radio_mode.inspect = [](const Model &m) {
         return boolean_state(m.debug.available, drone::radio::config().enabled.load(), "Waiting for local player controls.",
-                             "Set it up on the DRONE page (dronemenu), CONTROLLER tab");
+                             "Set it up in Addons > Drone (dronemenu), CONTROLLER tab");
     };
     radio_mode.run = [](const Model &, const Values &args, const Output &out) {
         const bool on = std::get<bool>(args[0]);
@@ -185,7 +192,8 @@ void register_movement_commands(Commands &registry) {
     auto model_mode = argument("mode", Type::integer, true);
     auto model_test = action("dronemodeltest",
         "Test for the drone model: spawns the drone (dronemodeltest drone), the traffic cone (cone) or a named blueprint in front of you and moves it "
-        "round a circle. Mode 0, 1 or 2 tries a different way of moving it. 'dronemodeltest stop' removes it; on its own it reports",
+        "round a circle. Mode 0, 1 or 2 tries a different way of moving it. 'dronemodeltest remote' has a pretend other player fly a drone "
+        "in front of you, shown as theirs would be. 'dronemodeltest stop' removes them; on its own it reports",
         Group::movement, {model_name, model_mode});
     model_test.inspect = [](const Model &) { return State{true, {}, {}, {}, false}; };
     model_test.run = [](const Model &, const Values &args, const Output &out) {
@@ -199,7 +207,13 @@ void register_movement_commands(Commands &registry) {
         }
         if (name == "stop") {
             multiplayer::request_prop_test({}, 0);
+            multiplayer::request_fake_remote_drone(false);
             out("Removing the test prop.");
+            return;
+        }
+        if (name == "remote") {
+            multiplayer::request_fake_remote_drone(true);
+            out("A pretend other player takes off in front of you. Run dronemodeltest again in a few seconds for what happened.");
             return;
         }
         const std::string blueprint = name == "drone" ? std::string(multiplayer::drone_model_blueprint)

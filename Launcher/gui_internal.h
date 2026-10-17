@@ -120,12 +120,22 @@ bool nav_tile(const Fonts& fonts, float width, const char* label, bool selected,
 float badge_width(const Fonts& fonts, const std::string& text);
 void badge(ImDrawList* draw, const Fonts& fonts, ImVec2 position, const std::string& text,
            ImU32 fill = color::blue, ImU32 ink = color::ink);
+// How tall `text` is in `font`, wrapped at `wrap` (0: not wrapped); 0 for no text.
+float text_height(ImFont* font, float wrap, const std::string& text);
+// A page's banner, as wide as the page: its heading with a blue pill beside it (`pill` may be
+// empty), a line on what the page is for, and at the right how things stand: a pill in
+// `status_fill`, with `caption` under it (either may be empty). Leaves the cursor under it.
+void page_banner(const Fonts& fonts, const char* heading, const char* pill, const std::string& about,
+                 const std::string& status = {}, ImU32 status_fill = color::good, const std::string& caption = {});
+// A card behind what a page draws on it: lighter edged while hovered, with a blue edge when `marked`.
+void card(ImDrawList* draw, ImVec2 start, ImVec2 size, bool marked = false);
 // A caption over its value: the detail lines of an open list row.
 void field(const Fonts& fonts, const char* name, const std::string& value);
-// One row of a mod list: its background, a hover tint, a rule under it and a
-// blue edge when it is ticked. Returns true when the row itself was clicked,
+// One row of a mod list, `height` tall: a card, lighter edged while hovered, with a blue edge
+// when it is ticked. Leave a gap under it (row_gap). Returns true when the row itself was clicked,
 // which opens the mod's overview; the widgets drawn over it keep their clicks.
 bool list_row(const char* id, float width, float height, bool ticked);
+inline float row_gap() { return S(8); }
 // An on/off switch, blue while on. Returns true when it was flipped.
 bool toggle(const char* id, bool* on);
 // A square button with three dots, for a row's menu.
@@ -247,8 +257,11 @@ public:
     Settings& settings() { return settings_; }
     const launcher_app::Session& session() const { return session_; }
     void save();
-    // After settings are closed: the update check again, when an update choice changed.
+    // The update check again when an update choice changed since the last one: as either switch
+    // is flipped, and each frame after (a check already running holds the next one until it ends).
     void check_again_if_update_choices_changed();
+    // Whether the last update check found a pre-release newer than the latest release.
+    bool prerelease_available() const { return prerelease_available_; }
 
     void check();
     // The merge the game would do at startup, run here so its failures can be
@@ -278,6 +291,7 @@ private:
     // The update choices the last check was made with: one changed in settings is checked
     // again straight away (save()).
     std::atomic<bool> checked_updates_{true}, checked_prereleases_{};
+    std::atomic<bool> prerelease_available_{};
     bool binaries_{true};
     std::mutex mutex_;
     std::condition_variable answered_;
@@ -573,6 +587,8 @@ void mod_icon(ModsPanel& panel, const thunderstore::Package* package, ImVec2 pos
 void pump_icons(ModsPanel& panel);
 // The GET MODS page body, under the page header.
 void browse_page(Launcher& launcher, const Fonts& fonts, ModsPanel& panel, float height, bool installing);
+// The official mods (official_mods.h): what every player has, always on, and how each is doing.
+void official_page(const Fonts& fonts, ModsPanel& panel, float height);
 // Everything Thunderstore knows about one package, in a popup over the page.
 void package_overview(const Fonts& fonts, ModsPanel& panel, ImVec2 size, bool installing);
 // The README section of an overview: the installed mod's own README.md when it has one, else
