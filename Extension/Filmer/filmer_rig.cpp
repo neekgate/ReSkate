@@ -1096,10 +1096,10 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
         }
     }
     if ((frozen || framing_set) && composing_) {
-        // Framing the set: a fast whip round to look along it and down over it, as a filmer snaps the
-        // camera onto the spot (a touch of overshoot as it lands), then held. It does not follow you:
-        // you ride into the shot.
-        steer_aim(dt, set_yaw_, pan_pitch_, 15.0f, 0.78f);
+        // Framing the set: a quick, smooth swing round to look along it and down over it, as a filmer
+        // brings the camera onto the spot (the faintest settle as it lands), then held. It does not
+        // follow you: you ride into the shot.
+        steer_aim(dt, set_yaw_, pan_pitch_, 8.0f, 0.9f);
         const bool calm = std::abs(aim_.yaw_rate) + std::abs(aim_.pitch_rate) < 0.05f &&
                           std::abs(wrap_angle(aim_.yaw - set_yaw_)) < 0.02f && std::abs(aim_.pitch - pan_pitch_) < 0.02f;
         if (rolling_stop_) compose_start_ = now; // held from when they have come to a halt
