@@ -13,12 +13,12 @@ void register_filmer_commands(Commands &registry) {
     };
     const Verb verbs[]{
         {"status", "What the Filmer is doing", nullptr, false},
-        {"toggle", "Turn the Filmer on (as last used, or the mode given) or off", "[follow|film]", false},
-        {"mode", "off; follow: an AI filmer films a skater; film: you film (right stick aims)", "off|follow|film", false},
+        {"toggle", "Turn the Filmer on (as last used, or the mode given) or off", "[follow|film|tripod]", false},
+        {"mode", "off; follow: an AI filmer films a skater; film: you film (right stick aims); tripod: a camera set down that pans with them in frame", "off|follow|film|tripod", false},
         {"subject", "Whom the AI filmer follows", "me|<player>", false},
         {"target", "Whom the assist frames while you film", "auto|<player>", false},
         {"set", "Change a Filmer option",
-         "style auto|behind|side|ahead, side auto|left|right|swap, lens fisheye|long, distance|height|tilt|human|reaction|sensitivity|hold|bend|age|gap|mousesens <number>, "
+         "style auto|behind|side|ahead, side auto|left|right|swap, lens fisheye|long, stop instant|stair, distance|height|tilt|human|reaction|sensitivity|hold|bend|age|gap|mousesens|lift|tripodheight <number>, "
          "assist|invert|recenter|hidehud|stick|clicks|drops|lunge|cruise|mouse|look|anywhere|fisheye|bars|hood|grade|soft|scanlines|grain|date|viewfinder|"
          "dropouts|headswitch|tracking|smear|iris 0|1",
          true},
@@ -26,6 +26,7 @@ void register_filmer_commands(Commands &registry) {
         {"slap", "Slap the lens: ends the clip", nullptr, false},
         {"clips", "The clips marked this session", nullptr, false},
         {"trace", "Record what the Filmer sees for 30 seconds (trace.csv), to send for tuning", nullptr, false},
+        {"tripod", "Set the tripod down where the camera is (or with here, where you stand) and film from it", "[here]", false},
         {"cruise", "Film mode: ride at the speed that holds you behind the skater you frame", "[on|off]", false},
         {"zoom", "Long lens, while the camera is held still: zoom in, out or back to its widest", "in|out|reset", false},
         {"reset", "Put every Filmer option back to its default", nullptr, false},

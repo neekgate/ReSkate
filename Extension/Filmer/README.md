@@ -24,6 +24,19 @@ skate. filmed the way a skater with a VX1000 films a line.
   keeps a friend in frame (the closest one ahead, or `filmer target <name>`) and the stick shifts
   the framing. Click the right stick to slap the lens.
 
+## Stopping, and the tripod
+
+- **Stop style** (`filmer set stop instant|stair`): how the AI filmer stops, with the left stick or at
+  a drop. Instant stops on the spot and holds the framing. Stair rolls to a halt short of the first
+  step (it looks along its line for the drop), rises a little (`filmer set lift`, 0.3 m) and pans
+  down to take in the whole set or rail. Turn it after with the mouse.
+- **Tripod** (`filmer mode tripod`; `filmer tripod`, bindable): a camera set down where the Filmer's
+  camera is (stop the AI filmer where you like first), or with `filmer tripod here` (or a left stick
+  click) where you stand, `tripodheight` above the ground, facing your way. It holds its framing until
+  the skater rides into it, pans with them like a tripod head while it can see them, and settles back
+  a couple of seconds after it loses them. The mouse turns it while nobody is in frame; with the long
+  lens the wheel zooms.
+
 ## Cruise control, mouse look and zoom
 
 - **Cruise control** (film mode, framing a friend; `filmer cruise`, bindable): you ride at the speed

@@ -75,12 +75,13 @@ void filmer_page(SkateMenu &menu, const Model &, const CallbacksV3 &callbacks) {
 
     begin_card(menu, "filmer-camera", "CAMERA", "Who holds the VX, and who is in front of it.");
     int mode = static_cast<int>(s.mode);
-    if (choice(menu, "mode", mode, {"Off", "AI filmer", "You film"}, true, 0.0f,
+    if (choice(menu, "mode", mode, {"Off", "AI filmer", "You film", "Tripod"}, true, 0.0f,
                {"The game's own camera.", "An AI filmer rides with a skater and films them. You skate as normal.",
-                "You are the filmer: left stick rides, right stick aims, click it to slap the lens."}))
+                "You are the filmer: left stick rides, right stick aims, click it to slap the lens.",
+                "A camera set down on a tripod: it holds its framing, and pans with the skater once they ride into it."}))
         filmer_command(menu, callbacks, std::string("mode ") + filmer::mode_name(static_cast<filmer::Mode>(mode)));
     info(menu, "Status", v.status);
-    if (s.mode == filmer::Mode::follow) {
+    if (s.mode == filmer::Mode::follow || s.mode == filmer::Mode::tripod) {
         ImGui::Spacing();
         ImGui::PushFont(menu.bold);
         ImGui::TextUnformatted("FILM");
@@ -101,7 +102,15 @@ void filmer_page(SkateMenu &menu, const Model &, const CallbacksV3 &callbacks) {
     field(menu, "Lens", "Fisheye: a Century MK1 on the VX, ridden close. Long lens: the VX's own, from further back.");
     int lens = r.lens == filmer::Lens::long_lens ? 1 : 0;
     if (choice(menu, "lens", lens, {"Fisheye (MK1)", "Long lens"})) filmer_command(menu, callbacks, lens ? "set lens long" : "set lens fisheye");
-    if (s.mode != filmer::Mode::film) {
+    if (s.mode == filmer::Mode::tripod) {
+        note("Set it down where the camera is now (stop the AI filmer where you want it first), or where you stand. "
+             "Turn it with the mouse while nobody is in frame; with the long lens the wheel zooms. "
+             "Clicking the left stick sets it down where you stand.");
+        if (primary_button(menu, "SET IT DOWN WHERE THE CAMERA IS", v.active)) filmer_command(menu, callbacks, "tripod");
+        if (primary_button(menu, "SET IT DOWN WHERE I STAND")) filmer_command(menu, callbacks, "tripod here");
+        filmer_slider(menu, callbacks, "Tripod height", "Set down where you stand: how high the lens is above the ground.", "tripodheight", r.tripod_height, 0.1f, 2.5f, "%.2f m");
+        filmer_toggle(menu, callbacks, "Stick clicks", "On the tripod: click the left stick to set it down where you stand, the right stick to slap the lens. The game does not get those clicks while this is on.", "clicks", s.stick_clicks);
+    } else if (s.mode != filmer::Mode::film) {
         field(menu, "Angle", "Where the AI filmer rides. Auto picks angles through a line like a filmer does.");
         int style = static_cast<int>(r.style);
         if (choice(menu, "style", style, {"Auto", "Behind", "Side", "Ahead"}))
@@ -114,6 +123,11 @@ void filmer_page(SkateMenu &menu, const Model &, const CallbacksV3 &callbacks) {
         filmer_slider(menu, callbacks, "Camera height", "Above the ground. Down by the board (0.15 m) is the classic fisheye angle; about a foot (0.3 m) sees more of the spot.", "height", r.height, 0.08f, 2.5f, "%.2f m");
         filmer_toggle(menu, callbacks, "Lunge", "Fisheye, flatground tricks only: as you pop, the filmer pushes in a little closer and lower, then eases back out as you land.", "lunge", r.lunge, r.lens == filmer::Lens::fisheye);
         filmer_toggle(menu, callbacks, "Stop at drops", "The filmer only rides where you rolled: at a set or a gap you jumped they stop at the edge, film you land and ride away, then catch up.", "drops", r.stop_at_drops);
+        field(menu, "Stop", "How the filmer stops (the left stick, or at a drop). Instant: on the spot, holding the framing. Stair: rolls to a halt short of the first step, rises a little and pans down to take in the whole set or rail.");
+        int stop = static_cast<int>(r.stop_style);
+        if (choice(menu, "stop", stop, {"Instant", "Stair"})) filmer_command(menu, callbacks, stop ? "set stop stair" : "set stop instant");
+        if (r.stop_style == filmer::StopStyle::stair)
+            filmer_slider(menu, callbacks, "Stair lift", "Stair stop: how much the camera rises once stopped.", "lift", r.stop_lift, 0.0f, 1.5f, "%.2f m");
         filmer_toggle(menu, callbacks, "Stick clicks", "While the AI films: click the left stick to have them stop and film from where they are (again to ride on), the right stick to slap the lens. The game does not get those clicks while this is on.", "clicks", s.stick_clicks);
         if (s.mode == filmer::Mode::follow && primary_button(menu, v.planted ? "RIDE AGAIN" : "STOP AND FILM FROM HERE", v.active))
             filmer_command(menu, callbacks, "plant");

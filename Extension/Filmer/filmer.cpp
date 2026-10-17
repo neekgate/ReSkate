@@ -49,6 +49,10 @@ void filter_pad(unsigned, overlay::GamepadValues &pad) noexcept {
 
 struct State {
     bool loaded{};
+    // The last frame the camera filmed (the tripod is set down where it was), and whether the tripod
+    // is still to be set down (the mode was chosen without saying where).
+    Frame last_frame;
+    bool tripod_place_due{};
     // `filmer trace`: every tick of the next 30 seconds to trace.csv, to see what the filmer saw.
     std::ofstream trace;
     double trace_until{};
@@ -79,7 +83,7 @@ struct State {
     ULONGLONG next_publish{}, next_save{};
     bool filter_installed{};
     bool world_set{};
-    bool planted_shown{}, edge_shown{};
+    bool planted_shown{}, edge_shown{}, tracking_shown{};
     // What the menu was last shown of the stationary camera's zoom and the cruise control.
     bool stationary_shown{}, cruising_shown{};
     float zoom_shown{1.0f};
@@ -156,6 +160,9 @@ void load_store() {
         r.tilt = clamped(o, "tilt", d.rig.tilt, 0.0f, 1.0f);
         r.stop_at_drops = flag(o, "stop_at_drops", d.rig.stop_at_drops);
         r.cruise = flag(o, "cruise", d.rig.cruise);
+        r.stop_style = o.value("stop_style", std::string("instant")) == "stair" ? StopStyle::stair : StopStyle::instant;
+        r.stop_lift = clamped(o, "stop_lift", d.rig.stop_lift, 0.0f, 1.5f);
+        r.tripod_height = clamped(o, "tripod_height", d.rig.tripod_height, 0.1f, 2.5f);
         r.cruise_gap = clamped(o, "cruise_gap", d.rig.cruise_gap, 1.0f, 12.0f);
         r.mouse_look = flag(o, "mouse_look", d.rig.mouse_look);
         r.mouse_sensitivity = clamped(o, "mouse_sensitivity", d.rig.mouse_sensitivity, 0.1f, 5.0f);
@@ -169,7 +176,8 @@ void load_store() {
         }
         s.settings.hide_hud = flag(o, "hide_hud", d.hide_hud);
         s.settings.take_stick = flag(o, "take_stick", d.take_stick);
-        s.last_mode = o.value("last_mode", std::string("follow")) == "film" ? Mode::film : Mode::follow;
+        const auto last = o.value("last_mode", std::string("follow"));
+        s.last_mode = last == "film" ? Mode::film : last == "tripod" ? Mode::tripod : Mode::follow;
         if (o.contains("look") && o.at("look").is_object()) {
             const auto &l = o.at("look");
             auto &k = s.settings.look;
@@ -219,6 +227,9 @@ void save_store() {
         json["tilt"] = r.tilt;
         json["stop_at_drops"] = r.stop_at_drops;
         json["cruise"] = r.cruise;
+        json["stop_style"] = r.stop_style == StopStyle::stair ? "stair" : "instant";
+        json["stop_lift"] = r.stop_lift;
+        json["tripod_height"] = r.tripod_height;
         json["cruise_gap"] = r.cruise_gap;
         json["mouse_look"] = r.mouse_look;
         json["mouse_sensitivity"] = r.mouse_sensitivity;
@@ -473,7 +484,7 @@ void set_status(State &s, std::string text) {
 // the filmer's (stop and film, slap). Nothing is taken otherwise.
 void update_filter(State &s) {
     const bool film = s.settings.mode == Mode::film && s.held && s.settings.take_stick;
-    const bool follow = s.settings.mode == Mode::follow && s.held && s.settings.stick_clicks;
+    const bool follow = (s.settings.mode == Mode::follow || s.settings.mode == Mode::tripod) && s.held && s.settings.stick_clicks;
     take_right_stick.store(film, std::memory_order_release);
     masked_buttons.store(film ? right_thumb : follow ? static_cast<std::uint16_t>(left_thumb | right_thumb) : std::uint16_t{0},
                          std::memory_order_release);
@@ -489,7 +500,16 @@ void update_filter(State &s) {
 void read_clicks(State &s, std::uint16_t buttons) {
     const auto pressed = [&](std::uint16_t button) { return (buttons & button) != 0 && (s.previous_buttons & button) == 0; };
     const bool follow = s.settings.mode == Mode::follow && s.settings.stick_clicks;
-    if (s.held && pressed(right_thumb) && (s.settings.mode == Mode::film || follow)) s.last = slap(s);
+    const bool tripod = s.settings.mode == Mode::tripod && s.settings.stick_clicks;
+    if (s.held && pressed(right_thumb) && (s.settings.mode == Mode::film || follow || tripod)) s.last = slap(s);
+    if (s.held && tripod && pressed(left_thumb)) {
+        // The tripod: set down again where you stand, facing your way.
+        if (const Subject self = local_subject(); self.valid) {
+            s.rig.place_tripod_here(self, s.settings.rig);
+            s.last = "Tripod set down where you stand.";
+            s.view_due = true;
+        }
+    }
     if (s.held && follow && pressed(left_thumb)) {
         s.rig.set_planted(!s.rig.planted());
         s.last = s.rig.planted() ? "The filmer stops and films from here." : "The filmer rides with you again.";
@@ -615,7 +635,35 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready, bool camera_ph
                     if (mouse.wheel) s.rig.zoom_by(std::pow(1.15f, static_cast<float>(mouse.wheel) / 120.0f), s.settings.rig);
                 }
             }
-            if (s.settings.mode == Mode::follow) {
+            if (s.settings.mode == Mode::tripod) {
+                // Set down where the camera was (the mode chosen while filming), or where you stand.
+                if (s.tripod_place_due || !s.rig.tripod_placed()) {
+                    if (s.held && s.last_frame.valid) {
+                        const auto &m = s.last_frame.camera;
+                        s.rig.place_tripod(Vec3{m[12], m[13], m[14]}, std::atan2(-m[8], -m[10]), std::asin(std::clamp(-m[9], -1.0f, 1.0f)));
+                    } else if (self.valid) {
+                        s.rig.place_tripod_here(self, s.settings.rig);
+                    }
+                    s.tripod_place_due = false;
+                }
+                Subject subject = self;
+                name = "you";
+                if (s.settings.subject) {
+                    if (const auto *player = find_player(s, s.settings.subject)) {
+                        subject = remote_subject(*player);
+                        name = player->name;
+                    } else {
+                        subject = {};
+                        name = "nobody (they left)";
+                    }
+                }
+                read_follow_clicks(s);
+                frame = s.rig.tripod(t, dt, subject, s.settings.rig);
+                if (s.rig.tripod_tracking() != s.tracking_shown) {
+                    s.tracking_shown = s.rig.tripod_tracking();
+                    s.view_due = true;
+                }
+            } else if (s.settings.mode == Mode::follow) {
                 Subject subject = self;
                 name = "you";
                 if (s.settings.subject) {
@@ -679,7 +727,7 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready, bool camera_ph
                 } else {
                     const auto d = s.rig.debug();
                     s.trace << std::format("{:.4f},{:.4f},{},{:.3f},{:.3f},{:.3f},{:.3f},{:.3f},{:.3f},{:.3f},{:.3f},{:.3f},{:.3f},{:.3f},{:.4f},{:.4f},{:.4f},{},{},{},{},{},{},{:.3f},{:.3f},{:.3f},{}\n",
-                        t, dt, s.settings.mode == Mode::follow ? "follow" : "film", self.position[0], self.position[1], self.position[2],
+                        t, dt, mode_name(s.settings.mode), self.position[0], self.position[1], self.position[2],
                         d.subject[0], d.subject[1], d.subject[2], d.operator_at[0], d.operator_at[2], d.ground, d.floor, d.level,
                         d.root_above_ground, d.aim_yaw, d.aim_pitch, d.world ? 1 : 0, d.root_known ? 1 : 0, d.airborne ? 1 : 0,
                         d.edge ? 1 : 0, d.hold ? 1 : 0, d.planted ? 1 : 0, frame.camera[12], frame.camera[13], frame.camera[14], frame.valid ? 1 : 0);
@@ -696,6 +744,7 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready, bool camera_ph
                 std::string detail;
                 const bool applied = update_filmer_camera(base, client, true, camera_phase, &frame.camera, detail, frame.fov);
                 if (applied) {
+                    s.last_frame = frame;
                     if (!s.held) {
                         s.held = true;
                         s.view_due = true;
@@ -710,7 +759,10 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready, bool camera_ph
                     std::string where;
                     if (s.settings.mode == Mode::follow && s.rig.planted()) where = " (stopped: click the left stick to ride again)";
                     else if (s.settings.mode == Mode::follow && s.rig.at_edge()) where = " (stopped at the drop)";
-                    set_status(s, std::string(s.settings.mode == Mode::follow ? "Filming " : "You film ") + name + "." + where);
+                    if (s.settings.mode == Mode::tripod)
+                        set_status(s, s.rig.tripod_tracking() ? "Tripod: panning with " + name + "." : "Tripod: waiting for " + name + " to ride into the frame.");
+                    else
+                        set_status(s, std::string(s.settings.mode == Mode::follow ? "Filming " : "You film ") + name + "." + where);
                 } else if (!detail.empty()) {
                     // Refused (another camera has the view, the camera phase is not here yet): try
                     // again shortly. Without a reason it was only busy this tick, and nothing changes.
@@ -752,6 +804,7 @@ std::string set_mode(State &s, Mode mode, bool hud_hidden) {
     if (mode == before) return std::format("The Filmer is already {}.", mode_name(mode));
     s.settings.mode = mode;
     if (mode != Mode::off) s.last_mode = mode;
+    if (mode == Mode::tripod) s.tripod_place_due = true;
     changed(s);
     // The game's interface while filming: hidden if asked, and only shown again if it was the Filmer
     // that hid it.
@@ -765,6 +818,8 @@ std::string set_mode(State &s, Mode mode, bool hud_hidden) {
     switch (mode) {
     case Mode::follow: return "Filmer on: an AI filmer follows " + (s.settings.subject ? std::string("them") : std::string("you")) + ".";
     case Mode::film: return "Filmer on: you film. Left stick rides, right stick aims, click it to slap the lens.";
+    case Mode::tripod: return "Filmer on: a tripod. It holds its framing and pans with " + (s.settings.subject ? std::string("them") : std::string("you")) +
+                              " once in it. Click the left stick (or filmer tripod here) to set it down where you stand.";
     case Mode::off: break;
     }
     return "Filmer off.";
@@ -828,6 +883,16 @@ std::string set_option(State &s, const std::string &key, const std::string &valu
     if (key == "anywhere") return toggle(k.anywhere);
     if (key == "lunge") return toggle(r.lunge);
     if (key == "cruise") return toggle(r.cruise);
+    if (key == "stop") {
+        const auto v = lower(value);
+        if (v != "instant" && v != "stair") return "error: stop is instant or stair.";
+        r.stop_style = v == "stair" ? StopStyle::stair : StopStyle::instant;
+        changed(s);
+        return v == "stair" ? "Stops roll to a halt short of the first step, rise a little and pan down over the set."
+                            : "Stops are on the spot, holding the framing.";
+    }
+    if (key == "lift") return real(r.stop_lift, 0.0f, 1.5f);
+    if (key == "tripodheight") return real(r.tripod_height, 0.1f, 2.5f);
     if (key == "gap") return real(r.cruise_gap, 1.0f, 12.0f);
     if (key == "mouse") return toggle(r.mouse_look);
     if (key == "mousesens") return real(r.mouse_sensitivity, 0.1f, 5.0f);
@@ -878,13 +943,15 @@ std::string command(std::string_view verb, const std::vector<std::string> &argum
         Mode mode = s.settings.mode == Mode::off ? s.last_mode : Mode::off;
         if (wanted == "follow") mode = s.settings.mode == Mode::follow ? Mode::off : Mode::follow;
         else if (wanted == "film") mode = s.settings.mode == Mode::film ? Mode::off : Mode::film;
+        else if (wanted == "tripod") mode = s.settings.mode == Mode::tripod ? Mode::off : Mode::tripod;
         reply = set_mode(s, mode, hud_hidden);
     } else if (verb == "mode") {
         const auto wanted = lower(arg(0));
         if (wanted == "off") reply = set_mode(s, Mode::off, hud_hidden);
         else if (wanted == "follow") reply = set_mode(s, Mode::follow, hud_hidden);
         else if (wanted == "film") reply = set_mode(s, Mode::film, hud_hidden);
-        else reply = "error: mode is off, follow or film.";
+        else if (wanted == "tripod") reply = set_mode(s, Mode::tripod, hud_hidden);
+        else reply = "error: mode is off, follow, film or tripod.";
     } else if (verb == "subject" || verb == "target") {
         const bool subject = verb == "subject";
         std::string wanted;
@@ -913,6 +980,25 @@ std::string command(std::string_view verb, const std::vector<std::string> &argum
             const bool plant = wanted == "on" || wanted == "1" ? true : wanted == "off" || wanted == "0" ? false : !s.rig.planted();
             s.rig.set_planted(plant);
             reply = plant ? "The filmer stops and films from here." : "The filmer rides with you again.";
+        }
+    } else if (verb == "tripod") {
+        // Set the tripod down: where the Filmer's camera is now (an AI filmer you stopped where you
+        // like, say), or with "here" (or no camera rolling) where you stand, facing your way.
+        const bool here = lower(arg(0)) == "here" || !s.held || !s.last_frame.valid;
+        if (here) {
+            const Subject self = local_subject();
+            if (!self.valid) reply = "error: no skater to set the tripod down by.";
+            else s.rig.place_tripod_here(self, s.settings.rig);
+        } else {
+            const auto &m = s.last_frame.camera;
+            s.rig.place_tripod(Vec3{m[12], m[13], m[14]}, std::atan2(-m[8], -m[10]), std::asin(std::clamp(-m[9], -1.0f, 1.0f)));
+        }
+        if (reply.empty()) {
+            const auto before = s.settings.mode;
+            if (before != Mode::tripod) (void)set_mode(s, Mode::tripod, hud_hidden);
+            s.tripod_place_due = false;
+            reply = here ? "Tripod set down where you stand, facing your way. It pans with you once you ride into the frame."
+                         : "Tripod set down where the camera was. It pans with you once you ride into the frame.";
         }
     } else if (verb == "cruise") {
         const auto wanted = lower(arg(0));

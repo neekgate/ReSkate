@@ -24,10 +24,14 @@ using Matrix = std::array<float, 16>;
 // off: the game's camera. follow: an AI filmer rides with a skater (you, or someone in the session)
 // while you play normally. film: you are the filmer: the left stick rides your skater, the right stick
 // points the camera.
-enum class Mode : std::uint8_t { off, follow, film };
+enum class Mode : std::uint8_t { off, follow, film, tripod };
 // Where the AI filmer rides relative to the skater. Auto moves between the others the way a filmer
 // picks angles through a line.
 enum class Style : std::uint8_t { automatic, behind, side, ahead };
+// How the AI filmer stops (the left stick, or at a drop). instant: on the spot, holding the framing.
+// stair: rolls to a halt short of the first step, lifts the camera a little and pans down to take in
+// the whole set or rail.
+enum class StopStyle : std::uint8_t { instant, stair };
 // Which side of the skater the AI filmer keeps to (auto: wherever they happen to be).
 enum class Side : std::uint8_t { automatic, left, right };
 // fisheye: a Century MK1 on the VX, ridden close. long_lens: the VX's own lens from further away.
@@ -43,6 +47,9 @@ struct RigSettings {
     float height = 0.15f;   // camera above the ground: down by the board, the classic fisheye angle
     float tilt = 0.5f;      // framing: 0 the board near the centre, 1 the board low in the frame (more skater)
     bool stop_at_drops = true; // the filmer stops at the top of a set or a gap you jumped, and films from there
+    StopStyle stop_style = StopStyle::instant;
+    float stop_lift = 0.3f; // stair stop: how much the camera rises once stopped (metres)
+    float tripod_height = 0.5f; // tripod set down where you stand: the lens above the ground
     bool lunge = true;      // fisheye: on an air the filmer pushes in close and low under the trick, then pulls back
     float human = 0.5f;     // 0 steady as a robot, 1 a sketchy filmer: shake, drift, late corrections
     float reaction = 0.4f;  // 0 snaps onto the action, 1 lazy and late
@@ -117,6 +124,15 @@ public:
     void reset() noexcept;
     // AI filmer on `subject`. `now` in seconds on any steady clock, `dt` the seconds since the last call.
     Frame follow(double now, float dt, const Subject &subject, const RigSettings &settings);
+    // Tripod: a camera set down where it was placed (place_tripod). It holds its framing until `subject`
+    // rides into the frame, pans with them while it can see them, and settles back when it has lost them.
+    Frame tripod(double now, float dt, const Subject &subject, const RigSettings &settings);
+    // Sets the tripod down: the lens at `eye`, framing `yaw` and `pitch` while nobody is in it.
+    void place_tripod(const Vec3 &eye, float yaw, float pitch) noexcept;
+    // ...or where `self` stands, `settings.tripod_height` above the ground, facing the way they face.
+    void place_tripod_here(const Subject &self, const RigSettings &settings) noexcept;
+    bool tripod_placed() const noexcept { return tripod_have_; }
+    bool tripod_tracking() const noexcept { return tracking_; }
     // You film: the camera is in your skater's hands. `target`, when there is one, is who the assist frames.
     Frame film(double now, float dt, const Subject &self, const Subject *target, const StickInput &stick,
                const RigSettings &settings);
@@ -242,6 +258,18 @@ private:
     float side_lock_{};             // +1 the skater's left, -1 their right, 0 either
     bool planted_{}, edge_{}, holding_{};
     bool edge_locked_{};
+    // Stair stop: rolling to a halt at stop_point_ (along stop_dir_), the framing it then pans to, and
+    // how far the camera has risen (eased).
+    bool stair_style_{}, rolling_stop_{}, stop_due_{}, framed_{}, pan_active_{};
+    Vec3 stop_point_{}, stop_dir_{0, 0, 1};
+    float roll_speed_{}, pan_pitch_{}, stop_lift_{}, stop_lift_rate_{};
+    void compute_rolling_stop(float floor) noexcept;
+    float stair_pan_pitch(const Vec3 &eye, float yaw, float pitch, float floor) const;
+    // Tripod: where it stands, its resting framing, and whether it is panning with someone.
+    bool tripod_mode_{}, tripod_have_{}, tracking_{};
+    Vec3 tripod_eye_{};
+    float rest_yaw_{}, rest_pitch_{};
+    double lost_since_{-1.0};
     // Which of follow / film last ran, and whether film had someone to frame.
     bool filming_{}, framing_{};
     // Film mode's aim: how fast the target's bearing is moving (fed forward, so the aim keeps up
