@@ -271,7 +271,6 @@ private:
     // ...and while it turns to frame the set after stopping (then held). set_yaw_: the way the set goes.
     bool composing_{};
     double compose_start_{};
-    bool settled_pitch_{};
     float set_yaw_{};
     Vec3 stop_point_{}, stop_dir_{0, 0, 1};
     float roll_speed_{}, pan_pitch_{}, stop_lift_{}, stop_lift_rate_{};

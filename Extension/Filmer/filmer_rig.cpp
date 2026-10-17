@@ -1087,25 +1087,23 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
             // The way they were riding (braking along it), over the lip they stopped at, or, stopped
             // standing, the way the camera already looks.
             set_yaw_ = edge_locked_ ? yaw_of(edge_dir_[0], edge_dir_[2]) : rolling_stop_ ? yaw_of(stop_dir_[0], stop_dir_[2]) : aim_.yaw;
-            pan_pitch_ = stair_pan_pitch(Vec3{eye[0], eye[1] + std::clamp(s.stop_lift, 0.0f, 1.5f), eye[2]}, set_yaw_, aim_.pitch, operator_floor_);
+            // The tilt from where they will come to a halt (still braking: the stop point), so the one
+            // whip lands on the final framing.
+            const Vec3 from = rolling_stop_ ? Vec3{stop_point_[0], eye[1], stop_point_[2]} : eye;
+            pan_pitch_ = stair_pan_pitch(Vec3{from[0], from[1] + std::clamp(s.stop_lift, 0.0f, 1.5f), from[2]}, set_yaw_, aim_.pitch, operator_floor_);
             pan_active_ = composing_ = true;
             compose_start_ = now;
-            settled_pitch_ = !rolling_stop_;
         }
     }
-    // Braked to a halt: the tilt worked out again from where they actually stopped.
-    if (composing_ && !settled_pitch_ && !rolling_stop_) {
-        pan_pitch_ = stair_pan_pitch(Vec3{eye[0], eye[1] + std::clamp(s.stop_lift, 0.0f, 1.5f) - stop_lift_, eye[2]}, set_yaw_, pan_pitch_ + 0.06f, operator_floor_);
-        settled_pitch_ = true;
-        compose_start_ = now;
-    }
     if ((frozen || framing_set) && composing_) {
-        // Framing the set: a smooth turn to look along it and tilt down over it, then held. It does not
-        // follow you: you ride into the shot.
-        steer_aim(dt, set_yaw_, pan_pitch_, 4.0f, 1.0f);
+        // Framing the set: a fast whip round to look along it and down over it, as a filmer snaps the
+        // camera onto the spot (a touch of overshoot as it lands), then held. It does not follow you:
+        // you ride into the shot.
+        steer_aim(dt, set_yaw_, pan_pitch_, 15.0f, 0.78f);
         const bool calm = std::abs(aim_.yaw_rate) + std::abs(aim_.pitch_rate) < 0.05f &&
                           std::abs(wrap_angle(aim_.yaw - set_yaw_)) < 0.02f && std::abs(aim_.pitch - pan_pitch_) < 0.02f;
-        if (settled_pitch_ && ((now - compose_start_ > 0.3 && calm) || now - compose_start_ > 2.5)) {
+        if (rolling_stop_) compose_start_ = now; // held from when they have come to a halt
+        else if ((now - compose_start_ > 0.2 && calm) || now - compose_start_ > 1.5) {
             composing_ = pan_active_ = false;
             aim_.yaw_rate = aim_.pitch_rate = 0.0f;
         }
