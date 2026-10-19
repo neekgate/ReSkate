@@ -3,7 +3,7 @@
 // model in your hand and in every other filmer's (filmer_hold.h has the maths, filmer_beacon.h the
 // packet that says who is filming).
 //
-// Your arm: after the game animates your skater, its upper arm and forearm are bent so the hand holds
+// Your arm: as your skater's pose is handed to the renderer, its upper arm and forearm are bent so the hand holds
 // the camera where the Filmer's lens is (out of reach, as near as the arm goes). Your pose goes to the
 // others with the arm in it, so they see it held out with no more than the packet's flag. You never see
 // your own camera while you film (you look through it): `filmer holdtest` shows it on your skater with

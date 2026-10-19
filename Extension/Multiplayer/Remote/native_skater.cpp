@@ -336,8 +336,9 @@ void observe_destruction(std::uintptr_t entity) {
 }
 bool render_pose_hook(std::uintptr_t animation_interface, std::uintptr_t render_data) {
     const bool result = shared().original_render_pose(animation_interface, render_data);
-    if (const auto listener = shared().render_listener.load(std::memory_order_acquire); result && listener)
-        listener(animation_interface);
+    if (result)
+        for (const auto &slot : shared().render_listener)
+            if (const auto listener = slot.load(std::memory_order_acquire)) listener(animation_interface);
     // A board holder's animation interface is holder + 0xc0.
     if (const auto slot = result && animation_interface > 0xc0
                               ? watching(watched().board_holder, animation_interface - 0xc0)
@@ -597,8 +598,8 @@ void set_local_hidden_joint(std::uintptr_t component, std::uint16_t joint,
     hidden.joint = joint;
     hidden.scale = scale;
 }
-void set_render_pose_listener(RenderPosePublished listener) noexcept {
-    shared().render_listener.store(listener, std::memory_order_release);
+void set_render_pose_listener(RenderPosePublished listener, std::size_t slot) noexcept {
+    if (slot < render_listener_slots) shared().render_listener[slot].store(listener, std::memory_order_release);
 }
 void set_animation_evaluated_listener(AnimationEvaluated listener, std::size_t slot) noexcept {
     if (slot < animation_listener_slots) shared().evaluated_listener[slot].store(listener, std::memory_order_release);

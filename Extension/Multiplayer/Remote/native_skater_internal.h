@@ -57,7 +57,7 @@ struct HookState {
     RenderPose original_render_pose{};
     std::atomic<EntityDestroyed> destroyed_listener{};
     std::array<std::atomic<AnimationEvaluated>, animation_listener_slots> evaluated_listener{};
-    std::atomic<RenderPosePublished> render_listener{};
+    std::array<std::atomic<RenderPosePublished>, render_listener_slots> render_listener{};
 };
 // Keys the per-entity hooks match, one contiguous array per kind in slot order.
 // Every native skater, board and entity callback looks its key up here: a few

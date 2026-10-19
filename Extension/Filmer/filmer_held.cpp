@@ -62,9 +62,10 @@ Arm &arm() {
     return *value;
 }
 
-void on_animation(std::uintptr_t component) noexcept {
+// The skater's pose as it is handed to the renderer (the game has finished with it by then: bent any
+// earlier, its own arm work puts the arm back), for your skater's.
+void bend(std::uintptr_t component, std::uintptr_t holder) noexcept {
     auto &a = arm();
-    if (!component || component != a.component.load(std::memory_order_acquire)) return;
     {
         std::unique_lock lock(a.mutex, std::try_to_lock);
         if (lock) {
@@ -79,9 +80,8 @@ void on_animation(std::uintptr_t component) noexcept {
     a.weight = std::clamp(a.weight + (wanted ? dt : -dt) / ease_seconds, 0.0f, 1.0f);
     if (a.weight <= 0.0f) return;
     try {
+        (void)component;
         const auto base = a.base.load(std::memory_order_acquire);
-        std::uintptr_t holder{};
-        if (!seh_read(component + 0xa0, &holder, sizeof(holder)) || !holder) return;
         const auto layout = multiplayer::read_native_pose_layout(seh_read, base, holder, 512);
         if (!layout.buffer || layout.count != hold::pose_joints) return;
         // Only the joints from the root to the hand are read: the rest stay as they are.
@@ -122,6 +122,16 @@ void on_animation(std::uintptr_t component) noexcept {
     } catch (...) {
         a.unreadable.fetch_add(1, std::memory_order_relaxed);
     }
+}
+
+void on_render(std::uintptr_t animation_interface) noexcept {
+    const auto component = arm().component.load(std::memory_order_acquire);
+    if (!component) return;
+    std::uintptr_t holder{};
+    if (!seh_read(component + 0xa0, &holder, sizeof(holder)) || !holder || animation_interface != holder + 0xc0) return;
+    const auto error = GetLastError();
+    bend(component, holder);
+    SetLastError(error);
 }
 
 // ---- Other players' hands (the client thread).
@@ -195,7 +205,7 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool in_level, const Optio
             a.hook_tried = true;
             std::string detail;
             if (multiplayer::install_entity_hooks(base, detail)) {
-                multiplayer::set_animation_evaluated_listener(&on_animation, 1);
+                multiplayer::set_render_pose_listener(&on_render, 1);
                 a.hooked.store(true, std::memory_order_release);
                 logging::log(logging::Level::info, logging::Channel::skater, "Filmer: your arm holds the camera out while you film.");
             } else {

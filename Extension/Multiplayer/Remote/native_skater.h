@@ -47,7 +47,11 @@ std::uintptr_t local_skater_component(std::uintptr_t base, std::uintptr_t client
 // Called after a skeleton's pose is handed to the renderer, with
 // its animation interface (animation holder + 0xc0), on the calling thread.
 using RenderPosePublished = void (*)(std::uintptr_t animation_interface) noexcept;
-void set_render_pose_listener(RenderPosePublished listener) noexcept;
+// Each slot holds one listener (0: first person, 1: the Filmer's arm holding its camera), called in
+// slot order. What a listener writes into the skeleton's pose is what is drawn: the game has finished
+// with it by then.
+inline constexpr std::size_t render_listener_slots = 2;
+void set_render_pose_listener(RenderPosePublished listener, std::size_t slot = 0) noexcept;
 // Far-player savings (puppet_cost.cpp): native work a remote player's skater and skateboard
 // skip while far away. Within 200 m of the local skater or the camera nothing changes.
 // Each is on by default; the setter is thread-safe and applies at each player's next
