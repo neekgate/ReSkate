@@ -9,7 +9,7 @@
 // (Extension/Multiplayer/Net/skater_bone_parents.h, Extension/HallOfMeat/hall_of_meat_skeleton.h).
 //
 // The camera is held by its top handle. The model's origin is the middle of that handle and its lens
-// looks down its -Z (assets/models/vx1000/make_vx1000.py), so the model is placed at the palm and
+// looks down its -Z (assets/models/vx1000/prepare_camcorder.py), so the model is placed at the palm and
 // turned to where the filmer aims.
 #include <array>
 #include <cstddef>
@@ -42,7 +42,7 @@ inline constexpr std::span<const std::uint16_t> chain(Hand hand) noexcept { retu
 
 // The camera as the model has it: from the handle (the origin) to the front of the lens, and from the
 // wrist joint to the middle of the palm along the hand.
-inline constexpr Vec3 lens_from_handle{0.0f, -0.14f, -0.24f};
+inline constexpr Vec3 lens_from_handle{0.0f, -0.143f, -0.248f};
 inline constexpr float palm_from_wrist = 0.075f;
 
 // ---- Vector and quaternion helpers.

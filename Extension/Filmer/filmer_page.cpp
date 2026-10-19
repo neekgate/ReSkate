@@ -177,6 +177,7 @@ void filmer_page(SkateMenu &menu, const Model &, const CallbacksV3 &callbacks) {
         filmer_command(menu, callbacks, std::string("holdtest ") + (v.holdtest ? "off" : "on"));
     note("Hold test: with the game's own camera (or the AI filmer's), your skater holds the camera out in front at arm's length so you can see it. A stand-in cone shows if the model is not built.");
     if (!v.held_status.empty()) note(v.held_status.c_str());
+    note("Camera model: Camcorder Video Camera by James.Hasegawa (CC BY 4.0), rescaled for the game.");
     end_card();
 
     begin_card(menu, "filmer-look", "VX1000 LOOK", "What the tape looks like. Each part can be switched off.");
