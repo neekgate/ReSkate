@@ -34,6 +34,7 @@ void say(Worn &w, std::string text) {
 }
 // The hand-wear slot: the one whose name says hand wear, the left hand's when there are two (the
 // fingerless glove is left hand wear).
+std::string slot_word = "hand"; // client thread
 int hand_slot(const SkaterItems &m, std::uintptr_t resource) {
     const auto table = m.ptr(resource, 0x28);
     const auto count = m.count(table, 24, multiplayer::max_cosmetic_slots);
@@ -41,7 +42,7 @@ int hand_slot(const SkaterItems &m, std::uintptr_t resource) {
     for (std::size_t i = 0; i < count; ++i) {
         const auto slot = m.ptr(table, i * 24 + 8) & ~std::uintptr_t{4};
         const auto name = road_rash::lower(m.text(m.ptr(slot, 0x20)));
-        if (name.find("hand") == std::string::npos) continue;
+        if (name.find(slot_word) == std::string::npos) continue;
         if (found < 0 || name.find("left") != std::string::npos) found = static_cast<int>(i);
     }
     return found;
@@ -50,7 +51,7 @@ void put_on(Worn &w, const SkaterItems &m, std::uintptr_t entity, const std::str
     const auto component = m.component(entity);
     auto recipe = m.capture(entity); // throws while the skater's items are still updating: tried again later
     const int slot = hand_slot(m, m.resource(component));
-    SkaterItems::check(slot >= 0 && static_cast<std::size_t>(slot) < recipe.items.size(), "the skater has no hand-wear slot");
+    SkaterItems::check(slot >= 0 && static_cast<std::size_t>(slot) < recipe.items.size(), std::format("the skater has no outfit slot named like '{}'", slot_word).c_str());
     const auto item = road_rash::installed_item(m, road_rash::lower(wanted));
     if (item.empty()) throw std::runtime_error(std::format("{} is not installed (build the camcorder with ReSkate Studio)", wanted));
     auto &hand = recipe.items[static_cast<std::size_t>(slot)];
@@ -76,7 +77,7 @@ void take_off(Worn &w, const SkaterItems &m, std::uintptr_t entity) {
     } else {
         auto recipe = m.capture(entity);
         const int slot = hand_slot(m, m.resource(component));
-        SkaterItems::check(slot >= 0 && static_cast<std::size_t>(slot) < recipe.items.size(), "the skater has no hand-wear slot");
+        SkaterItems::check(slot >= 0 && static_cast<std::size_t>(slot) < recipe.items.size(), std::format("the skater has no outfit slot named like '{}'", slot_word).c_str());
         auto &hand = recipe.items[static_cast<std::size_t>(slot)];
         if (hand.asset == w.item) {
             hand.asset = w.original;
@@ -104,8 +105,14 @@ void forget(Worn &w) {
 }
 } // namespace
 
-void tick(bool wanted_now, std::string_view item_name) noexcept {
+void tick(bool wanted_now, std::string_view item_name, std::string_view slot) noexcept {
     auto &w = worn();
+    {
+        const auto word = road_rash::lower(slot.empty() ? std::string_view("hand") : slot);
+        // Another slot asked for: what is on comes off first, from the slot it is in.
+        if (word != slot_word && !w.on) slot_word = word;
+        else if (word != slot_word) wanted_now = false;
+    }
     const auto now = GetTickCount64();
     if (wanted_now) w.last_wanted = now;
     // A moment's grace, so a pause or a cut does not take it off and put it on again.

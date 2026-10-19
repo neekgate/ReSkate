@@ -188,6 +188,8 @@ void load_store() {
         s.settings.camera_worn = flag(o, "camera_worn", d.camera_worn);
         s.settings.camera_item = o.value("camera_item", std::string());
         if (s.settings.camera_item.size() > 200) s.settings.camera_item.clear();
+        s.settings.camera_slot = o.value("camera_slot", std::string());
+        if (s.settings.camera_slot.size() > 40) s.settings.camera_slot.clear();
         s.settings.camera_model = o.value("camera_model", std::string());
         if (s.settings.camera_model.size() > 200) s.settings.camera_model.clear();
         // Saved before only world and ReSkate props were allowed (a phone crashed the game): the default.
@@ -270,6 +272,7 @@ void save_store() {
         json["stand_in"] = s.settings.stand_in;
         json["camera_worn"] = s.settings.camera_worn;
         json["camera_item"] = s.settings.camera_item;
+        json["camera_slot"] = s.settings.camera_slot;
         json["camera_model"] = s.settings.camera_model;
         json["hide_hud"] = s.settings.hide_hud;
         json["take_stick"] = s.settings.take_stick;
@@ -869,7 +872,7 @@ void tick_held(std::uintptr_t base, std::uintptr_t client, bool in_level) noexce
         options.blueprint = spawnable_model(lower(s.settings.camera_model)) ? s.settings.camera_model : std::string();
         held::tick(base, client, in_level, options);
         // The camcorder worn as hand wear goes in your hand while the arm holds it out.
-        outfit::tick(in_level && s.settings.camera_worn && s.holding, s.settings.camera_item);
+        outfit::tick(in_level && s.settings.camera_worn && s.holding, s.settings.camera_item, s.settings.camera_slot);
         if (const auto ticks = GetTickCount64(); ticks >= s.next_held_status) {
             s.next_held_status = ticks + 500;
             auto text = held::status();
@@ -960,6 +963,13 @@ std::string set_option(State &s, const std::string &key, const std::string &valu
         s.settings.camera_item = v;
         changed(s);
         return "Camcorder cosmetic: " + (v.empty() ? std::string(outfit::default_item) : v) + ".";
+    }
+    if (key == "camslot") {
+        const auto v = lower(value == "default" ? std::string() : value);
+        if (v.size() > 40 || v.find_first_of(" \t\r\n") != std::string::npos) return "error: camslot is a word of an outfit slot's name (hand, eyewear) or default.";
+        s.settings.camera_slot = v;
+        changed(s);
+        return "The camcorder goes in the " + (v.empty() ? std::string("hand") : v) + " slot while you film.";
     }
     if (key == "hand") {
         const auto v = lower(value);

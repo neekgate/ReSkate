@@ -12,7 +12,9 @@ namespace dingosdk::filmer::outfit {
 inline constexpr std::string_view default_item = "Own_HandwearGlove_Gen_GloveFingerless_00001";
 // Every client tick: `wanted` while the camcorder should be in the hand; `item` the cosmetic (its full
 // name or the end of it, any case; empty: default_item).
-void tick(bool wanted, std::string_view item) noexcept;
+// `slot`: a word of the outfit slot it goes in ("hand", "eyewear"; empty: "hand"); the camcorder is
+// weighted to the hand whichever slot carries it, so a slot whose items the game draws properly will do.
+void tick(bool wanted, std::string_view item, std::string_view slot = {}) noexcept;
 // One line for the status: what is worn, or why not.
 std::string status();
 } // namespace dingosdk::filmer::outfit
