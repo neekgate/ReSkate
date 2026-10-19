@@ -68,18 +68,23 @@ def main(donor, camera, out, hand='Right'):
         im = j['images'][j['textures'][k]['source']]; v = j['bufferViews'][im['bufferView']]
         return np.array(Image.open(io.BytesIO(bytes(b[v.get('byteOffset', 0):v.get('byteOffset', 0) + v['byteLength']]))).convert('RGBA')).astype(int)
     app = image(mat['pbrMetallicRoughness']['baseColorTexture']['index']); nrm = image(mat['normalTexture']['index'])
-    H, W = app.shape[:2]; best = None
-    for y in range(12, H - 12, 3):
-        for x in range(12, W - 12, 3):
-            if (app[y-12:y+13, x-12:x+13, 3] == 255).all() and (app[y-12:y+13, x-12:x+13, :3] == app[y, x, :3]).all() and app[y, x, :3].sum() > 200 \
-               and (abs(nrm[y-12:y+13, x-12:x+13, :3] - [127, 127, 255]) <= 2).all():
-                best = (x, y); break
-        if best: break
+    H, W = app.shape[:2]; best = None; r = 6
+    # A colourable mask (glove) is one bright colour; a real colour texture (glasses) is as dark as the
+    # item is: the most even patch that is coloured, its normal facing straight out.
+    for y in range(r, H - r):
+        for x in range(r, W - r):
+            patch = app[y-r:y+r+1, x-r:x+r+1, :3]
+            if (app[y-r:y+r+1, x-r:x+r+1, 3] < 255).any() or app[y, x, :3].sum() < 60: continue
+            spread = int(np.abs(patch - app[y, x, :3]).max()); tilt = int(np.abs(nrm[y-r:y+r+1, x-r:x+r+1, :2] - 128).max())
+            score = spread + tilt
+            if best is None or score < best[0]: best = (score, x, y)
+    best = best[1:]
     uv = np.array([(best[0] + 0.5) / W, (best[1] + 0.5) / H], '<f4')
     UV = np.tile(uv, (len(P), 1)).astype('<f4')
     ji = names.index(f'{hand}Hand')
-    J0 = np.tile(np.array([ji, 0, 0, 0], '<u2'), (len(P), 1)); W0 = np.tile(np.array([1, 0, 0, 0], '<f4'), (len(P), 1))
-    J1 = np.zeros((len(P), 4), '<u2'); W1 = np.zeros((len(P), 4), '<f4')
+    rows = max(len(P), max((j['accessors'][q['attributes']['POSITION']]['count'] for m in j['meshes'] for q in m['primitives']), default=0))
+    J0 = np.tile(np.array([ji, 0, 0, 0], '<u2'), (rows, 1)); W0 = np.tile(np.array([1, 0, 0, 0], '<f4'), (rows, 1))
+    J1 = np.zeros((rows, 4), '<u2'); W1 = np.zeros((rows, 4), '<f4')
     # Append the new arrays to the donor's buffer and point the primitive at them.
     def add(arr, kind, typ, ctype, target, minmax=False):
         while len(b) % 4: b.append(0)
@@ -91,9 +96,18 @@ def main(donor, camera, out, hand='Right'):
     prim['attributes'] = {
         'POSITION': add(P, 0, 'VEC3', 5126, 34962, True), 'NORMAL': add(N, 0, 'VEC3', 5126, 34962),
         'TEXCOORD_0': add(UV, 0, 'VEC2', 5126, 34962), 'TEXCOORD_1': add(UV, 0, 'VEC2', 5126, 34962), 'TEXCOORD_2': add(UV, 0, 'VEC2', 5126, 34962),
-        'JOINTS_0': add(J0, 0, 'VEC4', 5123, 34962), 'WEIGHTS_0': add(W0, 0, 'VEC4', 5126, 34962),
-        'JOINTS_1': add(J1, 0, 'VEC4', 5123, 34962), 'WEIGHTS_1': add(W1, 0, 'VEC4', 5126, 34962)}
+        'JOINTS_0': add(J0[:len(P)], 0, 'VEC4', 5123, 34962), 'WEIGHTS_0': add(W0[:len(P)], 0, 'VEC4', 5126, 34962),
+        'JOINTS_1': add(J1[:len(P)], 0, 'VEC4', 5123, 34962), 'WEIGHTS_1': add(W1[:len(P)], 0, 'VEC4', 5126, 34962)}
     prim['indices'] = add(I, 0, 'SCALAR', 5125, 34963)
+    # The donor's other sections (the glasses' lenses): folded into the grip, out of sight.
+    for mesh in j['meshes'][1:]:
+        for other in mesh['primitives']:
+            count = j['accessors'][other['attributes']['POSITION']]['count']
+            folded = np.tile(grip.astype('<f4'), (count, 1)).astype('<f4')
+            other['attributes']['POSITION'] = add(folded, 0, 'VEC3', 5126, 34962, True)
+            for k in list(other['attributes']):
+                if k.startswith('JOINTS_'): other['attributes'][k] = add((J0 if k == 'JOINTS_0' else J1)[:count], 0, 'VEC4', 5123, 34962)
+                elif k.startswith('WEIGHTS_'): other['attributes'][k] = add((W0 if k == 'WEIGHTS_0' else W1)[:count], 0, 'VEC4', 5126, 34962)
     for n in nodes:
         if 'mesh' in n: n.pop('extras', None)
     j['asset']['copyright'] = 'Camcorder Video Camera by James.Hasegawa (CC BY 4.0), modified for ReSkate'
@@ -110,6 +124,7 @@ def main(donor, camera, out, hand='Right'):
     Rch = Rh.T @ Rc; pch = Rh.T @ (grip - h)
     w = np.sqrt(max(0, 1 + Rch[0,0] + Rch[1,1] + Rch[2,2])) / 2
     q = [(Rch[2,1]-Rch[1,2])/(4*w), (Rch[0,2]-Rch[2,0])/(4*w), (Rch[1,0]-Rch[0,1])/(4*w), w]
+    print(f'colour at texel {best}: {app[best[1], best[0], :3]}')
     print(f'{out}: {len(P)} vertices, {len(I)//3} triangles, uv {uv}, weighted to {hand}Hand ({ji})')
     print('camera in hand: rotation (x,y,z,w)', np.round(q, 4), 'grip from wrist', np.round(pch, 4))
 
