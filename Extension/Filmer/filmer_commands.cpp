@@ -18,8 +18,8 @@ void register_filmer_commands(Commands &registry) {
         {"subject", "Whom the AI filmer follows", "me|<player>", false},
         {"target", "Whom the assist frames while you film", "auto|<player>", false},
         {"set", "Change a Filmer option",
-         "style auto|behind|side|ahead, side auto|left|right|swap, lens fisheye|long, stop instant|stair, distance|height|tilt|human|reaction|sensitivity|hold|bend|age|gap|mousesens|lift|tripodheight|distvariety|heightvariety <number>, "
-         "assist|invert|recenter|hidehud|stick|clicks|drops|lunge|cruise|mouse|track|look|anywhere|fisheye|bars|hood|grade|soft|scanlines|grain|date|viewfinder|"
+         "style auto|behind|side|ahead, side auto|left|right|swap, hand left|right|swap, cammodel <blueprint>|default, lens fisheye|long, stop instant|stair, distance|height|tilt|human|reaction|sensitivity|hold|bend|age|gap|mousesens|lift|tripodheight|distvariety|heightvariety <number>, "
+         "holdcam|cameras|standin|assist|invert|recenter|hidehud|stick|clicks|drops|lunge|cruise|mouse|track|look|anywhere|fisheye|bars|hood|grade|soft|scanlines|grain|date|viewfinder|"
          "dropouts|headswitch|tracking|smear|iris 0|1",
          true},
         {"plant", "The AI filmer stops and films from where they are, or rides again", "[on|off]", false},
@@ -30,6 +30,7 @@ void register_filmer_commands(Commands &registry) {
         {"angle", "The AI filmer's angles: one held, or several Auto moves between", "next|auto|behind|side|ahead|toggle behind|side|ahead", false},
         {"cruise", "Film mode: ride at the speed that holds you behind the skater you frame", "[on|off]", false},
         {"zoom", "Long lens, while the camera is held still: zoom in, out or back to its widest", "in|out|reset", false},
+        {"holdtest", "Your skater holds the Filmer's camera out with the game's own camera, to see how it looks", "[on|off]", false},
         {"reset", "Put every Filmer option back to its default", nullptr, false},
     };
     for (const auto &verb : verbs) {

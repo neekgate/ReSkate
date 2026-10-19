@@ -55,7 +55,7 @@ struct Arm {
     ULONGLONG seen_at{};
     float weight{};
     ULONGLONG last_update{};
-    std::atomic<std::uint32_t> bent{}, unreadable{};
+    std::atomic<std::uint32_t> bent{}, unreadable{}, own_from_pose{};
 };
 Arm &arm() {
     static auto *value = new Arm;
@@ -213,8 +213,31 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool in_level, const Optio
                 if (now - h.at < fresh_ms) cameras.push_back({h.id, h.palm.position, h.palm.rotation});
         }
         if (request.show_own) {
-            std::lock_guard lock(a.mutex);
-            if (a.palm.valid && now - a.palm_at < fresh_ms) cameras.push_back({0, a.palm.palm.position, a.palm.palm.rotation});
+            bool placed = false;
+            {
+                std::lock_guard lock(a.mutex);
+                if (a.palm.valid && now - a.palm_at < fresh_ms) {
+                    cameras.push_back({0, a.palm.palm.position, a.palm.palm.rotation});
+                    placed = true;
+                }
+            }
+            // The arm is not being bent (no animation callback yet, or it failed): the camera still goes in
+            // the hand as the animation has it, from your pose.
+            if (!placed) {
+                const auto frame = multiplayer::capture_local(base, client, true);
+                if (frame.ready && frame.pose.skater.size() >= hold::pose_joints) {
+                    std::vector<hold::Bone> bones(frame.pose.skater.size());
+                    for (std::size_t i = 0; i < bones.size(); ++i) {
+                        const auto &t = frame.pose.skater[i];
+                        bones[i] = {t.scale, t.rotation, t.position};
+                    }
+                    if (const auto held = hold::held_in(bones, request.hand, request.aim); held.valid)
+                        cameras.push_back({0, held.palm.position, held.palm.rotation});
+                }
+                a.own_from_pose.store(placed ? 0u : 1u, std::memory_order_relaxed);
+            } else {
+                a.own_from_pose.store(0, std::memory_order_relaxed);
+            }
         }
         if (!cameras.empty() || shown)
             multiplayer::tick_held_camera_models(base, client, cameras, options.blueprint.empty() ? multiplayer::held_camera_blueprint : options.blueprint,
@@ -229,6 +252,7 @@ std::string status() {
                            : a.hooked.load() ? std::format("arm bent {} times", a.bent.load(std::memory_order_relaxed))
                                              : "arm not needed yet";
     if (const auto unreadable = a.unreadable.load(std::memory_order_relaxed)) arm_text += std::format(" ({} unreadable poses)", unreadable);
+    if (a.own_from_pose.load(std::memory_order_relaxed)) arm_text += " (your camera placed from your pose: the arm is not bending)";
     return "Held camera: " + arm_text + "; " + multiplayer::held_camera_models_status();
 }
 } // namespace dingosdk::filmer::held
