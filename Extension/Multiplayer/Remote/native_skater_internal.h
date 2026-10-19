@@ -56,7 +56,7 @@ struct HookState {
     DestroyEntity original_destroy{};
     RenderPose original_render_pose{};
     std::atomic<EntityDestroyed> destroyed_listener{};
-    std::atomic<AnimationEvaluated> evaluated_listener{};
+    std::array<std::atomic<AnimationEvaluated>, animation_listener_slots> evaluated_listener{};
     std::atomic<RenderPosePublished> render_listener{};
 };
 // Keys the per-entity hooks match, one contiguous array per kind in slot order.

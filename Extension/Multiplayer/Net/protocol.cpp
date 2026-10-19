@@ -425,6 +425,8 @@ std::vector<std::uint8_t> encode(const Packet &p, bool compact_pose, std::uint32
     if (p.kind == PacketKind::drone && (!p.map || !p.source || !valid_drone_position(p.drone_position) ||
                                          !valid_drone_rotation(p.drone_rotation)))
         throw std::invalid_argument("Invalid drone packet");
+    if (p.kind == PacketKind::filmer && (!p.map || !p.source || (p.filmer_flags & ~filmer_flag_mask) || !valid_drone_rotation(p.filmer_aim)))
+        throw std::invalid_argument("Invalid filmer packet");
     if (p.kind == PacketKind::chat && (!p.source || !valid_chat_text(p.text)))
         throw std::invalid_argument("Invalid chat message");
     if (p.kind == PacketKind::typing && !p.source)
@@ -501,7 +503,7 @@ std::vector<std::uint8_t> encode(const Packet &p, bool compact_pose, std::uint32
         p.kind != PacketKind::party && p.kind != PacketKind::scoring && p.kind != PacketKind::physics_extras &&
         p.kind != PacketKind::effects && p.kind != PacketKind::permissions && p.kind != PacketKind::words &&
         p.kind != PacketKind::next_maps && p.kind != PacketKind::typing &&
-        p.kind != PacketKind::drone)
+        p.kind != PacketKind::drone && p.kind != PacketKind::filmer)
         throw std::invalid_argument("Unknown packet kind");
     const auto payload = greeting ? 72
                          : p.kind == PacketKind::away
@@ -646,6 +648,10 @@ std::vector<std::uint8_t> encode(const Packet &p, bool compact_pose, std::uint32
         w.integer(p.drone_active ? 1 : 0, 1);
         for (const auto v : p.drone_position) w.integer(std::bit_cast<std::uint32_t>(v), 4);
         for (const auto v : p.drone_rotation) w.integer(std::bit_cast<std::uint32_t>(v), 4);
+    }
+    if (p.kind == PacketKind::filmer) {
+        w.integer(p.filmer_flags, 1);
+        for (const auto v : p.filmer_aim) w.integer(std::bit_cast<std::uint32_t>(v), 4);
     }
     if (p.kind == PacketKind::physics_extras) {
         w.integer(p.extras.size(), 2);
@@ -1029,6 +1035,13 @@ std::optional<Packet> decode(std::span<const std::uint8_t> bytes) noexcept {
             for (auto &v : p.drone_position) v = r.number();
             for (auto &v : p.drone_rotation) v = r.number();
             if (!valid_drone_position(p.drone_position) || !valid_drone_rotation(p.drone_rotation)) return {};
+        } else if (p.kind == PacketKind::filmer) {
+            if (!p.map || !p.source || bytes.size() - r.at != filmer_wire_size) return {};
+            const auto flags = r.integer(1);
+            if (flags & ~std::uint64_t{filmer_flag_mask}) return {};
+            p.filmer_flags = static_cast<std::uint8_t>(flags);
+            for (auto &v : p.filmer_aim) v = r.number();
+            if (!valid_drone_rotation(p.filmer_aim)) return {};
         } else if (p.kind == PacketKind::physics_extras) {
             const auto length = r.integer(2);
             if (!p.source || length > max_physics_extras || length != bytes.size() - r.at)

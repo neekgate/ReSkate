@@ -166,6 +166,19 @@ void filmer_page(SkateMenu &menu, const Model &, const CallbacksV3 &callbacks) {
     }
     end_card();
 
+    begin_card(menu, "filmer-hand", "CAMERA IN HAND", "The VX in your hand, as the others in the session see you filming.");
+    filmer_toggle(menu, callbacks, "Hold the camera out", "You film: your arm holds the camera out where the lens is, low by the board with the fisheye. Others in the session see it in your hand (they need this build too). You look through it, so you never see it yourself.", "holdcam", s.hold_camera);
+    field(menu, "Hand", "Which hand holds the camera.");
+    int hand = s.left_hand ? 1 : 0;
+    if (choice(menu, "hand", hand, {"Right", "Left"})) filmer_command(menu, callbacks, hand ? "set hand left" : "set hand right");
+    filmer_toggle(menu, callbacks, "Show other filmers' cameras", "A camera in the hand of anyone in the session who is filming.", "cameras", s.show_cameras);
+    filmer_toggle(menu, callbacks, "Stand-in when there is no model", "The camera's own model has to be built with ReSkate Studio (assets/models/vx1000). Until it is, show a traffic cone in the hand instead of nothing.", "standin", s.stand_in);
+    if (primary_button(menu, v.holdtest ? "STOP THE HOLD TEST" : "HOLD TEST: SEE YOUR SKATER HOLD IT"))
+        filmer_command(menu, callbacks, std::string("holdtest ") + (v.holdtest ? "off" : "on"));
+    note("Hold test: with the game's own camera (or the AI filmer's), your skater holds the camera out low in front so you can see it. A stand-in cone shows if the model is not built.");
+    if (!v.held_status.empty()) note(v.held_status.c_str());
+    end_card();
+
     begin_card(menu, "filmer-look", "VX1000 LOOK", "What the tape looks like. Each part can be switched off.");
     filmer_toggle(menu, callbacks, "VX look", "The whole look, drawn over the game while the Filmer films.", "look", s.look.enabled);
     const bool look = s.look.enabled;

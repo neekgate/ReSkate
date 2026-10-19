@@ -122,6 +122,7 @@ struct Peer {
     OutfitBudget outfit_budget;
     SoundBudget sound_budget;
     EffectBudget effect_budget;
+    EffectBudget filmer_budget; // the Filmer's camera in hand (filmer_beacon.h): ten a second
     // Their skater's contacts with the world (effects.h), each with when to show it: as late
     // as their poses are shown, so the sparks are where their skater is.
     std::deque<std::pair<std::uint64_t, Impact>> impacts;

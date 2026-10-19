@@ -986,6 +986,31 @@ void dedicated_server_codec() {
         try { encode(fx); } catch (const std::invalid_argument &) { refused = true; }
         check(refused, "A material past the game's table was encoded");
     }
+    // A player filming with the Filmer's camera in hand.
+    {
+        Packet f;
+        f.kind = PacketKind::filmer; f.session = 9; f.epoch = 10; f.map = 11; f.source = 12;
+        f.filmer_flags = 1 | 2; f.filmer_aim = {0.f, 0.38268343f, 0.f, 0.92387953f};
+        const auto back = decode(encode(f));
+        check(back && back->kind == PacketKind::filmer && back->filmer_flags == 3 && back->filmer_aim == f.filmer_aim,
+              "A filmer's camera failed to round-trip");
+        auto odd = f;
+        odd.filmer_flags = 8;
+        bool refused{};
+        try { encode(odd); } catch (const std::invalid_argument &) { refused = true; }
+        check(refused, "A filmer flag past the known ones was encoded");
+        odd = f;
+        odd.filmer_aim = {0.f, 0.f, 0.f, 0.f};
+        refused = false;
+        try { encode(odd); } catch (const std::invalid_argument &) { refused = true; }
+        check(refused, "A filmer aim that is not a rotation was encoded");
+        auto bytes = encode(f);
+        bytes.push_back(0);
+        check(!decode(bytes), "A filmer packet with a trailing byte was decoded");
+        f.filmer_flags = 0;
+        const auto stopped = decode(encode(f));
+        check(stopped && stopped->filmer_flags == 0, "A filmer stop notice failed to round-trip");
+    }
     // A player's FPV drone position, for the marker others see.
     {
         Packet d;

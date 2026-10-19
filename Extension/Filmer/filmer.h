@@ -55,6 +55,13 @@ struct Settings {
     bool stick_clicks = true;
     // follow: whom the AI films (0: you). film: whom the assist frames (0: whoever is closest ahead).
     std::uint64_t subject{}, target{};
+    // The camera in your hand (filmer_held.h). You film: your arm holds it out where the lens is, and
+    // the others see it there (they need this build).
+    bool hold_camera = true;
+    bool left_hand = false;   // which hand holds it
+    bool show_cameras = true; // the cameras in other filmers' hands
+    bool stand_in = false;    // a traffic cone when the camera's model is not built
+    std::string camera_model; // the camera model's blueprint; empty: reskate/filmer/vx1000
 };
 
 struct PlayerRow {
@@ -85,6 +92,8 @@ struct View {
     bool stationary{};        // the camera is held still: mouse look and the long lens's zoom work
     float zoom{1.0f};         // the long lens's zoom
     bool cruising{};          // cruise control is holding your speed
+    bool holdtest{};          // `filmer holdtest`: your skater holds the camera out with the game's camera
+    std::string held_status;  // the camera in hand: the arm and the models
     std::string cruise_note;  // why cruise control is not, when it is switched on
     // The overlay's clock (now()): when the camera started rolling this clip and when the lens was
     // last slapped.
@@ -105,6 +114,9 @@ double now() noexcept;
 // local skater can be controlled; `camera_phase` while the native camera may be changed;
 // `game_state` the client's state, said in the status while the Filmer waits.
 void tick(std::uintptr_t base, std::uintptr_t client, bool ready, bool camera_phase, int game_state) noexcept;
+// Each client tick after tick() while the client may create entities (`in_level`): the cameras in
+// filmers' hands (filmer_held.h).
+void tick_held(std::uintptr_t base, std::uintptr_t client, bool in_level) noexcept;
 // Runs one `filmer` command and returns the line to print. Only from the console dispatcher.
 // `hud_hidden`: whether the game's interface is hidden right now (the Filmer hides it while it films
 // and only shows it again if it was the one that hid it).

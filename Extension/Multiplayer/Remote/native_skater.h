@@ -36,9 +36,14 @@ using EntityDestroyed = void (*)(std::uintptr_t entity) noexcept;
 void set_entity_destroyed_listener(EntityDestroyed listener) noexcept;
 // Called after the native animation update of every skater component that is
 // not a remote peer, once its output pose for this update is written. Requires
-// install_entity_hooks. Runs on the thread that evaluates animation.
+// install_entity_hooks. Runs on the thread that evaluates animation. Each slot holds one listener
+// (0: first person, 1: the Filmer's arm holding its camera), called in slot order.
 using AnimationEvaluated = void (*)(std::uintptr_t component) noexcept;
-void set_animation_evaluated_listener(AnimationEvaluated listener) noexcept;
+inline constexpr std::size_t animation_listener_slots = 2;
+void set_animation_evaluated_listener(AnimationEvaluated listener, std::size_t slot = 0) noexcept;
+// The local skater's animation component (the one an evaluated listener is called with), 0 while
+// there is none. Client thread.
+std::uintptr_t local_skater_component(std::uintptr_t base, std::uintptr_t client) noexcept;
 // Called after a skeleton's pose is handed to the renderer, with
 // its animation interface (animation holder + 0xc0), on the calling thread.
 using RenderPosePublished = void (*)(std::uintptr_t animation_interface) noexcept;

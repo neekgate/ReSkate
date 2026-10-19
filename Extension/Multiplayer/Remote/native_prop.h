@@ -4,6 +4,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 // Models placed in the world by ReSkate: an object blueprint loaded on the map, created as a
 // client-only entity and moved every frame (Engine/Game/Build/<build>/world_props.h).
@@ -18,6 +19,21 @@ inline constexpr std::string_view drone_model_stand_in = "world/props/common/con
 // false (other players' drones hidden) takes them all away.
 void tick_drone_models(std::uintptr_t base, std::uintptr_t client, bool show) noexcept;
 std::string drone_models_status();
+
+// The Filmer's camera in a filmer's hand (Extension/Filmer/filmer_held.cpp): one model each, by player
+// id (the local player's own is id 0), placed at their palm and turned the way they aim. Made of
+// `blueprint` (the camera's own model, made by ReSkate Studio from assets/models/vx1000/vx1000.glb)
+// when it is loaded; else of the stand-in when `stand_in` is set, else not shown. Client update thread,
+// every frame while in a level; an empty list takes them all away.
+inline constexpr std::string_view held_camera_blueprint = "reskate/filmer/vx1000";
+struct HeldCameraModel {
+    std::uint64_t id{};
+    std::array<float, 3> position{};
+    std::array<float, 4> rotation{0.0f, 0.0f, 0.0f, 1.0f};
+};
+void tick_held_camera_models(std::uintptr_t base, std::uintptr_t client, const std::vector<HeldCameraModel> &cameras,
+                             std::string_view blueprint, bool stand_in) noexcept;
+std::string held_camera_models_status();
 
 // The test that found how (dronemodeltest): spawns a named blueprint a few metres in front of the
 // local skater and moves it round a circle. Mode 0 the entity transform setter (what works),

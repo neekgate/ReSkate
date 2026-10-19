@@ -153,11 +153,18 @@ enum class PacketKind : std::uint16_t {
     typing = 35,
     // Where a player's FPV drone is (drone_beacon.h), for the marker others see. Unreliable,
     // relayed like effects. Only sent when the player turns `dronetune beacon` on.
-    drone = 36
+    drone = 36,
+    // That a player is filming with the Filmer's camera in hand (Extension/Filmer/filmer_beacon.h):
+    // which hand, which lens, which way it points. Unreliable, relayed like effects.
+    filmer = 37
 };
 // A drone packet: a flag byte (1 = flying), the drone's position as three floats and which way
 // it faces as a unit quaternion (four floats: x, y, z, w).
 inline constexpr std::size_t drone_wire_size = 1 + 12 + 16;
+// A filmer packet: a flag byte (filmer_beacon.h: 1 filming, 2 left hand, 4 long lens) and which way
+// the camera points as a unit quaternion (four floats: x, y, z, w).
+inline constexpr std::size_t filmer_wire_size = 1 + 16;
+inline constexpr std::uint8_t filmer_flag_mask = 7;
 inline bool valid_drone_rotation(const std::array<float, 4> &q) noexcept {
     float length = 0.f;
     for (const float v : q) {
@@ -402,6 +409,8 @@ struct Packet {
     std::array<float, 3> drone_position{};    // drone: where the drone is (finite, within 1e6)
     std::array<float, 4> drone_rotation{0.f, 0.f, 0.f, 1.f}; // drone: which way it faces (unit quaternion)
     bool drone_active{};                      // drone: flying now (false = it stopped)
+    std::uint8_t filmer_flags{};              // filmer: filmer_beacon.h's flags (0 = stopped filming)
+    std::array<float, 4> filmer_aim{0.f, 0.f, 0.f, 1.f}; // filmer: which way the camera points (unit quaternion)
     PartyAction party_action = PartyAction::leave; // party: what is asked or told
     std::uint64_t party_player{};                   // party: the other player (see PartyAction)
     // scoring: the sender's scoring fingerprint, 0 for the game's own; `text` names the mods

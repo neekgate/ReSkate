@@ -1,4 +1,7 @@
 #include "filmer.h"
+#include "filmer_beacon.h"
+#include "filmer_held.h"
+#include "Extension/Multiplayer/Remote/native_prop.h"
 #include "Engine/Core/Json/json.h"
 #include "Engine/Core/Log/logging.h"
 #include "Extension/Console/commands.h"
@@ -90,6 +93,9 @@ struct State {
     float zoom_shown{1.0f};
     std::string cruise_note;
     float camera_fov{};
+    bool holdtest{};               // `filmer holdtest`: the camera held out on your skater, the game's camera
+    std::string held_status;
+    ULONGLONG next_held_status{};
 };
 State &state() {
     static auto *value = new State;
@@ -173,6 +179,12 @@ void load_store() {
         r.mouse_sensitivity = clamped(o, "mouse_sensitivity", d.rig.mouse_sensitivity, 0.1f, 5.0f);
         r.lunge = flag(o, "lunge", d.rig.lunge);
         s.settings.stick_clicks = flag(o, "stick_clicks", d.stick_clicks);
+        s.settings.hold_camera = flag(o, "hold_camera", d.hold_camera);
+        s.settings.left_hand = o.value("camera_hand", std::string("right")) == "left";
+        s.settings.show_cameras = flag(o, "show_cameras", d.show_cameras);
+        s.settings.stand_in = flag(o, "stand_in", d.stand_in);
+        s.settings.camera_model = o.value("camera_model", std::string());
+        if (s.settings.camera_model.size() > 200) s.settings.camera_model.clear();
         // Settings saved before the camera could go this low keep their old height: start them low.
         // (Schema 3: lower again, and the hold height now measured from the ground, not the hips.)
         if (o.value("schema", 1) < 3) {
@@ -244,6 +256,11 @@ void save_store() {
         json["mouse_sensitivity"] = r.mouse_sensitivity;
         json["lunge"] = r.lunge;
         json["stick_clicks"] = s.settings.stick_clicks;
+        json["hold_camera"] = s.settings.hold_camera;
+        json["camera_hand"] = s.settings.left_hand ? "left" : "right";
+        json["show_cameras"] = s.settings.show_cameras;
+        json["stand_in"] = s.settings.stand_in;
+        json["camera_model"] = s.settings.camera_model;
         json["hide_hud"] = s.settings.hide_hud;
         json["take_stick"] = s.settings.take_stick;
         json["last_mode"] = mode_name(s.last_mode);
@@ -473,6 +490,8 @@ void publish_view(State &s) {
     next->zoom = s.zoom_shown;
     next->cruising = s.cruising_shown;
     next->cruise_note = s.cruise_note;
+    next->holdtest = s.holdtest;
+    next->held_status = s.held_status;
     next->rolling_since = s.rolling_since;
     next->slap_at = s.slap_at;
     next->slap_serial = s.slap_serial;
@@ -605,6 +624,9 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready, bool camera_ph
         s.last_time = t;
         const auto ticks = GetTickCount64();
         const Subject self = local_subject();
+        // The camera in your hand this tick (filmer_held.h): filled in below while you film.
+        held::Request hold_request;
+        hold_request.hand = s.settings.left_hand ? hold::Hand::left : hold::Hand::right;
         // Where everyone is this frame (the session places them every frame).
         s.others = multiplayer::filmable_players();
         if (ticks >= s.players_at) {
@@ -754,6 +776,12 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready, bool camera_ph
                 const bool applied = update_filmer_camera(base, client, true, camera_phase, &frame.camera, detail, frame.fov);
                 if (applied) {
                     s.last_frame = frame;
+                    // You film: your arm holds the camera with its lens where the picture is taken from.
+                    if (s.settings.mode == Mode::film && s.settings.hold_camera) {
+                        hold_request.hold = true;
+                        hold_request.lens = {frame.camera[12], frame.camera[13], frame.camera[14]};
+                        hold_request.aim = hold::from_rows(frame.camera);
+                    }
                     if (!s.held) {
                         s.held = true;
                         s.view_due = true;
@@ -786,10 +814,47 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready, bool camera_ph
                 }
             }
         }
+        // `filmer holdtest`: with the game's own camera, your skater holds the camera out low in front,
+        // as a fisheye filmer does, and you see it in your hand.
+        if (s.holdtest && !hold_request.hold && ready && self.valid) {
+            hold_request.hold = true;
+            hold_request.relative = true;
+            hold_request.lens = {0.55f, -0.85f, 0.0f};
+            hold_request.facing = self.facing;
+            hold_request.aim = hold::from_yaw_pitch(std::atan2(self.facing[0], self.facing[2]), -0.3f);
+            hold_request.show_own = true;
+        }
+        held::set_local(hold_request);
+        if (hold_request.hold) {
+            std::uint8_t flags = beacon::flag_filming;
+            if (s.settings.left_hand) flags |= beacon::flag_left_hand;
+            if (s.settings.rig.lens == Lens::long_lens) flags |= beacon::flag_long_lens;
+            beacon::publish_local(flags, hold_request.aim);
+        }
         // The look's clock runs on even when nothing changed, so the snapshot is not republished every
         // tick: only when something did, and a few times a second for the menu's distances.
         if (s.view_due || ticks >= s.next_publish) publish_view(s);
         if (s.save_due && ticks >= s.next_save) save_store();
+    } catch (...) {}
+}
+
+void tick_held(std::uintptr_t base, std::uintptr_t client, bool in_level) noexcept {
+    try {
+        auto &s = state();
+        if (!s.loaded) return;
+        held::Options options;
+        options.show_others = s.settings.show_cameras;
+        options.stand_in = s.settings.stand_in || s.holdtest;
+        options.blueprint = s.settings.camera_model;
+        held::tick(base, client, in_level, options);
+        if (const auto ticks = GetTickCount64(); ticks >= s.next_held_status) {
+            s.next_held_status = ticks + 500;
+            auto text = held::status();
+            if (text != s.held_status) {
+                s.held_status = std::move(text);
+                s.view_due = true;
+            }
+        }
     } catch (...) {}
 }
 
@@ -860,6 +925,25 @@ std::string set_option(State &s, const std::string &key, const std::string &valu
         else return "error: style is auto, behind, side or ahead.";
         changed(s);
         return std::string("style = ") + style_name(r.style);
+    }
+    if (key == "holdcam") return toggle(s.settings.hold_camera);
+    if (key == "cameras") return toggle(s.settings.show_cameras);
+    if (key == "standin") return toggle(s.settings.stand_in);
+    if (key == "hand") {
+        const auto v = lower(value);
+        if (v == "left") s.settings.left_hand = true;
+        else if (v == "right") s.settings.left_hand = false;
+        else if (v == "swap") s.settings.left_hand = !s.settings.left_hand;
+        else return "error: hand is left, right or swap.";
+        changed(s);
+        return std::string("The camera is in your ") + (s.settings.left_hand ? "left" : "right") + " hand.";
+    }
+    if (key == "cammodel") {
+        const auto v = value == "default" ? std::string() : value;
+        if (v.size() > 200 || v.find_first_of(" \t\r\n") != std::string::npos) return "error: cammodel is a blueprint name (or default).";
+        s.settings.camera_model = v;
+        changed(s);
+        return "Camera model: " + (v.empty() ? std::string(multiplayer::held_camera_blueprint) : v) + ".";
     }
     if (key == "distvariety") return real(r.distance_variety, 0.0f, 1.0f);
     if (key == "heightvariety") return real(r.height_variety, 0.0f, 1.0f);
@@ -939,6 +1023,7 @@ std::string describe(const State &s) {
         mode_name(s.settings.mode), s.status, lens_name(r.lens), style_name(r.style), r.distance, r.height, r.human, r.reaction);
     if (s.settings.mode != Mode::off) text += " | filming " + s.subject_name;
     text += std::format(" | clip {}", s.clip);
+    text += "\n" + held::status();
     return text;
 }
 } // namespace
@@ -1081,6 +1166,13 @@ std::string command(std::string_view verb, const std::vector<std::string> &argum
         } catch (...) {
             reply = "error: could not write trace.csv.";
         }
+    } else if (verb == "holdtest") {
+        // Your skater holds the camera out with the game's own camera, to see the arm and the model.
+        const auto wanted = lower(arg(0));
+        s.holdtest = wanted == "on" || wanted == "1" ? true : wanted == "off" || wanted == "0" ? false : !s.holdtest;
+        reply = !s.holdtest ? "Hold test off."
+              : s.settings.mode == Mode::film ? "Hold test on: switch the Filmer off (or to another mode) to see your skater hold the camera."
+                                              : "Hold test on: your skater holds the camera out low in front. Others in the session see it too.";
     } else if (verb == "slap") {
         reply = slap(s);
     } else if (verb == "clips") {

@@ -380,8 +380,8 @@ void animation_hook(std::uintptr_t component, std::uintptr_t update) {
         return;
     }
     shared().original_animation(component, update);
-    if (const auto listener = shared().evaluated_listener.load(std::memory_order_acquire))
-        listener(component);
+    for (const auto &slot : shared().evaluated_listener)
+        if (const auto listener = slot.load(std::memory_order_acquire)) listener(component);
 }
 void destroy_hook(std::uintptr_t entity, std::uintptr_t owner) {
     // Other SDK-created actors share this hook; they must forget the entity
@@ -600,7 +600,17 @@ void set_local_hidden_joint(std::uintptr_t component, std::uint16_t joint,
 void set_render_pose_listener(RenderPosePublished listener) noexcept {
     shared().render_listener.store(listener, std::memory_order_release);
 }
-void set_animation_evaluated_listener(AnimationEvaluated listener) noexcept {
-    shared().evaluated_listener.store(listener, std::memory_order_release);
+void set_animation_evaluated_listener(AnimationEvaluated listener, std::size_t slot) noexcept {
+    if (slot < animation_listener_slots) shared().evaluated_listener[slot].store(listener, std::memory_order_release);
+}
+std::uintptr_t local_skater_component(std::uintptr_t base, std::uintptr_t client) noexcept {
+    try {
+        const auto frame = capture_local(base, client, false);
+        if (!frame.ready || !frame.entity) return 0;
+        const auto component = ptr(frame.entity, 0x628);
+        return ptr(component) == base + addr::engine::skater_component_vtable ? component : 0;
+    } catch (...) {
+        return 0;
+    }
 }
 } // namespace dingosdk::multiplayer

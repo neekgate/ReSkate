@@ -181,6 +181,38 @@ void set_models_status(std::string text, bool log) {
     if (log) logging::log(logging::Level::info, logging::Channel::runtime, "Drone models: {}", text);
 }
 
+// ---- The Filmer's cameras in hand
+struct CameraModel {
+    std::uint64_t id{};
+    Prop prop;
+};
+struct Cameras {
+    std::vector<CameraModel> list; // client thread
+    std::uintptr_t context{}, blueprint{};
+    std::string blueprint_name, wanted; // what they are made of, and what was asked for
+    bool stand_in{};
+    ULONGLONG next_lookup{};
+    std::mutex status_mutex;
+    std::string status = "Nobody is filming.";
+};
+Cameras &cameras() {
+    static auto *c = new Cameras;
+    return *c;
+}
+void set_cameras_status(std::string text, bool log) {
+    auto &c = cameras();
+    {
+        std::lock_guard lock(c.status_mutex);
+        if (c.status == text) return;
+        c.status = text;
+    }
+    if (log) logging::log(logging::Level::info, logging::Channel::runtime, "Filmer cameras: {}", text);
+}
+void clear_cameras(Cameras &c) {
+    for (const auto &model : c.list) destroy(model.prop);
+    c.list.clear();
+}
+
 // ---- The test that found how
 struct Request {
     std::string blueprint; // empty: stop
@@ -374,6 +406,77 @@ std::string drone_models_status() {
     auto &m = models();
     std::lock_guard lock(m.status_mutex);
     return m.status;
+}
+
+void tick_held_camera_models(std::uintptr_t base, std::uintptr_t client, const std::vector<HeldCameraModel> &wanted,
+                             std::string_view blueprint, bool stand_in) noexcept {
+    auto &c = cameras();
+    try {
+        std::lock_guard lock(registry().mutex);
+        std::erase_if(c.list, [](const CameraModel &model) { return !tracked(model.prop.entity); });
+        if (wanted.empty() && c.list.empty()) {
+            set_cameras_status("Nobody is filming.", false);
+            return;
+        }
+        const auto local = capture_local(base, client, false);
+        if (!local.ready || !local.context || !local.parent) return;
+        // Another map, or another model asked for: start over.
+        if (local.context != c.context || c.wanted != blueprint || c.stand_in != stand_in) {
+            if (local.context == c.context) clear_cameras(c);
+            else c.list.clear(); // the map took them
+            c.context = local.context;
+            c.wanted = std::string(blueprint);
+            c.stand_in = stand_in;
+            c.blueprint = 0;
+            c.next_lookup = 0;
+        }
+        for (auto it = c.list.begin(); it != c.list.end();) {
+            if (std::any_of(wanted.begin(), wanted.end(), [&](const HeldCameraModel &m) { return m.id == it->id; })) {
+                ++it;
+                continue;
+            }
+            destroy(it->prop);
+            it = c.list.erase(it);
+        }
+        const auto now = GetTickCount64();
+        if (!c.blueprint && !wanted.empty() && now >= c.next_lookup) {
+            c.next_lookup = now + 5000;
+            if ((c.blueprint = find_named_blueprint(base, blueprint))) c.blueprint_name = std::string(blueprint);
+            else if (stand_in && (c.blueprint = find_named_blueprint(base, drone_model_stand_in))) c.blueprint_name = "the stand-in cone";
+            if (!c.blueprint)
+                set_cameras_status(std::format("The camera model ({}) is not loaded on this map{}.", blueprint,
+                                               stand_in ? " and neither is the stand-in" : ": build it with ReSkate Studio"), true);
+        }
+        bool spawned = false;
+        std::string blocked;
+        for (const auto &camera : wanted) {
+            const auto matrix = matrix_of(camera.position, camera.rotation);
+            const auto found = std::find_if(c.list.begin(), c.list.end(), [&](const CameraModel &m) { return m.id == camera.id; });
+            if (found != c.list.end()) {
+                place(base, found->prop, matrix);
+            } else if (c.blueprint && !spawned && blocked.empty() && c.list.size() < 32 && can_create(base, local, &blocked)) {
+                c.list.push_back({camera.id, create_prop(base, local, c.blueprint, matrix)});
+                spawned = true;
+            }
+        }
+        if (c.blueprint && blocked.empty())
+            set_cameras_status(std::format("{} filming; {} camera(s) shown, made of {}.", wanted.size(), c.list.size(), c.blueprint_name), spawned);
+        else if (!blocked.empty())
+            set_cameras_status(std::format("{} filming; waiting: {}.", wanted.size(), blocked), false);
+    } catch (const std::exception &e) {
+        {
+            std::lock_guard lock(registry().mutex);
+            clear_cameras(c);
+        }
+        c.blueprint = 0;
+        c.next_lookup = GetTickCount64() + 5000;
+        set_cameras_status(std::format("failed: {}", e.what()), true);
+    }
+}
+std::string held_camera_models_status() {
+    auto &c = cameras();
+    std::lock_guard lock(c.status_mutex);
+    return c.status;
 }
 
 void request_prop_test(std::string blueprint, int mode) {

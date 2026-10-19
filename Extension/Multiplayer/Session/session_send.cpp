@@ -9,6 +9,7 @@
 #include "Engine/Core/Log/logging.h"
 #include "Extension/Skater/physics_tuning.h"
 #include "Extension/Skater/drone_beacon.h"
+#include "Extension/Filmer/filmer_beacon.h"
 #include "Engine/Vfs/mod_scoring.h"
 #include "Extension/Multiplayer/Remote/remote_collision.h"
 #include <algorithm>
@@ -360,7 +361,8 @@ void broadcast(Session &s, const Packet &packet, bool reliable, bool fresh, std:
     unsigned direct_sent{};
     const bool gameplay = packet.kind == PacketKind::pose || packet.kind == PacketKind::audio ||
                           packet.kind == PacketKind::voice || packet.kind == PacketKind::cosmetics ||
-                          packet.kind == PacketKind::effects || packet.kind == PacketKind::drone;
+                          packet.kind == PacketKind::effects || packet.kind == PacketKind::drone ||
+                          packet.kind == PacketKind::filmer;
     for (auto &p : active_peers(s)) {
         if (!p.handshaken || p.member.id == except ||
             (s.mode == Mode::host && gameplay && !p.world_ready) ||
@@ -369,7 +371,8 @@ void broadcast(Session &s, const Packet &packet, bool reliable, bool fresh, std:
         // Chat and throwdown messages always travel through the host, which relays
         // them once to everyone else; a direct copy as well would deliver them twice.
         if ((packet.kind == PacketKind::chat || packet.kind == PacketKind::throwdown || packet.kind == PacketKind::effects ||
-             packet.kind == PacketKind::typing || packet.kind == PacketKind::drone) && s.mode == Mode::join &&
+             packet.kind == PacketKind::typing || packet.kind == PacketKind::drone || packet.kind == PacketKind::filmer) &&
+            s.mode == Mode::join &&
             p.member.id != s.host_id)
             continue;
         if (packet.kind == PacketKind::voice) {
@@ -774,6 +777,13 @@ void send_local(Session &s, const NativeFrame &local, std::uint64_t now, std::ui
         d.drone_position = out->position;
         d.drone_rotation = out->rotation;
         deliver(d, false, true);
+    }
+    // That this player films, with which hand and lens, for the camera others see in it (filmer_beacon.h).
+    if (const auto out = filmer::beacon::next_outgoing()) {
+        auto f = packet(s, PacketKind::filmer, now);
+        f.filmer_flags = out->flags;
+        f.filmer_aim = out->aim;
+        deliver(f, false, true);
     }
 }
 } // namespace session_detail

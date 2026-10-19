@@ -1,6 +1,7 @@
 #include "session_internal.h"
 #include "Extension/Profile/local_profile_runtime.h"
 #include "Extension/Skater/drone_beacon.h"
+#include "Extension/Filmer/filmer_beacon.h"
 #include "Extension/Multiplayer/Net/wire_codec.h"
 #include "Engine/Core/Log/logging.h"
 #include "Engine/Game/Build/supported_build.h"
@@ -382,6 +383,9 @@ bool accept_data(Peer &peer, const Packet &p, std::uint64_t now) {
         accepted = drone::beacon::server_allows().load(std::memory_order_relaxed) && peer.effect_budget.accept(now);
         if (accepted)
             drone::beacon::receive(peer.member.id, peer.member.name, p.drone_position, p.drone_rotation, p.drone_active);
+    } else if (p.kind == PacketKind::filmer) {
+        accepted = peer.filmer_budget.accept(now);
+        if (accepted) filmer::beacon::receive(peer.member.id, p.filmer_flags, p.filmer_aim);
     } else if (p.kind == PacketKind::pose)
         accepted = peer.poses.push_validated(p, now);
     if (accepted) {
