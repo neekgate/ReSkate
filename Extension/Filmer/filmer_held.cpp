@@ -56,6 +56,12 @@ struct Arm {
     float weight{};
     ULONGLONG last_update{};
     std::atomic<std::uint32_t> bent{}, unreadable{}, own_from_pose{};
+    // The joints as last bent, for the pose sent to the others (under the mutex).
+    std::array<std::uint16_t, 3> sent_joints{};
+    std::array<hold::Quat, 3> sent_rotations{};
+    std::size_t sent_count{};
+    std::uintptr_t sent_component{};
+    ULONGLONG sent_at{};
 };
 Arm &arm() {
     static auto *value = new Arm;
@@ -120,10 +126,26 @@ void bend(std::uintptr_t component, std::uintptr_t holder) noexcept {
         if (lock) {
             a.palm = held;
             a.palm_at = now;
+            a.sent_count = goal.worn ? 3 : 2;
+            for (std::size_t i = 0; i < a.sent_count; ++i) {
+                a.sent_joints[i] = joints[8 + i];
+                a.sent_rotations[i] = pose[joints[8 + i]].rotation;
+            }
+            a.sent_component = component;
+            a.sent_at = now;
         }
     } catch (...) {
         a.unreadable.fetch_add(1, std::memory_order_relaxed);
     }
+}
+
+// The pose capture_local reads to send: the arm as it was last drawn holding the camera.
+void on_outgoing(std::uintptr_t component, std::vector<multiplayer::Transform> &skater) noexcept {
+    auto &a = arm();
+    std::unique_lock lock(a.mutex, std::try_to_lock);
+    if (!lock || component != a.sent_component || GetTickCount64() - a.sent_at > fresh_ms) return;
+    for (std::size_t i = 0; i < a.sent_count; ++i)
+        if (a.sent_joints[i] < skater.size()) skater[a.sent_joints[i]].rotation = a.sent_rotations[i];
 }
 
 void on_render(std::uintptr_t animation_interface) noexcept {
@@ -211,6 +233,7 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool in_level, const Optio
             std::string detail;
             if (multiplayer::install_entity_hooks(base, detail)) {
                 multiplayer::set_render_pose_listener(&on_render, 1);
+                multiplayer::set_local_pose_filter(&on_outgoing);
                 a.hooked.store(true, std::memory_order_release);
                 logging::log(logging::Level::info, logging::Channel::skater, "Filmer: your arm holds the camera out while you film.");
             } else {

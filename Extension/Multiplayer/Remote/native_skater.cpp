@@ -185,6 +185,10 @@ struct HiddenJoint {
     std::uint16_t joint{};
     std::array<float, 3> scale{1, 1, 1};
 };
+std::atomic<LocalPoseFilter> &local_pose_filter() {
+    static std::atomic<LocalPoseFilter> value{};
+    return value;
+}
 HiddenJoint &hidden_joint() {
     static auto *value = new HiddenJoint;
     return *value;
@@ -525,6 +529,8 @@ NativeFrame capture_local(std::uintptr_t base, std::uintptr_t client, bool captu
                 std::lock_guard hidden_lock(hidden.mutex);
                 if (hidden.component == component && hidden.joint < frame.pose.skater.size())
                     frame.pose.skater[hidden.joint].scale = hidden.scale;
+                if (const auto filter = local_pose_filter().load(std::memory_order_acquire); filter && !frame.pose.skater.empty())
+                    filter(component, frame.pose.skater);
                 frame.detail =
                     frame.pose.skater.empty() ? "Waiting for skater animation buffers." : "Local pose ready.";
             } catch (const std::exception &e) {
@@ -597,6 +603,9 @@ void set_local_hidden_joint(std::uintptr_t component, std::uint16_t joint,
     hidden.component = component;
     hidden.joint = joint;
     hidden.scale = scale;
+}
+void set_local_pose_filter(LocalPoseFilter filter) noexcept {
+    local_pose_filter().store(filter, std::memory_order_release);
 }
 void set_render_pose_listener(RenderPosePublished listener, std::size_t slot) noexcept {
     if (slot < render_listener_slots) shared().render_listener[slot].store(listener, std::memory_order_release);
