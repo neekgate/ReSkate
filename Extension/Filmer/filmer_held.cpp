@@ -101,6 +101,7 @@ void bend(std::uintptr_t component, std::uintptr_t holder) noexcept {
         // Eased in and out: the arm comes up and goes back down instead of snapping.
         goal.weight = a.weight * a.weight * (3.0f - 2.0f * a.weight);
         goal.lens = a.seen.lens;
+        goal.worn = a.seen.worn;
         if (a.seen.relative) {
             std::array<hold::Placed, hold::right_chain.size()> placed{};
             if (!hold::compose(pose, joints, placed)) return;
@@ -109,7 +110,8 @@ void bend(std::uintptr_t component, std::uintptr_t holder) noexcept {
         }
         const auto held = hold::hold(pose, goal);
         if (!held.valid) return;
-        for (const std::size_t at : {std::size_t{8}, std::size_t{9}}) {
+        for (const std::size_t at : {std::size_t{8}, std::size_t{9}, std::size_t{10}}) {
+            if (at == 10 && !goal.worn) break;
             const auto joint = joints[at];
             if (!seh_write(layout.buffer + joint * bone_stride + 0x10, pose[joint].rotation.data(), sizeof(hold::Quat))) return;
         }
@@ -139,6 +141,7 @@ struct RemoteHand {
     std::uint64_t id{};
     hold::Placed palm;
     ULONGLONG at{};
+    bool worn{}; // they wear the camcorder: the game draws it, no model is placed
 };
 struct Remotes {
     std::mutex mutex;
@@ -169,6 +172,7 @@ void note_remote_pose(std::uint64_t id, const multiplayer::Pose &pose) noexcept 
             bones[i] = {t.scale, t.rotation, t.position};
         }
         const auto hand = (filming->flags & beacon::flag_left_hand) ? hold::Hand::left : hold::Hand::right;
+        const bool worn = (filming->flags & beacon::flag_worn) != 0;
         const auto held = hold::held_in(bones, hand, filming->aim);
         if (!held.valid) return;
         auto &r = remotes();
@@ -178,9 +182,10 @@ void note_remote_pose(std::uint64_t id, const multiplayer::Pose &pose) noexcept 
             if (entry.id == id) {
                 entry.palm = held.palm;
                 entry.at = now;
+                entry.worn = worn;
                 return;
             }
-        if (r.list.size() < 32) r.list.push_back({id, held.palm, now});
+        if (r.list.size() < 32) r.list.push_back({id, held.palm, now, worn});
     } catch (...) {}
 }
 
@@ -220,9 +225,9 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool in_level, const Optio
             std::lock_guard lock(r.mutex);
             std::erase_if(r.list, [&](const RemoteHand &h) { return now - h.at > 2000; });
             for (const auto &h : r.list)
-                if (now - h.at < fresh_ms) cameras.push_back({h.id, h.palm.position, h.palm.rotation});
+                if (now - h.at < fresh_ms && !h.worn) cameras.push_back({h.id, h.palm.position, h.palm.rotation});
         }
-        if (request.show_own) {
+        if (request.show_own && !request.worn) {
             bool placed = false;
             {
                 std::lock_guard lock(a.mutex);

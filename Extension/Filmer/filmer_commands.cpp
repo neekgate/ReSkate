@@ -19,7 +19,7 @@ void register_filmer_commands(Commands &registry) {
         {"target", "Whom the assist frames while you film", "auto|<player>", false},
         {"set", "Change a Filmer option",
          "style auto|behind|side|ahead, side auto|left|right|swap, hand left|right|swap, cammodel <blueprint>|default, lens fisheye|long, stop instant|stair, distance|height|tilt|human|reaction|sensitivity|hold|bend|age|gap|mousesens|lift|tripodheight|distvariety|heightvariety <number>, "
-         "holdcam|cameras|standin|assist|invert|recenter|hidehud|stick|clicks|drops|lunge|cruise|mouse|track|look|anywhere|fisheye|bars|hood|grade|soft|scanlines|grain|date|viewfinder|"
+         "holdcam|cameras|standin|worn|assist|invert|recenter|hidehud|stick|clicks|drops|lunge|cruise|mouse|track|look|anywhere|fisheye|bars|hood|grade|soft|scanlines|grain|date|viewfinder|"
          "dropouts|headswitch|tracking|smear|iris 0|1",
          true},
         {"plant", "The AI filmer stops and films from where they are, or rides again", "[on|off]", false},

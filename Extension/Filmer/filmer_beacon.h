@@ -18,7 +18,8 @@ using Clock = std::chrono::steady_clock;
 using Rotation = std::array<float, 4>; // x, y, z, w: the camera's rows right, up, back
 inline constexpr Rotation no_rotation{0.0f, 0.0f, 0.0f, 1.0f};
 // The packet's flag byte.
-inline constexpr std::uint8_t flag_filming = 1, flag_left_hand = 2, flag_long_lens = 4, flag_mask = 7;
+// flag_worn: the camcorder is worn as hand wear (a cosmetic the game draws), so no model is placed for it.
+inline constexpr std::uint8_t flag_filming = 1, flag_left_hand = 2, flag_long_lens = 4, flag_worn = 8, flag_mask = 15;
 
 inline bool valid_rotation(const Rotation &q) {
     float length = 0.0f;

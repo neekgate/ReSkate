@@ -161,10 +161,10 @@ enum class PacketKind : std::uint16_t {
 // A drone packet: a flag byte (1 = flying), the drone's position as three floats and which way
 // it faces as a unit quaternion (four floats: x, y, z, w).
 inline constexpr std::size_t drone_wire_size = 1 + 12 + 16;
-// A filmer packet: a flag byte (filmer_beacon.h: 1 filming, 2 left hand, 4 long lens) and which way
+// A filmer packet: a flag byte (filmer_beacon.h: 1 filming, 2 left hand, 4 long lens, 8 camcorder worn) and which way
 // the camera points as a unit quaternion (four floats: x, y, z, w).
 inline constexpr std::size_t filmer_wire_size = 1 + 16;
-inline constexpr std::uint8_t filmer_flag_mask = 7;
+inline constexpr std::uint8_t filmer_flag_mask = 15;
 inline bool valid_drone_rotation(const std::array<float, 4> &q) noexcept {
     float length = 0.f;
     for (const float v : q) {

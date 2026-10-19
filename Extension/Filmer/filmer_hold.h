@@ -45,6 +45,18 @@ inline constexpr std::span<const std::uint16_t> chain(Hand hand) noexcept { retu
 inline constexpr Vec3 lens_from_handle{0.0f, -0.143f, -0.248f};
 inline constexpr float palm_from_wrist = 0.075f;
 
+// The camcorder worn as hand wear (a cosmetic, assets/models/vx1000/make_cosmetic.py): its mesh is
+// weighted wholly to the hand, its handle bar through the fist at <Hand>_Attach. `camera` is the
+// camera's rows (right, up, back) in the hand joint's own frame and `from_wrist` where its grip is
+// from the hand joint, in that frame, both from the skeleton's bind pose.
+struct Grip {
+    Quat camera{0, 0, 0, 1};
+    Vec3 from_wrist{};
+};
+inline constexpr Grip right_grip{{0.5398f, -0.5523f, 0.4688f, 0.4287f}, {0.1191f, 0.0435f, -0.0251f}};
+inline constexpr Grip left_grip{{0.4688f, -0.4287f, 0.5398f, 0.5523f}, {0.1191f, 0.0435f, 0.0251f}};
+inline constexpr const Grip &grip(Hand hand) noexcept { return hand == Hand::left ? left_grip : right_grip; }
+
 // ---- Vector and quaternion helpers.
 Quat multiply(const Quat &a, const Quat &b) noexcept;
 Quat conjugate(const Quat &q) noexcept;
@@ -69,6 +81,8 @@ struct Goal {
     Vec3 lens{};          // where the front of the lens should be (the camera's eye)
     Quat aim{0, 0, 0, 1}; // which way the camera points (rows right, up, back)
     float weight = 1.0f;  // 0: the arm as the animation has it, 1: holding the camera out
+    // The camcorder is worn on the hand (Grip): the hand turns as well, so its lens points along `aim`.
+    bool worn{};
 };
 struct Held {
     bool valid{};
@@ -76,7 +90,7 @@ struct Held {
     Vec3 lens{}; // where the front of its lens ended up (short of the goal when out of reach)
     bool reached{};
 };
-// Bends the arm in `pose` (its upper arm and forearm, in place) so the hand holds the camera with its
+// Bends the arm in `pose` (its upper arm and forearm, in place, and the hand when the camera is worn) so the hand holds the camera with its
 // lens as near the goal as the arm reaches, the elbow out and down, and says where the camera is.
 // Leaves the pose alone and returns invalid when the joints are not there.
 Held hold(std::span<Bone> pose, const Goal &goal) noexcept;

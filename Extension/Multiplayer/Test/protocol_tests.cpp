@@ -995,7 +995,7 @@ void dedicated_server_codec() {
         check(back && back->kind == PacketKind::filmer && back->filmer_flags == 3 && back->filmer_aim == f.filmer_aim,
               "A filmer's camera failed to round-trip");
         auto odd = f;
-        odd.filmer_flags = 8;
+        odd.filmer_flags = 16;
         bool refused{};
         try { encode(odd); } catch (const std::invalid_argument &) { refused = true; }
         check(refused, "A filmer flag past the known ones was encoded");

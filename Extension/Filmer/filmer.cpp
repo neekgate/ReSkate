@@ -183,6 +183,7 @@ void load_store() {
         s.settings.left_hand = o.value("camera_hand", std::string("right")) == "left";
         s.settings.show_cameras = flag(o, "show_cameras", d.show_cameras);
         s.settings.stand_in = flag(o, "stand_in", d.stand_in);
+        s.settings.camera_worn = flag(o, "camera_worn", d.camera_worn);
         s.settings.camera_model = o.value("camera_model", std::string());
         if (s.settings.camera_model.size() > 200) s.settings.camera_model.clear();
         // Saved before only world and ReSkate props were allowed (a phone crashed the game): the default.
@@ -263,6 +264,7 @@ void save_store() {
         json["camera_hand"] = s.settings.left_hand ? "left" : "right";
         json["show_cameras"] = s.settings.show_cameras;
         json["stand_in"] = s.settings.stand_in;
+        json["camera_worn"] = s.settings.camera_worn;
         json["camera_model"] = s.settings.camera_model;
         json["hide_hud"] = s.settings.hide_hud;
         json["take_stick"] = s.settings.take_stick;
@@ -630,6 +632,7 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready, bool camera_ph
         // The camera in your hand this tick (filmer_held.h): filled in below while you film.
         held::Request hold_request;
         hold_request.hand = s.settings.left_hand ? hold::Hand::left : hold::Hand::right;
+        hold_request.worn = s.settings.camera_worn;
         // Where everyone is this frame (the session places them every frame).
         s.others = multiplayer::filmable_players();
         if (ticks >= s.players_at) {
@@ -831,6 +834,7 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready, bool camera_ph
         if (hold_request.hold) {
             std::uint8_t flags = beacon::flag_filming;
             if (s.settings.left_hand) flags |= beacon::flag_left_hand;
+            if (s.settings.camera_worn) flags |= beacon::flag_worn;
             if (s.settings.rig.lens == Lens::long_lens) flags |= beacon::flag_long_lens;
             beacon::publish_local(flags, hold_request.aim);
         }
@@ -940,6 +944,7 @@ std::string set_option(State &s, const std::string &key, const std::string &valu
     if (key == "holdcam") return toggle(s.settings.hold_camera);
     if (key == "cameras") return toggle(s.settings.show_cameras);
     if (key == "standin") return toggle(s.settings.stand_in);
+    if (key == "worn") return toggle(s.settings.camera_worn);
     if (key == "hand") {
         const auto v = lower(value);
         if (v == "left") s.settings.left_hand = true;

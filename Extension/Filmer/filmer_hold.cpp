@@ -131,10 +131,15 @@ Held hold(std::span<Bone> pose, const Goal &goal) noexcept {
     const float a = length(sub(e, s)), b = length(sub(h, e));
     if (!(a > 0.05f && b > 0.05f && a < 1.0f && b < 1.0f)) return {};
     const float scale = std::max(w[hand_at].scale, 0.1f);
-    // Where the palm has to be for the lens to be at the goal. The palm lies on the forearm's line, past
-    // the wrist, so the forearm and hand are one straight reach of b + palm.
-    const Vec3 palm_goal = sub(goal.lens, rotate(aim, lens_from_handle));
-    const float palm = palm_from_wrist * scale, b_palm = b + palm;
+    // Worn: the hand turned so the camera points along the aim, and the wrist where that puts the lens
+    // at the goal. Held: the palm lies on the forearm's line, past the wrist, so the forearm and hand are
+    // one straight reach of b + palm to where the camera's handle has to be.
+    const auto &worn = grip(goal.hand);
+    const Quat hand_world = normalized(multiply(aim, conjugate(worn.camera)));
+    const Vec3 grip_offset = scaled(rotate(hand_world, worn.from_wrist), scale);
+    const Vec3 palm_goal = goal.worn ? sub(sub(goal.lens, rotate(aim, lens_from_handle)), grip_offset)
+                                     : sub(goal.lens, rotate(aim, lens_from_handle));
+    const float palm = goal.worn ? 0.0f : palm_from_wrist * scale, b_palm = b + palm;
     const float reach = (a + b_palm) * 0.995f;
     const float wanted = length(sub(palm_goal, s));
     const float d = std::clamp(wanted, std::abs(a - b_palm) + 0.02f, reach);
@@ -166,8 +171,23 @@ Held hold(std::span<Bone> pose, const Goal &goal) noexcept {
     const Quat fore_local = normalized(multiply(conjugate(upper_world), fore_world));
     upper_bone.rotation = blend(upper_bone.rotation, upper_local, weight);
     fore_bone.rotation = blend(fore_bone.rotation, fore_local, weight);
+    if (goal.worn) {
+        // The hand, from the forearm as it now is, turned so the worn camera points along the aim.
+        if (!compose(pose, joints, w)) return {};
+        auto &hand_bone = pose[joints[hand_at]];
+        hand_bone.rotation = blend(hand_bone.rotation, normalized(multiply(conjugate(w[fore].rotation), hand_world)), weight);
+    }
     // Where the hand ended up, from the pose as it now is.
     if (!compose(pose, joints, w)) return {};
+    if (goal.worn) {
+        Held held;
+        held.palm.rotation = normalized(multiply(w[hand_at].rotation, worn.camera));
+        held.palm.position = add(w[hand_at].position, scaled(rotate(w[hand_at].rotation, worn.from_wrist), scale));
+        held.lens = add(held.palm.position, rotate(held.palm.rotation, lens_from_handle));
+        held.valid = finite(held.palm.position) && finite(held.lens);
+        held.reached = wanted <= reach + 0.01f;
+        return held;
+    }
     auto held = place_camera(w[fore].position, w[hand_at].position, aim, scale);
     held.reached = wanted <= reach + 0.01f;
     return held;
