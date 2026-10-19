@@ -185,6 +185,9 @@ void load_store() {
         s.settings.stand_in = flag(o, "stand_in", d.stand_in);
         s.settings.camera_model = o.value("camera_model", std::string());
         if (s.settings.camera_model.size() > 200) s.settings.camera_model.clear();
+        // Saved before only world and ReSkate props were allowed (a phone crashed the game): the default.
+        if (const auto model = lower(s.settings.camera_model); !model.empty() && !model.starts_with("world/") && !model.starts_with("reskate/"))
+            s.settings.camera_model.clear();
         // Settings saved before the camera could go this low keep their old height: start them low.
         // (Schema 3: lower again, and the hold height now measured from the ground, not the hips.)
         if (o.value("schema", 1) < 3) {
@@ -838,6 +841,14 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready, bool camera_ph
     } catch (...) {}
 }
 
+namespace {
+// A model the camera may be made of: a world prop (as the traffic cone is) or ReSkate's own. Character
+// props (a phone) are made to hang on a skater's skeleton; spawned on their own they crash the game.
+bool spawnable_model(std::string_view name) {
+    return name.starts_with("world/") || name.starts_with("reskate/");
+}
+} // namespace
+
 void tick_held(std::uintptr_t base, std::uintptr_t client, bool in_level) noexcept {
     try {
         auto &s = state();
@@ -845,7 +856,7 @@ void tick_held(std::uintptr_t base, std::uintptr_t client, bool in_level) noexce
         held::Options options;
         options.show_others = s.settings.show_cameras;
         options.stand_in = s.settings.stand_in || s.holdtest;
-        options.blueprint = s.settings.camera_model;
+        options.blueprint = spawnable_model(lower(s.settings.camera_model)) ? s.settings.camera_model : std::string();
         held::tick(base, client, in_level, options);
         if (const auto ticks = GetTickCount64(); ticks >= s.next_held_status) {
             s.next_held_status = ticks + 500;
@@ -941,6 +952,8 @@ std::string set_option(State &s, const std::string &key, const std::string &valu
     if (key == "cammodel") {
         const auto v = value == "default" ? std::string() : value;
         if (v.size() > 200 || v.find_first_of(" \t\r\n") != std::string::npos) return "error: cammodel is a blueprint name (or default).";
+        if (!v.empty() && !spawnable_model(lower(v)))
+            return "error: the camera can only be a world prop (world/...) or ReSkate's own (reskate/...): character props such as the phone crash the game when spawned on their own.";
         s.settings.camera_model = v;
         changed(s);
         return "Camera model: " + (v.empty() ? std::string(multiplayer::held_camera_blueprint) : v) + ".";
