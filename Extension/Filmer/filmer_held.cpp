@@ -70,20 +70,27 @@ Arm &arm() {
 
 // The skater's pose as it is handed to the renderer (the game has finished with it by then: bent any
 // earlier, its own arm work puts the arm back), for your skater's.
-void bend(std::uintptr_t component, std::uintptr_t holder) noexcept {
+// `animated`: called as the game finishes animating the skater, every update whether or not the
+// skater is drawn (the camera filming someone else looks away from it): the request is taken, the
+// arm eased, and the bent arm kept for the pose the others are sent; nothing is written, as the game
+// works the arm again after this. Else called as the pose is handed to the renderer: written, so it
+// is what is drawn.
+void bend(std::uintptr_t component, std::uintptr_t holder, bool animated) noexcept {
     auto &a = arm();
-    {
-        std::unique_lock lock(a.mutex, std::try_to_lock);
-        if (lock) {
-            a.seen = a.request;
-            a.seen_at = a.requested;
-        }
-    }
     const auto now = GetTickCount64();
-    const float dt = a.last_update ? std::clamp(static_cast<float>(now - a.last_update) / 1000.0f, 0.0f, 0.1f) : 0.0f;
-    a.last_update = now;
-    const bool wanted = a.seen.hold && now - a.seen_at < fresh_ms;
-    a.weight = std::clamp(a.weight + (wanted ? dt : -dt) / ease_seconds, 0.0f, 1.0f);
+    if (animated) {
+        {
+            std::unique_lock lock(a.mutex, std::try_to_lock);
+            if (lock) {
+                a.seen = a.request;
+                a.seen_at = a.requested;
+            }
+        }
+        const float dt = a.last_update ? std::clamp(static_cast<float>(now - a.last_update) / 1000.0f, 0.0f, 0.1f) : 0.0f;
+        a.last_update = now;
+        const bool wanted = a.seen.hold && now - a.seen_at < fresh_ms;
+        a.weight = std::clamp(a.weight + (wanted ? dt : -dt) / ease_seconds, 0.0f, 1.0f);
+    }
     if (a.weight <= 0.0f) return;
     try {
         (void)component;
@@ -117,7 +124,7 @@ void bend(std::uintptr_t component, std::uintptr_t holder) noexcept {
         const auto held = hold::hold(pose, goal);
         if (!held.valid) return;
         for (const std::size_t at : {std::size_t{8}, std::size_t{9}, std::size_t{10}}) {
-            if (at == 10 && !goal.worn) break;
+            if (animated || (at == 10 && !goal.worn)) break;
             const auto joint = joints[at];
             if (!seh_write(layout.buffer + joint * bone_stride + 0x10, pose[joint].rotation.data(), sizeof(hold::Quat))) return;
         }
@@ -154,7 +161,15 @@ void on_render(std::uintptr_t animation_interface) noexcept {
     std::uintptr_t holder{};
     if (!seh_read(component + 0xa0, &holder, sizeof(holder)) || !holder || animation_interface != holder + 0xc0) return;
     const auto error = GetLastError();
-    bend(component, holder);
+    bend(component, holder, false);
+    SetLastError(error);
+}
+void on_animation(std::uintptr_t component) noexcept {
+    if (!component || component != arm().component.load(std::memory_order_acquire)) return;
+    std::uintptr_t holder{};
+    if (!seh_read(component + 0xa0, &holder, sizeof(holder)) || !holder) return;
+    const auto error = GetLastError();
+    bend(component, holder, true);
     SetLastError(error);
 }
 
@@ -233,6 +248,7 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool in_level, const Optio
             std::string detail;
             if (multiplayer::install_entity_hooks(base, detail)) {
                 multiplayer::set_render_pose_listener(&on_render, 1);
+                multiplayer::set_animation_evaluated_listener(&on_animation, 1);
                 multiplayer::set_local_pose_filter(&on_outgoing);
                 a.hooked.store(true, std::memory_order_release);
                 logging::log(logging::Level::info, logging::Channel::skater, "Filmer: your arm holds the camera out while you film.");
