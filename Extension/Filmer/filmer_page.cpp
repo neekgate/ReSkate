@@ -175,7 +175,7 @@ void filmer_page(SkateMenu &menu, const Model &, const CallbacksV3 &callbacks) {
     filmer_toggle(menu, callbacks, "Stand-in when there is no model", "The camera's own model has to be built with ReSkate Studio (assets/models/vx1000). Until it is, show a traffic cone in the hand instead of nothing.", "standin", s.stand_in);
     if (primary_button(menu, v.holdtest ? "STOP THE HOLD TEST" : "HOLD TEST: SEE YOUR SKATER HOLD IT"))
         filmer_command(menu, callbacks, std::string("holdtest ") + (v.holdtest ? "off" : "on"));
-    note("Hold test: with the game's own camera (or the AI filmer's), your skater holds the camera out low in front so you can see it. A stand-in cone shows if the model is not built.");
+    note("Hold test: with the game's own camera (or the AI filmer's), your skater holds the camera out in front at arm's length so you can see it. A stand-in cone shows if the model is not built.");
     if (!v.held_status.empty()) note(v.held_status.c_str());
     end_card();
 

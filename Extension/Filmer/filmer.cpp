@@ -814,12 +814,12 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready, bool camera_ph
                 }
             }
         }
-        // `filmer holdtest`: with the game's own camera, your skater holds the camera out low in front,
+        // `filmer holdtest`: with the game's own camera, your skater holds the camera out in front at arm's length,
         // as a fisheye filmer does, and you see it in your hand.
         if (s.holdtest && !hold_request.hold && ready && self.valid) {
             hold_request.hold = true;
             hold_request.relative = true;
-            hold_request.lens = {0.55f, -0.85f, 0.0f};
+            hold_request.lens = {0.8f, -0.3f, 0.0f};
             hold_request.facing = self.facing;
             hold_request.aim = hold::from_yaw_pitch(std::atan2(self.facing[0], self.facing[2]), -0.3f);
             hold_request.show_own = true;
@@ -1172,7 +1172,7 @@ std::string command(std::string_view verb, const std::vector<std::string> &argum
         s.holdtest = wanted == "on" || wanted == "1" ? true : wanted == "off" || wanted == "0" ? false : !s.holdtest;
         reply = !s.holdtest ? "Hold test off."
               : s.settings.mode == Mode::film ? "Hold test on: switch the Filmer off (or to another mode) to see your skater hold the camera."
-                                              : "Hold test on: your skater holds the camera out low in front. Others in the session see it too.";
+                                              : "Hold test on: your skater holds the camera out in front at arm's length. Others in the session see it too.";
     } else if (verb == "slap") {
         reply = slap(s);
     } else if (verb == "clips") {
