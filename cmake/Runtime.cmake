@@ -179,6 +179,7 @@ add_library(dingosdk_runtime SHARED
     Extension/Filmer/filmer_rig.cpp
     Extension/Filmer/filmer_hold.cpp
     Extension/Filmer/filmer_held.cpp
+    Extension/Filmer/filmer_outfit.cpp
     Extension/Filmer/filmer_commands.cpp
     Extension/Trainer/trainer_session.cpp
     Extension/Trainer/trainer_waypoint.cpp

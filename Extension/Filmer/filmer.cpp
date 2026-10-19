@@ -1,6 +1,7 @@
 #include "filmer.h"
 #include "filmer_beacon.h"
 #include "filmer_held.h"
+#include "filmer_outfit.h"
 #include "Extension/Multiplayer/Remote/native_prop.h"
 #include "Engine/Core/Json/json.h"
 #include "Engine/Core/Log/logging.h"
@@ -94,6 +95,7 @@ struct State {
     std::string cruise_note;
     float camera_fov{};
     bool holdtest{};               // `filmer holdtest`: the camera held out on your skater, the game's camera
+    bool holding{};                // the arm holds the camera out this tick (the camcorder goes in the hand)
     std::string held_status;
     ULONGLONG next_held_status{};
 };
@@ -184,6 +186,8 @@ void load_store() {
         s.settings.show_cameras = flag(o, "show_cameras", d.show_cameras);
         s.settings.stand_in = flag(o, "stand_in", d.stand_in);
         s.settings.camera_worn = flag(o, "camera_worn", d.camera_worn);
+        s.settings.camera_item = o.value("camera_item", std::string());
+        if (s.settings.camera_item.size() > 200) s.settings.camera_item.clear();
         s.settings.camera_model = o.value("camera_model", std::string());
         if (s.settings.camera_model.size() > 200) s.settings.camera_model.clear();
         // Saved before only world and ReSkate props were allowed (a phone crashed the game): the default.
@@ -265,6 +269,7 @@ void save_store() {
         json["show_cameras"] = s.settings.show_cameras;
         json["stand_in"] = s.settings.stand_in;
         json["camera_worn"] = s.settings.camera_worn;
+        json["camera_item"] = s.settings.camera_item;
         json["camera_model"] = s.settings.camera_model;
         json["hide_hud"] = s.settings.hide_hud;
         json["take_stick"] = s.settings.take_stick;
@@ -831,6 +836,7 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready, bool camera_ph
             hold_request.show_own = true;
         }
         held::set_local(hold_request);
+        s.holding = hold_request.hold;
         if (hold_request.hold) {
             std::uint8_t flags = beacon::flag_filming;
             if (s.settings.left_hand) flags |= beacon::flag_left_hand;
@@ -862,9 +868,12 @@ void tick_held(std::uintptr_t base, std::uintptr_t client, bool in_level) noexce
         options.stand_in = s.settings.stand_in || s.holdtest;
         options.blueprint = spawnable_model(lower(s.settings.camera_model)) ? s.settings.camera_model : std::string();
         held::tick(base, client, in_level, options);
+        // The camcorder worn as hand wear goes in your hand while the arm holds it out.
+        outfit::tick(in_level && s.settings.camera_worn && s.holding, s.settings.camera_item);
         if (const auto ticks = GetTickCount64(); ticks >= s.next_held_status) {
             s.next_held_status = ticks + 500;
             auto text = held::status();
+            if (s.settings.camera_worn) text += "; " + outfit::status();
             if (text != s.held_status) {
                 s.held_status = std::move(text);
                 s.view_due = true;
@@ -945,6 +954,13 @@ std::string set_option(State &s, const std::string &key, const std::string &valu
     if (key == "cameras") return toggle(s.settings.show_cameras);
     if (key == "standin") return toggle(s.settings.stand_in);
     if (key == "worn") return toggle(s.settings.camera_worn);
+    if (key == "camitem") {
+        const auto v = value == "default" ? std::string() : value;
+        if (v.size() > 200 || v.find_first_of(" \t\r\n") != std::string::npos) return "error: camitem is a cosmetic's name (or default).";
+        s.settings.camera_item = v;
+        changed(s);
+        return "Camcorder cosmetic: " + (v.empty() ? std::string(outfit::default_item) : v) + ".";
+    }
     if (key == "hand") {
         const auto v = lower(value);
         if (v == "left") s.settings.left_hand = true;

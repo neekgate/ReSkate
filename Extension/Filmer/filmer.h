@@ -62,6 +62,7 @@ struct Settings {
     bool show_cameras = true; // the cameras in other filmers' hands
     bool stand_in = false;    // a traffic cone when the camera's model is not built
     bool camera_worn = false; // you wear the camcorder cosmetic (hand wear): the hand turns to aim it, no model is placed
+    std::string camera_item;  // that cosmetic, put in your hand while you film (filmer_outfit.h); empty: the default
     std::string camera_model; // the camera model's blueprint; empty: reskate/filmer/vx1000
 };
 
