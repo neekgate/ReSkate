@@ -170,8 +170,8 @@ bool crouch(std::span<Bone> pose, float depth) noexcept {
     return true;
 }
 
-bool hunch(std::span<Bone> pose, const Vec3 &toward, float angle, float look) noexcept {
-    if (!(std::abs(angle) + std::abs(look) > 1e-4f) || !finite(toward)) return true;
+bool hunch(std::span<Bone> pose, const Vec3 &toward, float angle, float look, float twist) noexcept {
+    if (!(std::abs(angle) + std::abs(look) + std::abs(twist) > 1e-4f) || !finite(toward)) return true;
     Vec3 level{toward[0], 0.0f, toward[2]};
     if (length(level) < 1e-4f) return true;
     level = unit(level, {0, 0, 1});
@@ -179,13 +179,16 @@ bool hunch(std::span<Bone> pose, const Vec3 &toward, float angle, float look) no
     const Vec3 axis = unit(cross(Vec3{0.0f, 1.0f, 0.0f}, level), {1, 0, 0});
     // Spine, Spine1, Spine2, Spine3 share the back's angle; Neck, Neck1 and Head the look.
     constexpr std::array<float, 7> share{0.15f, 0.25f, 0.3f, 0.3f, 0.35f, 0.25f, 0.4f};
+    constexpr std::array<float, 7> twist_share{0.05f, 0.05f, 0.1f, 0.1f, 0.2f, 0.2f, 0.3f};
     for (std::size_t i = 0; i < hunched_joints.size(); ++i) {
         std::array<Placed, head_chain.size()> w{};
         if (!compose(pose, head_chain, w)) return false;
         const std::size_t at = 3 + i; // its place in head_chain
         const float turn = (i < 4 ? angle : look) * share[i];
         const Quat bend{axis[0] * std::sin(turn / 2), axis[1] * std::sin(turn / 2), axis[2] * std::sin(turn / 2), std::cos(turn / 2)};
-        const Quat world = normalized(multiply(bend, w[at].rotation));
+        const float round = twist * twist_share[i];
+        const Quat about_up{0.0f, std::sin(round / 2), 0.0f, std::cos(round / 2)};
+        const Quat world = normalized(multiply(bend, multiply(about_up, w[at].rotation)));
         pose[hunched_joints[i]].rotation = local_of(w[at - 1], world);
     }
     return true;
@@ -229,13 +232,17 @@ Held hold_one(std::span<Bone> pose, const Goal &goal) noexcept {
         const Vec3 facing = unit(cross(across, {0.0f, 1.0f, 0.0f}), {0, 0, 1});
         const Vec3 pointing = rotate(normalized(goal.aim), {0.0f, 0.0f, -1.0f});
         const Vec3 level = unit(Vec3{pointing[0], 0.0f, pointing[2]}, facing);
-        float off = std::atan2(dot(cross(facing, level), {0.0f, 1.0f, 0.0f}), dot(facing, level));
-        off = std::clamp(off, -1.05f, 1.05f);
+        const float full = std::atan2(dot(cross(facing, level), {0.0f, 1.0f, 0.0f}), dot(facing, level));
+        const float off = std::clamp(full, -1.05f, 1.05f);
         const Quat turn{0.0f, std::sin(off / 2), 0.0f, std::cos(off / 2)};
         const Vec3 toward = rotate(turn, facing);
         const float pitch = std::asin(std::clamp(pointing[1], -1.0f, 1.0f)); // down is negative
-        const float amount = goal.hunch * std::clamp(1.0f - pitch * 1.2f, 0.3f, 1.6f) * body_weight;
-        if (!hunch(pose, toward, amount, amount * 1.5f)) return {};
+        // The back no more than about 57 degrees over, the head down at most about 34 more: it stays a
+        // filmer looking down at the camera, never folded past it.
+        const float amount = std::min(goal.hunch * std::clamp(1.0f - pitch * 1.2f, 0.3f, 1.6f), 1.0f) * body_weight;
+        const float look = std::min(amount * 0.8f, 0.6f * body_weight);
+        // The head turns to look at the camera off to the side (the back a little with it).
+        if (!hunch(pose, toward, amount, look, std::clamp(full, -1.6f, 1.6f) * body_weight)) return {};
     }
     if (!compose(pose, joints, w)) return {};
     const Quat aim = normalized(goal.aim);

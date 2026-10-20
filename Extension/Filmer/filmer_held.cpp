@@ -77,6 +77,14 @@ Arm &arm() {
 bool same(const hold::Bone &a, const hold::Bone &b) noexcept {
     return a.scale == b.scale && a.rotation == b.rotation && a.position == b.position;
 }
+// A joint as read, with each part the game left as written taken back to the game's own (and the
+// game's own kept for each part it set afresh). The game sets some parts of a joint each frame and not
+// others (a joint's size never), so each is judged on its own.
+void restore(hold::Bone &read, hold::Bone &original, const hold::Bone &written) noexcept {
+    if (read.scale == written.scale) read.scale = original.scale; else original.scale = read.scale;
+    if (read.rotation == written.rotation) read.rotation = original.rotation; else original.rotation = read.rotation;
+    if (read.position == written.position) read.position = original.position; else original.position = read.position;
+}
 bool write_bone(std::uintptr_t buffer, std::uint16_t joint, const hold::Bone &bone) noexcept {
     std::array<float, 12> raw{bone.scale[0], bone.scale[1], bone.scale[2], 0.0f,
                               bone.rotation[0], bone.rotation[1], bone.rotation[2], bone.rotation[3],
@@ -122,7 +130,8 @@ void bend(std::uintptr_t component, std::uintptr_t holder, bool animated) noexce
         const auto base = a.base.load(std::memory_order_acquire);
         const auto layout = multiplayer::read_native_pose_layout(seh_read, base, holder, 512);
         if (!layout.buffer || layout.count != hold::pose_joints) return;
-        if (a.weight <= 0.0f || a.seen.hide_own) {
+        const bool hiding = a.seen.hide_own && a.seen.hold && now - a.seen_at < fresh_ms;
+        if (a.weight <= 0.0f && !hiding) {
             put_back(a, layout.buffer);
             return;
         }
@@ -153,7 +162,7 @@ void bend(std::uintptr_t component, std::uintptr_t holder, bool animated) noexce
             std::lock_guard lock(a.mutex);
             for (std::size_t j = 0; j < read.size(); ++j) {
                 if (!read[j]) continue;
-                if (a.touched[j] && same(pose[j], a.written[j])) pose[j] = a.original[j];
+                if (a.touched[j]) restore(pose[j], a.original[j], a.written[j]);
                 else a.original[j] = pose[j];
             }
         }
@@ -174,17 +183,29 @@ void bend(std::uintptr_t component, std::uintptr_t holder, bool animated) noexce
             const auto &shoulder = placed[8].position, &f = a.seen.facing;
             goal.lens = {shoulder[0] + f[0] * a.seen.lens[0], shoulder[1] + a.seen.lens[1], shoulder[2] + f[2] * a.seen.lens[0]};
         }
-        const auto held = hold::hold(pose, goal);
-        if (!held.valid) return;
+        hold::Held held;
+        if (hiding) {
+            // You look through the camera: your arm as the game has it, the forearm (and the hand and
+            // the camera on it) not drawn on your screen. The others are sent its own size (on_outgoing),
+            // and it gets it back when you stop.
+            pose[joints[9]].scale = {0.001f, 0.001f, 0.001f};
+        } else {
+            held = hold::hold(pose, goal);
+            if (!held.valid) return;
+        }
         {
+            // What changes is written; a joint written before that no longer changes is put back.
             std::lock_guard lock(a.mutex);
             for (std::size_t j = 0; j < read.size(); ++j) {
-                if (!read[j] || same(pose[j], before[j])) continue;
+                if (!read[j]) continue;
+                const bool changed = !same(pose[j], before[j]);
+                if (!changed && !a.touched[j]) continue;
                 if (!write_bone(layout.buffer, static_cast<std::uint16_t>(j), pose[j])) return fail();
                 a.written[j] = pose[j];
-                a.touched[j] = true;
+                a.touched[j] = changed;
             }
         }
+        if (hiding) return;
         a.bent.fetch_add(1, std::memory_order_relaxed);
         std::unique_lock lock(a.mutex, std::try_to_lock);
         if (lock) {
@@ -234,8 +255,9 @@ void on_outgoing(std::uintptr_t component, std::vector<multiplayer::Transform> &
             // What the drawn pose still holds of the Filmer's is sent as the game had it.
             std::lock_guard lock(a.mutex);
             for (std::size_t j = 0; j < a.touched.size(); ++j)
-                if (a.touched[j] && same(pose[j], a.written[j])) {
-                    pose[j] = a.original[j];
+                if (a.touched[j]) {
+                    auto original = a.original[j];
+                    restore(pose[j], original, a.written[j]);
                     skater[j] = {pose[j].position, pose[j].rotation, pose[j].scale};
                 }
         }

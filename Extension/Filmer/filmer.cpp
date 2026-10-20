@@ -182,7 +182,7 @@ void load_store() {
         r.lunge = flag(o, "lunge", d.rig.lunge);
         s.settings.stick_clicks = flag(o, "stick_clicks", d.stick_clicks);
         s.settings.hold_camera = flag(o, "hold_camera", d.hold_camera);
-        s.settings.left_hand = o.value("camera_hand", std::string("right")) == "left";
+        s.settings.left_hand = false; // the left hand never held it properly: always the right
         s.settings.show_cameras = flag(o, "show_cameras", d.show_cameras);
         s.settings.stand_in = flag(o, "stand_in", d.stand_in);
         s.settings.camera_worn = flag(o, "camera_worn", d.camera_worn);
@@ -987,15 +987,7 @@ std::string set_option(State &s, const std::string &key, const std::string &valu
         changed(s);
         return "The camcorder goes in the " + (v.empty() ? std::string("hand") : v) + " slot while you film.";
     }
-    if (key == "hand") {
-        const auto v = lower(value);
-        if (v == "left") s.settings.left_hand = true;
-        else if (v == "right") s.settings.left_hand = false;
-        else if (v == "swap") s.settings.left_hand = !s.settings.left_hand;
-        else return "error: hand is left, right or swap.";
-        changed(s);
-        return std::string("The camera is in your ") + (s.settings.left_hand ? "left" : "right") + " hand.";
-    }
+
     if (key == "cammodel") {
         const auto v = value == "default" ? std::string() : value;
         if (v.size() > 200 || v.find_first_of(" \t\r\n") != std::string::npos) return "error: cammodel is a blueprint name (or default).";

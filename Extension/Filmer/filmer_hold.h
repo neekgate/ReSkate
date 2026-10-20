@@ -133,8 +133,9 @@ Held hold(std::span<Bone> pose, const Goal &goal) noexcept;
 // it was. False when the legs are not there (the pose is left alone).
 bool crouch(std::span<Bone> pose, float depth) noexcept;
 // Curls the back over toward `toward` (a direction in the world, level) by `angle` radians spread
-// down the spine, and the neck and head on down by `look` more.
-bool hunch(std::span<Bone> pose, const Vec3 &toward, float angle, float look) noexcept;
+// down the spine, and the neck and head on down by `look` more; first turns the upper body and the
+// head round the upright by `twist` radians (most of it in the neck and head), to look that way.
+bool hunch(std::span<Bone> pose, const Vec3 &toward, float angle, float look, float twist = 0.0f) noexcept;
 // Where the camera is in a pose that already holds it (another player's, as they sent it): the palm
 // of the hand, turned by the aim they sent.
 Held held_in(std::span<const Bone> pose, Hand hand, const Quat &aim) noexcept;

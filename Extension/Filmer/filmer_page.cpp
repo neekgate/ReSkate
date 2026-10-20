@@ -168,9 +168,6 @@ void filmer_page(SkateMenu &menu, const Model &, const CallbacksV3 &callbacks) {
 
     begin_card(menu, "filmer-hand", "CAMERA IN HAND", "The VX in your hand, as the others in the session see you filming.");
     filmer_toggle(menu, callbacks, "Hold the camera out", "You film: your arm holds the camera out where the lens is, low by the board with the fisheye. Others in the session see it in your hand (they need this build too). You look through it, so you never see it yourself.", "holdcam", s.hold_camera);
-    field(menu, "Hand", "Which hand holds the camera.");
-    int hand = s.left_hand ? 1 : 0;
-    if (choice(menu, "hand", hand, {"Right", "Left"})) filmer_command(menu, callbacks, hand ? "set hand left" : "set hand right");
     filmer_toggle(menu, callbacks, "I wear the camcorder", "The camcorder cosmetic (hand wear, made with ReSkate Studio from the fingerless glove) goes in your hand while you film and comes off after; your hand turns so its lens points where you aim, and no separate model is placed. Others see it in your outfit.", "worn", s.camera_worn);
     filmer_toggle(menu, callbacks, "Two hands", "Your other hand holds the camera too, from the side and underneath, as a filmer cradles it.", "twohands", s.two_hands);
     filmer_toggle(menu, callbacks, "Crouch while filming", "While the camera is held out your skater bends the knees a little and hunches over it, looking down at it, on the board and off it, feet where they are. The others see it too.", "crouch", s.crouch);
