@@ -2,6 +2,7 @@
 #include "filmer_beacon.h"
 #include "filmer_held.h"
 #include "filmer_outfit.h"
+#include <Windows.h>
 #include "Engine/Game/Build/20260929/no_bail.h"
 #include "Extension/Multiplayer/Remote/native_prop.h"
 #include "Engine/Core/Json/json.h"
