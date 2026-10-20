@@ -8,6 +8,7 @@
 #include <Windows.h>
 #include <algorithm>
 #include <atomic>
+#include <bitset>
 #include <cstring>
 #include <format>
 #include <mutex>
@@ -56,8 +57,12 @@ struct Arm {
     float weight{};
     ULONGLONG last_update{};
     std::atomic<std::uint32_t> bent{}, unreadable{}, own_from_pose{};
-    hold::Vec3 forearm_scale{1, 1, 1}; // the forearm's own size, while it is hidden on your screen (under the mutex)
-    bool forearm_hidden{};
+    // What the game had in each joint written here, and what was written: the game does not set every
+    // joint afresh each frame, so a joint still holding what was written is taken back to the game's
+    // own value before it is worked out again (else the crouch and the hunch pile up frame on frame),
+    // and every joint written is put back when the camera is put down. Under the mutex.
+    std::array<hold::Bone, hold::pose_joints> original{}, written{};
+    std::bitset<hold::pose_joints> touched{};
 };
 Arm &arm() {
     static auto *value = new Arm;
@@ -69,6 +74,32 @@ Arm &arm() {
 // `animated`: called as the game finishes animating the skater: the request is taken and the arm
 // eased; nothing is written, as the game works the arm again after this. Else called as the pose is
 // handed to the renderer: written, so it is what you see (the others are sent it by on_outgoing).
+bool same(const hold::Bone &a, const hold::Bone &b) noexcept {
+    return a.scale == b.scale && a.rotation == b.rotation && a.position == b.position;
+}
+bool write_bone(std::uintptr_t buffer, std::uint16_t joint, const hold::Bone &bone) noexcept {
+    std::array<float, 12> raw{bone.scale[0], bone.scale[1], bone.scale[2], 0.0f,
+                              bone.rotation[0], bone.rotation[1], bone.rotation[2], bone.rotation[3],
+                              bone.position[0], bone.position[1], bone.position[2], 1.0f};
+    std::array<float, 12> was{};
+    if (!seh_read(buffer + joint * bone_stride, was.data(), sizeof(was))) return false;
+    raw[3] = was[3];
+    raw[11] = was[11];
+    return seh_write(buffer + joint * bone_stride, raw.data(), sizeof(raw));
+}
+// Every joint written here put back as the game had it.
+void put_back(Arm &a, std::uintptr_t buffer) noexcept {
+    std::lock_guard lock(a.mutex);
+    if (a.touched.none()) return;
+    for (std::size_t j = 0; j < a.touched.size(); ++j)
+        if (a.touched[j]) (void)write_bone(buffer, static_cast<std::uint16_t>(j), a.original[j]);
+    a.touched.reset();
+}
+
+// `animated`: called as the game finishes animating the skater: the request is taken and the arm
+// eased; nothing is written. Else called as the pose is handed to the renderer: written, so it is what
+// you see (the others are sent it by on_outgoing). Looking through the camera (hide_own), nothing is
+// written: your own screen shows your arm as the game has it, out of the lens's way.
 void bend(std::uintptr_t component, std::uintptr_t holder, bool animated) noexcept {
     auto &a = arm();
     const auto now = GetTickCount64();
@@ -84,31 +115,47 @@ void bend(std::uintptr_t component, std::uintptr_t holder, bool animated) noexce
         a.last_update = now;
         const bool wanted = a.seen.hold && now - a.seen_at < fresh_ms;
         a.weight = std::clamp(a.weight + (wanted ? dt : -dt) / ease_seconds, 0.0f, 1.0f);
+        return;
     }
-    if (a.weight <= 0.0f) return;
+    (void)component;
     try {
-        (void)component;
         const auto base = a.base.load(std::memory_order_acquire);
         const auto layout = multiplayer::read_native_pose_layout(seh_read, base, holder, 512);
         if (!layout.buffer || layout.count != hold::pose_joints) return;
-        // Only the joints from the root to the hand and the feet are read: the rest stay as they are.
+        if (a.weight <= 0.0f || a.seen.hide_own) {
+            put_back(a, layout.buffer);
+            return;
+        }
+        // Only the joints from the root to the hand, the feet and the head are read: the rest stay as they are.
         std::array<hold::Bone, hold::pose_joints> pose{};
         const auto joints = hold::chain(a.seen.hand);
+        std::bitset<hold::pose_joints> read{};
         const auto read_joint = [&](std::uint16_t joint) {
+            if (read[joint]) return true;
             std::array<float, 12> raw{};
             if (!seh_read(layout.buffer + joint * bone_stride, raw.data(), sizeof(raw))) return false;
             pose[joint] = {{raw[0], raw[1], raw[2]}, {raw[4], raw[5], raw[6], raw[7]}, {raw[8], raw[9], raw[10]}};
+            read[joint] = true;
             return true;
         };
+        const auto fail = [&] { a.unreadable.fetch_add(1, std::memory_order_relaxed); };
         for (const auto joint : joints)
-            if (!read_joint(joint)) { a.unreadable.fetch_add(1, std::memory_order_relaxed); return; }
-        if (a.seen.crouch > 0.0f)
-            for (const auto &leg : {std::span<const std::uint16_t>(hold::right_leg), std::span<const std::uint16_t>(hold::left_leg)})
-                for (const auto joint : leg)
-                    if (!read_joint(joint)) { a.unreadable.fetch_add(1, std::memory_order_relaxed); return; }
-        if (a.seen.hunch > 0.0f)
-            for (const auto joint : hold::head_chain)
-                if (!read_joint(joint)) { a.unreadable.fetch_add(1, std::memory_order_relaxed); return; }
+            if (!read_joint(joint)) return fail();
+        for (const auto &leg : {std::span<const std::uint16_t>(hold::right_leg), std::span<const std::uint16_t>(hold::left_leg)})
+            for (const auto joint : leg)
+                if (!read_joint(joint)) return fail();
+        for (const auto joint : hold::head_chain)
+            if (!read_joint(joint)) return fail();
+        {
+            // A joint still holding what was written is taken back to the game's own value.
+            std::lock_guard lock(a.mutex);
+            for (std::size_t j = 0; j < read.size(); ++j) {
+                if (!read[j]) continue;
+                if (a.touched[j] && same(pose[j], a.written[j])) pose[j] = a.original[j];
+                else a.original[j] = pose[j];
+            }
+        }
+        const auto before = pose;
         hold::Goal goal;
         goal.hand = a.seen.hand;
         goal.aim = a.seen.aim;
@@ -118,7 +165,6 @@ void bend(std::uintptr_t component, std::uintptr_t holder, bool animated) noexce
         goal.worn = a.seen.worn;
         goal.crouch = a.seen.crouch;
         goal.hunch = a.seen.hunch;
-        const auto forearm_scale = pose[joints[9]].scale;
         if (a.seen.relative) {
             std::array<hold::Placed, hold::right_chain.size()> placed{};
             if (!hold::compose(pose, joints, placed)) return;
@@ -127,32 +173,13 @@ void bend(std::uintptr_t component, std::uintptr_t holder, bool animated) noexce
         }
         const auto held = hold::hold(pose, goal);
         if (!held.valid) return;
-        if (!animated) {
-            // The arm (and the hand, when the camera is worn); the hips and legs when crouching.
-            const auto write_turn = [&](std::uint16_t joint) {
-                return seh_write(layout.buffer + joint * bone_stride + 0x10, pose[joint].rotation.data(), sizeof(hold::Quat));
-            };
-            for (const std::size_t at : {std::size_t{8}, std::size_t{9}})
-                if (!write_turn(joints[at])) return;
-            if (goal.worn && !write_turn(joints[10])) return;
-            if (goal.crouch > 0.0f) {
-                if (!seh_write(layout.buffer + hold::hips_joint * bone_stride + 0x20, pose[hold::hips_joint].position.data(), sizeof(hold::Vec3))) return;
-                for (const auto joint : {std::uint16_t{8}, std::uint16_t{9}, std::uint16_t{10}, std::uint16_t{341}, std::uint16_t{342}, std::uint16_t{343}})
-                    if (!write_turn(joint)) return;
-            }
-            if (goal.hunch > 0.0f)
-                for (const auto joint : hold::hunched_joints)
-                    if (!write_turn(joint)) return;
-            // Looking through the camera: the forearm (and the hand and camera on it) not drawn on your
-            // screen; the others are sent its own size (on_outgoing).
-            if (a.seen.hide_own) {
-                {
-                    std::lock_guard lock(a.mutex);
-                    a.forearm_scale = forearm_scale;
-                    a.forearm_hidden = true;
-                }
-                const hold::Vec3 tiny{0.001f, 0.001f, 0.001f};
-                if (!seh_write(layout.buffer + joints[9] * bone_stride, tiny.data(), sizeof(tiny))) return;
+        {
+            std::lock_guard lock(a.mutex);
+            for (std::size_t j = 0; j < read.size(); ++j) {
+                if (!read[j] || same(pose[j], before[j])) continue;
+                if (!write_bone(layout.buffer, static_cast<std::uint16_t>(j), pose[j])) return fail();
+                a.written[j] = pose[j];
+                a.touched[j] = true;
             }
         }
         a.bent.fetch_add(1, std::memory_order_relaxed);
@@ -196,10 +223,20 @@ void on_outgoing(std::uintptr_t component, std::vector<multiplayer::Transform> &
         o.last = now;
         const bool wanted = request.hold && now - requested < fresh_ms;
         o.weight = std::clamp(o.weight + (wanted ? dt : -dt) / ease_seconds, 0.0f, 1.0f);
-        if (o.weight <= 0.0f || skater.size() < hold::pose_joints) return;
+        if (skater.size() < hold::pose_joints) return;
         thread_local std::vector<hold::Bone> pose;
         pose.resize(skater.size());
         for (std::size_t i = 0; i < skater.size(); ++i) pose[i] = {skater[i].scale, skater[i].rotation, skater[i].position};
+        {
+            // What the drawn pose still holds of the Filmer's is sent as the game had it.
+            std::lock_guard lock(a.mutex);
+            for (std::size_t j = 0; j < a.touched.size(); ++j)
+                if (a.touched[j] && same(pose[j], a.written[j])) {
+                    pose[j] = a.original[j];
+                    skater[j] = {pose[j].position, pose[j].rotation, pose[j].scale};
+                }
+        }
+        if (o.weight <= 0.0f) return;
         hold::Goal goal;
         goal.hand = request.hand;
         goal.aim = request.aim;
@@ -209,12 +246,7 @@ void on_outgoing(std::uintptr_t component, std::vector<multiplayer::Transform> &
         goal.crouch = request.crouch;
         goal.hunch = request.hunch;
         const auto joints = hold::chain(request.hand);
-        // The forearm hidden on your own screen keeps its own size in what the others see.
-        {
-            std::lock_guard lock(a.mutex);
-            if (a.forearm_hidden && joints[9] < skater.size() && skater[joints[9]].scale[0] < 0.01f)
-                skater[joints[9]].scale = a.forearm_scale;
-        }
+
         if (request.relative) {
             std::array<hold::Placed, hold::right_chain.size()> placed{};
             if (!hold::compose(pose, joints, placed)) return;
@@ -222,14 +254,9 @@ void on_outgoing(std::uintptr_t component, std::vector<multiplayer::Transform> &
             goal.lens = {shoulder[0] + f[0] * request.lens[0], shoulder[1] + request.lens[1], shoulder[2] + f[2] * request.lens[0]};
         }
         if (!hold::hold(pose, goal).valid) return;
-        for (const std::size_t at : {std::size_t{8}, std::size_t{9}, std::size_t{10}})
-            skater[joints[at]].rotation = pose[joints[at]].rotation;
-        if (goal.hunch > 0.0f)
-            for (const auto joint : hold::hunched_joints) skater[joint].rotation = pose[joint].rotation;
-        if (goal.crouch > 0.0f) {
-            skater[hold::hips_joint].position = pose[hold::hips_joint].position;
-            for (const auto joint : {std::uint16_t{8}, std::uint16_t{9}, std::uint16_t{10}, std::uint16_t{341}, std::uint16_t{342}, std::uint16_t{343}})
-                skater[joint].rotation = pose[joint].rotation;
+        for (std::size_t j = 0; j < hold::pose_joints; ++j) {
+            skater[j].rotation = pose[j].rotation;
+            skater[j].position = pose[j].position;
         }
         o.bent.fetch_add(1, std::memory_order_relaxed);
     } catch (...) {}
