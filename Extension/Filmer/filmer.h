@@ -64,6 +64,8 @@ struct Settings {
     bool camera_worn = false; // you wear the camcorder cosmetic (hand wear): the hand turns to aim it, no model is placed
     std::string camera_item;  // that cosmetic, put in your hand while you film (filmer_outfit.h); empty: the default
     std::string camera_slot;  // the outfit slot that carries it ("hand", "eyewear"); empty: hand
+    bool crouch = true;       // you film: your skater crouches, on the board and off it
+    float crouch_depth = 0.25f; // how far the hips go down (metres)
     std::string camera_model; // the camera model's blueprint; empty: reskate/filmer/vx1000
 };
 

@@ -186,6 +186,8 @@ void load_store() {
         s.settings.show_cameras = flag(o, "show_cameras", d.show_cameras);
         s.settings.stand_in = flag(o, "stand_in", d.stand_in);
         s.settings.camera_worn = flag(o, "camera_worn", d.camera_worn);
+        s.settings.crouch = flag(o, "crouch", d.crouch);
+        s.settings.crouch_depth = clamped(o, "crouch_depth", d.crouch_depth, 0.05f, 0.5f);
         s.settings.camera_item = o.value("camera_item", std::string());
         if (s.settings.camera_item.size() > 200) s.settings.camera_item.clear();
         s.settings.camera_slot = o.value("camera_slot", std::string());
@@ -271,6 +273,8 @@ void save_store() {
         json["show_cameras"] = s.settings.show_cameras;
         json["stand_in"] = s.settings.stand_in;
         json["camera_worn"] = s.settings.camera_worn;
+        json["crouch"] = s.settings.crouch;
+        json["crouch_depth"] = s.settings.crouch_depth;
         json["camera_item"] = s.settings.camera_item;
         json["camera_slot"] = s.settings.camera_slot;
         json["camera_model"] = s.settings.camera_model;
@@ -641,6 +645,7 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready, bool camera_ph
         held::Request hold_request;
         hold_request.hand = s.settings.left_hand ? hold::Hand::left : hold::Hand::right;
         hold_request.worn = s.settings.camera_worn;
+        hold_request.crouch = s.settings.crouch ? s.settings.crouch_depth : 0.0f;
         // Where everyone is this frame (the session places them every frame).
         s.others = multiplayer::filmable_players();
         if (ticks >= s.players_at) {
@@ -957,6 +962,8 @@ std::string set_option(State &s, const std::string &key, const std::string &valu
     if (key == "cameras") return toggle(s.settings.show_cameras);
     if (key == "standin") return toggle(s.settings.stand_in);
     if (key == "worn") return toggle(s.settings.camera_worn);
+    if (key == "crouch") return toggle(s.settings.crouch);
+    if (key == "crouchdepth") return real(s.settings.crouch_depth, 0.05f, 0.5f);
     if (key == "camitem") {
         const auto v = value == "default" ? std::string() : value;
         if (v.size() > 200 || v.find_first_of(" \t\r\n") != std::string::npos) return "error: camitem is a cosmetic's name (or default).";

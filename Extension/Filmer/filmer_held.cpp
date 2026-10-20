@@ -89,17 +89,21 @@ void bend(std::uintptr_t component, std::uintptr_t holder, bool animated) noexce
         const auto base = a.base.load(std::memory_order_acquire);
         const auto layout = multiplayer::read_native_pose_layout(seh_read, base, holder, 512);
         if (!layout.buffer || layout.count != hold::pose_joints) return;
-        // Only the joints from the root to the hand are read: the rest stay as they are.
+        // Only the joints from the root to the hand and the feet are read: the rest stay as they are.
         std::array<hold::Bone, hold::pose_joints> pose{};
         const auto joints = hold::chain(a.seen.hand);
-        for (const auto joint : joints) {
+        const auto read_joint = [&](std::uint16_t joint) {
             std::array<float, 12> raw{};
-            if (!seh_read(layout.buffer + joint * bone_stride, raw.data(), sizeof(raw))) {
-                a.unreadable.fetch_add(1, std::memory_order_relaxed);
-                return;
-            }
+            if (!seh_read(layout.buffer + joint * bone_stride, raw.data(), sizeof(raw))) return false;
             pose[joint] = {{raw[0], raw[1], raw[2]}, {raw[4], raw[5], raw[6], raw[7]}, {raw[8], raw[9], raw[10]}};
-        }
+            return true;
+        };
+        for (const auto joint : joints)
+            if (!read_joint(joint)) { a.unreadable.fetch_add(1, std::memory_order_relaxed); return; }
+        if (a.seen.crouch > 0.0f)
+            for (const auto &leg : {std::span<const std::uint16_t>(hold::right_leg), std::span<const std::uint16_t>(hold::left_leg)})
+                for (const auto joint : leg)
+                    if (!read_joint(joint)) { a.unreadable.fetch_add(1, std::memory_order_relaxed); return; }
         hold::Goal goal;
         goal.hand = a.seen.hand;
         goal.aim = a.seen.aim;
@@ -107,6 +111,7 @@ void bend(std::uintptr_t component, std::uintptr_t holder, bool animated) noexce
         goal.weight = a.weight * a.weight * (3.0f - 2.0f * a.weight);
         goal.lens = a.seen.lens;
         goal.worn = a.seen.worn;
+        goal.crouch = a.seen.crouch;
         if (a.seen.relative) {
             std::array<hold::Placed, hold::right_chain.size()> placed{};
             if (!hold::compose(pose, joints, placed)) return;
@@ -115,10 +120,19 @@ void bend(std::uintptr_t component, std::uintptr_t holder, bool animated) noexce
         }
         const auto held = hold::hold(pose, goal);
         if (!held.valid) return;
-        for (const std::size_t at : {std::size_t{8}, std::size_t{9}, std::size_t{10}}) {
-            if (animated || (at == 10 && !goal.worn)) break;
-            const auto joint = joints[at];
-            if (!seh_write(layout.buffer + joint * bone_stride + 0x10, pose[joint].rotation.data(), sizeof(hold::Quat))) return;
+        if (!animated) {
+            // The arm (and the hand, when the camera is worn); the hips and legs when crouching.
+            const auto write_turn = [&](std::uint16_t joint) {
+                return seh_write(layout.buffer + joint * bone_stride + 0x10, pose[joint].rotation.data(), sizeof(hold::Quat));
+            };
+            for (const std::size_t at : {std::size_t{8}, std::size_t{9}})
+                if (!write_turn(joints[at])) return;
+            if (goal.worn && !write_turn(joints[10])) return;
+            if (goal.crouch > 0.0f) {
+                if (!seh_write(layout.buffer + hold::hips_joint * bone_stride + 0x20, pose[hold::hips_joint].position.data(), sizeof(hold::Vec3))) return;
+                for (const auto joint : {std::uint16_t{8}, std::uint16_t{9}, std::uint16_t{10}, std::uint16_t{341}, std::uint16_t{342}, std::uint16_t{343}})
+                    if (!write_turn(joint)) return;
+            }
         }
         a.bent.fetch_add(1, std::memory_order_relaxed);
         std::unique_lock lock(a.mutex, std::try_to_lock);
@@ -171,6 +185,7 @@ void on_outgoing(std::uintptr_t component, std::vector<multiplayer::Transform> &
         goal.weight = o.weight * o.weight * (3.0f - 2.0f * o.weight);
         goal.lens = request.lens;
         goal.worn = request.worn;
+        goal.crouch = request.crouch;
         const auto joints = hold::chain(request.hand);
         if (request.relative) {
             std::array<hold::Placed, hold::right_chain.size()> placed{};
@@ -181,6 +196,11 @@ void on_outgoing(std::uintptr_t component, std::vector<multiplayer::Transform> &
         if (!hold::hold(pose, goal).valid) return;
         for (const std::size_t at : {std::size_t{8}, std::size_t{9}, std::size_t{10}})
             skater[joints[at]].rotation = pose[joints[at]].rotation;
+        if (goal.crouch > 0.0f) {
+            skater[hold::hips_joint].position = pose[hold::hips_joint].position;
+            for (const auto joint : {std::uint16_t{8}, std::uint16_t{9}, std::uint16_t{10}, std::uint16_t{341}, std::uint16_t{342}, std::uint16_t{343}})
+                skater[joint].rotation = pose[joint].rotation;
+        }
         o.bent.fetch_add(1, std::memory_order_relaxed);
     } catch (...) {}
 }

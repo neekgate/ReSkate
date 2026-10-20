@@ -39,6 +39,16 @@ inline constexpr std::array<std::uint16_t, 11> left_chain{0, 1, 7, 42, 43, 44, 4
 inline constexpr std::uint16_t chest_joint = 45;
 inline constexpr std::size_t pose_joints = 395;
 inline constexpr std::span<const std::uint16_t> chain(Hand hand) noexcept { return hand == Hand::left ? left_chain : right_chain; }
+// The legs, from the root: the last three are thigh, shin and foot. The hips (7) carry them and the spine.
+inline constexpr std::array<std::uint16_t, 6> right_leg{0, 1, 7, 8, 9, 10};
+inline constexpr std::array<std::uint16_t, 6> left_leg{0, 1, 7, 341, 342, 343};
+inline constexpr std::uint16_t hips_joint = 7;
+// Every joint hold() may change, for whoever copies its result out (the hips move; the rest turn).
+inline constexpr std::array<std::uint16_t, 9> moved_joints(Hand hand) noexcept {
+    return {hips_joint, 8, 9, 10, 341, 342, 343, hand == Hand::left ? std::uint16_t{276} : std::uint16_t{47},
+            hand == Hand::left ? std::uint16_t{277} : std::uint16_t{48}};
+}
+inline constexpr std::uint16_t hand_joint(Hand hand) noexcept { return hand == Hand::left ? 278 : 49; }
 
 // The camera as the model has it: from the handle (the origin) to the front of the lens, and from the
 // wrist joint to the middle of the palm along the hand.
@@ -83,7 +93,15 @@ struct Goal {
     float weight = 1.0f;  // 0: the arm as the animation has it, 1: holding the camera out
     // The camcorder is worn on the hand (Grip): the hand turns as well, so its lens points along `aim`.
     bool worn{};
+    // How far the hips go down (metres, before `weight`), the feet kept where they are: a filmer's crouch.
+    float crouch{};
+    // The arm goes round the body: a hand target inside the torso, or an arm that would pass through
+    // it, is pushed out to its surface.
+    bool around_body = true;
 };
+// The body as a column the arm keeps out of: about the hips' and chest's line, this far out at most
+// (and inside the shoulders).
+inline constexpr float body_radius = 0.24f;
 struct Held {
     bool valid{};
     Placed palm; // where the camera's handle is, turned the way it points
@@ -94,6 +112,9 @@ struct Held {
 // lens as near the goal as the arm reaches, the elbow out and down, and says where the camera is.
 // Leaves the pose alone and returns invalid when the joints are not there.
 Held hold(std::span<Bone> pose, const Goal &goal) noexcept;
+// Lowers the hips by `depth` (metres) and bends the knees so each foot stays where it was, turned as
+// it was. False when the legs are not there (the pose is left alone).
+bool crouch(std::span<Bone> pose, float depth) noexcept;
 // Where the camera is in a pose that already holds it (another player's, as they sent it): the palm
 // of the hand, turned by the aim they sent.
 Held held_in(std::span<const Bone> pose, Hand hand, const Quat &aim) noexcept;

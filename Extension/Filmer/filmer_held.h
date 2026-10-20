@@ -30,6 +30,7 @@ struct Request {
     hold::Quat aim{0, 0, 0, 1};
     bool show_own{};         // the camera model on your own skater too
     bool worn{};             // the camcorder is worn as hand wear: the hand turns too, and no model is placed
+    float crouch{};          // how far the hips go down while the camera is held (metres; 0: standing)
 };
 // Game thread, every Filmer tick.
 void set_local(const Request &request) noexcept;

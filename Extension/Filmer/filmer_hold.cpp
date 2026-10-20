@@ -31,6 +31,8 @@ Held place_camera(const Vec3 &elbow, const Vec3 &wrist, const Quat &aim, float s
     held.valid = finite(held.palm.position) && finite(held.lens);
     return held;
 }
+// The world turn `world` as the local rotation of a joint whose parent is placed at `parent`.
+Quat local_of(const Placed &parent, const Quat &world) { return normalized(multiply(conjugate(parent.rotation), world)); }
 } // namespace
 
 Quat multiply(const Quat &a, const Quat &b) noexcept {
@@ -122,10 +124,58 @@ bool compose(std::span<const Bone> pose, std::span<const std::uint16_t> joints, 
     return true;
 }
 
+bool crouch(std::span<Bone> pose, float depth) noexcept {
+    if (!(depth > 0.001f) || !std::isfinite(depth)) return true;
+    depth = std::min(depth, 0.6f);
+    struct Leg {
+        std::span<const std::uint16_t> path;
+        std::array<Placed, 6> before{};
+    };
+    std::array<Leg, 2> legs{{{right_leg}, {left_leg}}};
+    for (auto &leg : legs)
+        if (!compose(pose, leg.path, leg.before)) return false;
+    // The hips down, in their parent's frame (the skater's placement).
+    const auto &parent = legs[0].before[1];
+    auto &hips = pose[hips_joint];
+    const Vec3 drop = rotate(conjugate(parent.rotation), Vec3{0.0f, -depth, 0.0f});
+    const float s = std::max(parent.scale, 0.1f);
+    hips.position = add(hips.position, scaled(drop, 1.0f / s));
+    for (auto &leg : legs) {
+        std::array<Placed, 6> now{};
+        if (!compose(pose, leg.path, now)) return false;
+        const Vec3 hip = now[3].position, knee = leg.before[4].position, ankle = leg.before[5].position;
+        const float a = length(sub(leg.before[4].position, leg.before[3].position)), b = length(sub(ankle, knee));
+        if (!(a > 0.1f && b > 0.1f)) continue;
+        const float d = std::clamp(length(sub(ankle, hip)), std::abs(a - b) + 0.01f, (a + b) * 0.999f);
+        const Vec3 along = unit(sub(ankle, hip), {0, -1, 0});
+        // The knee bends the way it already does (forward of the hip-to-ankle line).
+        const Vec3 old_mid = add(leg.before[3].position, scaled(unit(sub(ankle, leg.before[3].position), along),
+                                                                 dot(sub(knee, leg.before[3].position), unit(sub(ankle, leg.before[3].position), along))));
+        Vec3 pole = sub(knee, old_mid);
+        pole = sub(pole, scaled(along, dot(pole, along)));
+        pole = unit(pole, Vec3{0.0f, 0.0f, 1.0f});
+        const float cos_a = std::clamp((a * a + d * d - b * b) / (2.0f * a * d), -1.0f, 1.0f);
+        const float sin_a = std::sqrt(std::max(0.0f, 1.0f - cos_a * cos_a));
+        const Vec3 new_knee = add(hip, add(scaled(along, a * cos_a), scaled(pole, a * sin_a)));
+        // Thigh, then shin, turned onto the new knee and the ankle; the foot keeps its turn in the world.
+        const Quat thigh_world = normalized(multiply(arc(sub(now[4].position, hip), sub(new_knee, hip)), now[3].rotation));
+        auto &thigh = pose[leg.path[3]];
+        thigh.rotation = local_of(now[2], thigh_world);
+        if (!compose(pose, leg.path, now)) return false;
+        const Quat shin_world = normalized(multiply(arc(sub(now[5].position, now[4].position), sub(ankle, now[4].position)), now[4].rotation));
+        pose[leg.path[4]].rotation = local_of(now[3], shin_world);
+        if (!compose(pose, leg.path, now)) return false;
+        pose[leg.path[5]].rotation = local_of(now[4], leg.before[5].rotation);
+    }
+    return true;
+}
+
 Held hold(std::span<Bone> pose, const Goal &goal) noexcept {
     const auto joints = chain(goal.hand);
     std::array<Placed, right_chain.size()> w{};
-    if (!compose(pose, joints, w) || !finite(goal.lens) || !finite(goal.aim)) return {};
+    if (!finite(goal.lens) || !finite(goal.aim)) return {};
+    if (goal.crouch > 0.0f && !crouch(pose, goal.crouch * std::clamp(goal.weight, 0.0f, 1.0f))) return {};
+    if (!compose(pose, joints, w)) return {};
     const Quat aim = normalized(goal.aim);
     const Vec3 s = w[upper].position, e = w[fore].position, h = w[hand_at].position;
     const float a = length(sub(e, s)), b = length(sub(h, e));
@@ -137,8 +187,42 @@ Held hold(std::span<Bone> pose, const Goal &goal) noexcept {
     const auto &worn = grip(goal.hand);
     const Quat hand_world = normalized(multiply(aim, conjugate(worn.camera)));
     const Vec3 grip_offset = scaled(rotate(hand_world, worn.from_wrist), scale);
-    const Vec3 palm_goal = goal.worn ? sub(sub(goal.lens, rotate(aim, lens_from_handle)), grip_offset)
-                                     : sub(goal.lens, rotate(aim, lens_from_handle));
+    Vec3 palm_goal = goal.worn ? sub(sub(goal.lens, rotate(aim, lens_from_handle)), grip_offset)
+                               : sub(goal.lens, rotate(aim, lens_from_handle));
+    if (goal.around_body) {
+        // The body as a column through the hips and chest: the hand's target, and the straight reach to
+        // it from the shoulder, kept out of it (pushed out along the way they came closest).
+        const Vec3 low = w[2].position, high = w[chest].position;
+        const float bottom = low[1] - 0.35f, top = high[1] + 0.15f;
+        const auto axis_at = [&](float y) {
+            const float t = std::clamp((y - low[1]) / std::max(high[1] - low[1], 0.05f), 0.0f, 1.0f);
+            return Vec3{low[0] + (high[0] - low[0]) * t, y, low[2] + (high[2] - low[2]) * t};
+        };
+        // As wide as the body is: inside the shoulders (the arm hangs from the column's edge).
+        Vec3 shoulder_out = sub(s, axis_at(s[1]));
+        shoulder_out[1] = 0.0f;
+        const float radius = std::min(body_radius, length(shoulder_out) * 0.85f);
+        for (int round = 0; round < 3; ++round) {
+            float nearest = radius;
+            Vec3 out_dir{}, at{};
+            for (int k = 3; k <= 8; ++k) {
+                const Vec3 p = add(s, scaled(sub(palm_goal, s), k / 8.0f));
+                if (p[1] < bottom || p[1] > top) continue;
+                Vec3 radial = sub(p, axis_at(p[1]));
+                radial[1] = 0.0f;
+                const float r = length(radial);
+                if (r < nearest) {
+                    nearest = r;
+                    at = p;
+                    Vec3 side_out = sub(s, w[chest].position);
+                    side_out[1] = 0.0f;
+                    out_dir = unit(radial, unit(side_out, {goal.hand == Hand::left ? -1.0f : 1.0f, 0, 0}));
+                }
+            }
+            if (nearest >= radius) break;
+            palm_goal = add(palm_goal, scaled(out_dir, radius - nearest + 0.01f));
+        }
+    }
     const float palm = goal.worn ? 0.0f : palm_from_wrist * scale, b_palm = b + palm;
     const float reach = (a + b_palm) * 0.995f;
     const float wanted = length(sub(palm_goal, s));

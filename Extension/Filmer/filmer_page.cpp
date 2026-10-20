@@ -172,6 +172,8 @@ void filmer_page(SkateMenu &menu, const Model &, const CallbacksV3 &callbacks) {
     int hand = s.left_hand ? 1 : 0;
     if (choice(menu, "hand", hand, {"Right", "Left"})) filmer_command(menu, callbacks, hand ? "set hand left" : "set hand right");
     filmer_toggle(menu, callbacks, "I wear the camcorder", "The camcorder cosmetic (hand wear, made with ReSkate Studio from the fingerless glove) goes in your hand while you film and comes off after; your hand turns so its lens points where you aim, and no separate model is placed. Others see it in your outfit.", "worn", s.camera_worn);
+    filmer_toggle(menu, callbacks, "Crouch while filming", "Your skater crouches while the camera is held out, on the board and off it, feet where they are. The others see it too.", "crouch", s.crouch);
+    filmer_slider(menu, callbacks, "Crouch depth", "How far your hips go down.", "crouchdepth", s.crouch_depth, 0.05f, 0.5f, "%.2f m");
     filmer_toggle(menu, callbacks, "Show other filmers' cameras", "A camera in the hand of anyone in the session who is filming.", "cameras", s.show_cameras);
     filmer_toggle(menu, callbacks, "Stand-in when there is no model", "The camera's own model has to be built with ReSkate Studio (assets/models/vx1000). Until it is, show a traffic cone in the hand instead of nothing.", "standin", s.stand_in);
     if (primary_button(menu, v.holdtest ? "STOP THE HOLD TEST" : "HOLD TEST: SEE YOUR SKATER HOLD IT"))
