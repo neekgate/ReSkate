@@ -56,12 +56,6 @@ struct Arm {
     float weight{};
     ULONGLONG last_update{};
     std::atomic<std::uint32_t> bent{}, unreadable{}, own_from_pose{};
-    // The joints as last bent, for the pose sent to the others (under the mutex).
-    std::array<std::uint16_t, 3> sent_joints{};
-    std::array<hold::Quat, 3> sent_rotations{};
-    std::size_t sent_count{};
-    std::uintptr_t sent_component{};
-    ULONGLONG sent_at{};
 };
 Arm &arm() {
     static auto *value = new Arm;
@@ -70,11 +64,9 @@ Arm &arm() {
 
 // The skater's pose as it is handed to the renderer (the game has finished with it by then: bent any
 // earlier, its own arm work puts the arm back), for your skater's.
-// `animated`: called as the game finishes animating the skater, every update whether or not the
-// skater is drawn (the camera filming someone else looks away from it): the request is taken, the
-// arm eased, and the bent arm kept for the pose the others are sent; nothing is written, as the game
-// works the arm again after this. Else called as the pose is handed to the renderer: written, so it
-// is what is drawn.
+// `animated`: called as the game finishes animating the skater: the request is taken and the arm
+// eased; nothing is written, as the game works the arm again after this. Else called as the pose is
+// handed to the renderer: written, so it is what you see (the others are sent it by on_outgoing).
 void bend(std::uintptr_t component, std::uintptr_t holder, bool animated) noexcept {
     auto &a = arm();
     const auto now = GetTickCount64();
@@ -133,26 +125,64 @@ void bend(std::uintptr_t component, std::uintptr_t holder, bool animated) noexce
         if (lock) {
             a.palm = held;
             a.palm_at = now;
-            a.sent_count = goal.worn ? 3 : 2;
-            for (std::size_t i = 0; i < a.sent_count; ++i) {
-                a.sent_joints[i] = joints[8 + i];
-                a.sent_rotations[i] = pose[joints[8 + i]].rotation;
-            }
-            a.sent_component = component;
-            a.sent_at = now;
         }
     } catch (...) {
         a.unreadable.fetch_add(1, std::memory_order_relaxed);
     }
 }
 
-// The pose capture_local reads to send: the arm as it was last drawn holding the camera.
+// The pose capture_local reads to send (client thread): the arm bent in it here, from the request
+// itself, so the others see the camera held out whether or not the game drew or animated your skater
+// in between (a camera filming someone else looks away from you).
+struct Outgoing {
+    float weight{};
+    ULONGLONG last{};
+    std::atomic<std::uint32_t> sent{}, bent{};
+};
+Outgoing &outgoing() {
+    static auto *value = new Outgoing;
+    return *value;
+}
 void on_outgoing(std::uintptr_t component, std::vector<multiplayer::Transform> &skater) noexcept {
     auto &a = arm();
-    std::unique_lock lock(a.mutex, std::try_to_lock);
-    if (!lock || component != a.sent_component || GetTickCount64() - a.sent_at > fresh_ms) return;
-    for (std::size_t i = 0; i < a.sent_count; ++i)
-        if (a.sent_joints[i] < skater.size()) skater[a.sent_joints[i]].rotation = a.sent_rotations[i];
+    auto &o = outgoing();
+    try {
+        if (!component || component != a.component.load(std::memory_order_acquire)) return;
+        o.sent.fetch_add(1, std::memory_order_relaxed);
+        Request request;
+        ULONGLONG requested{};
+        {
+            std::lock_guard lock(a.mutex);
+            request = a.request;
+            requested = a.requested;
+        }
+        const auto now = GetTickCount64();
+        const float dt = o.last ? std::clamp(static_cast<float>(now - o.last) / 1000.0f, 0.0f, 0.2f) : 0.0f;
+        o.last = now;
+        const bool wanted = request.hold && now - requested < fresh_ms;
+        o.weight = std::clamp(o.weight + (wanted ? dt : -dt) / ease_seconds, 0.0f, 1.0f);
+        if (o.weight <= 0.0f || skater.size() < hold::pose_joints) return;
+        thread_local std::vector<hold::Bone> pose;
+        pose.resize(skater.size());
+        for (std::size_t i = 0; i < skater.size(); ++i) pose[i] = {skater[i].scale, skater[i].rotation, skater[i].position};
+        hold::Goal goal;
+        goal.hand = request.hand;
+        goal.aim = request.aim;
+        goal.weight = o.weight * o.weight * (3.0f - 2.0f * o.weight);
+        goal.lens = request.lens;
+        goal.worn = request.worn;
+        const auto joints = hold::chain(request.hand);
+        if (request.relative) {
+            std::array<hold::Placed, hold::right_chain.size()> placed{};
+            if (!hold::compose(pose, joints, placed)) return;
+            const auto &shoulder = placed[8].position, &f = request.facing;
+            goal.lens = {shoulder[0] + f[0] * request.lens[0], shoulder[1] + request.lens[1], shoulder[2] + f[2] * request.lens[0]};
+        }
+        if (!hold::hold(pose, goal).valid) return;
+        for (const std::size_t at : {std::size_t{8}, std::size_t{9}, std::size_t{10}})
+            skater[joints[at]].rotation = pose[joints[at]].rotation;
+        o.bent.fetch_add(1, std::memory_order_relaxed);
+    } catch (...) {}
 }
 
 void on_render(std::uintptr_t animation_interface) noexcept {
@@ -236,6 +266,8 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool in_level, const Optio
             return;
         }
         a.base.store(base, std::memory_order_release);
+        // The pose the others are sent always goes through here (cheap while the camera is not held).
+        multiplayer::set_local_pose_filter(&on_outgoing);
         a.component.store(multiplayer::local_skater_component(base, client), std::memory_order_release);
         Request request;
         {
@@ -249,7 +281,6 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool in_level, const Optio
             if (multiplayer::install_entity_hooks(base, detail)) {
                 multiplayer::set_render_pose_listener(&on_render, 1);
                 multiplayer::set_animation_evaluated_listener(&on_animation, 1);
-                multiplayer::set_local_pose_filter(&on_outgoing);
                 a.hooked.store(true, std::memory_order_release);
                 logging::log(logging::Level::info, logging::Channel::skater, "Filmer: your arm holds the camera out while you film.");
             } else {
@@ -307,6 +338,7 @@ std::string status() {
                                              : "arm not needed yet";
     if (const auto unreadable = a.unreadable.load(std::memory_order_relaxed)) arm_text += std::format(" ({} unreadable poses)", unreadable);
     if (a.own_from_pose.load(std::memory_order_relaxed)) arm_text += " (your camera placed from your pose: the arm is not bending)";
+    arm_text += std::format(", sent bent {} of {}", outgoing().bent.load(std::memory_order_relaxed), outgoing().sent.load(std::memory_order_relaxed));
     return "Held camera: " + arm_text + "; " + multiplayer::held_camera_models_status();
 }
 } // namespace dingosdk::filmer::held
