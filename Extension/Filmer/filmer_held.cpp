@@ -155,7 +155,6 @@ void bend(std::uintptr_t component, std::uintptr_t holder, bool animated) noexce
                 if (!seh_write(layout.buffer + joints[9] * bone_stride, tiny.data(), sizeof(tiny))) return;
             }
         }
-        }
         a.bent.fetch_add(1, std::memory_order_relaxed);
         std::unique_lock lock(a.mutex, std::try_to_lock);
         if (lock) {
