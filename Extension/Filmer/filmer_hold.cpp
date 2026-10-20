@@ -184,11 +184,23 @@ Held hold(std::span<Bone> pose, const Goal &goal) noexcept {
     // Worn: the hand turned so the camera points along the aim, and the wrist where that puts the lens
     // at the goal. Held: the palm lies on the forearm's line, past the wrist, so the forearm and hand are
     // one straight reach of b + palm to where the camera's handle has to be.
+    // Where the lens is shown held: the camera's own eye, but out in front of the shoulder along the aim
+    // and no higher than the shoulder, as a filmer holds it (an eye up by the head or tucked against the
+    // body would fold the arm up into the face).
+    Vec3 lens = goal.lens;
+    {
+        Vec3 ahead = rotate(aim, {0.0f, 0.0f, -1.0f});
+        ahead[1] = 0.0f;
+        ahead = unit(ahead, unit(Vec3{lens[0] - s[0], 0.0f, lens[2] - s[2]}, {0, 0, 1}));
+        const float out = dot(sub(lens, s), ahead);
+        if (out < min_reach_out) lens = add(lens, scaled(ahead, min_reach_out - out));
+        lens[1] = std::min(lens[1], s[1] - below_shoulder);
+    }
     const auto &worn = grip(goal.hand);
     const Quat hand_world = normalized(multiply(aim, conjugate(worn.camera)));
     const Vec3 grip_offset = scaled(rotate(hand_world, worn.from_wrist), scale);
-    Vec3 palm_goal = goal.worn ? sub(sub(goal.lens, rotate(aim, lens_from_handle)), grip_offset)
-                               : sub(goal.lens, rotate(aim, lens_from_handle));
+    Vec3 palm_goal = goal.worn ? sub(sub(lens, rotate(aim, lens_from_handle)), grip_offset)
+                               : sub(lens, rotate(aim, lens_from_handle));
     if (goal.around_body) {
         // The body as a column through the hips and chest: the hand's target, and the straight reach to
         // it from the shoulder, kept out of it (pushed out along the way they came closest).

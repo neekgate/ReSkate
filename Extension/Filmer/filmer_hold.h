@@ -102,6 +102,9 @@ struct Goal {
 // The body as a column the arm keeps out of: about the hips' and chest's line, this far out at most
 // (and inside the shoulders).
 inline constexpr float body_radius = 0.24f;
+// The lens is shown held at least this far out in front of the shoulder (along the aim), and at least
+// this far below it.
+inline constexpr float min_reach_out = 0.5f, below_shoulder = 0.05f;
 struct Held {
     bool valid{};
     Placed palm; // where the camera's handle is, turned the way it points
