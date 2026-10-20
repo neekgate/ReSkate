@@ -124,9 +124,9 @@ bool compose(std::span<const Bone> pose, std::span<const std::uint16_t> joints, 
     return true;
 }
 
-bool crouch(std::span<Bone> pose, float depth) noexcept {
-    if (!(depth > 0.001f) || !std::isfinite(depth)) return true;
-    depth = std::min(depth, 0.6f);
+bool crouch(std::span<Bone> pose, float depth, float twist) noexcept {
+    if (!((depth > 0.001f || std::abs(twist) > 0.001f) && std::isfinite(depth) && std::isfinite(twist))) return true;
+    depth = std::clamp(depth, 0.0f, 0.6f);
     struct Leg {
         std::span<const std::uint16_t> path;
         std::array<Placed, 6> before{};
@@ -140,6 +140,13 @@ bool crouch(std::span<Bone> pose, float depth) noexcept {
     const Vec3 drop = rotate(conjugate(parent.rotation), Vec3{0.0f, -depth, 0.0f});
     const float s = std::max(parent.scale, 0.1f);
     hips.position = add(hips.position, scaled(drop, 1.0f / s));
+    // Turned round the upright toward the camera, the feet staying where they are.
+    if (std::abs(twist) > 0.001f) {
+        std::array<Placed, 6> now{};
+        if (!compose(pose, legs[0].path, now)) return false;
+        const Quat about_up{0.0f, std::sin(twist / 2), 0.0f, std::cos(twist / 2)};
+        hips.rotation = local_of(parent, normalized(multiply(about_up, now[2].rotation)));
+    }
     for (auto &leg : legs) {
         std::array<Placed, 6> now{};
         if (!compose(pose, leg.path, now)) return false;
@@ -179,7 +186,7 @@ bool hunch(std::span<Bone> pose, const Vec3 &toward, float angle, float look, fl
     const Vec3 axis = unit(cross(Vec3{0.0f, 1.0f, 0.0f}, level), {1, 0, 0});
     // Spine, Spine1, Spine2, Spine3 share the back's angle; Neck, Neck1 and Head the look.
     constexpr std::array<float, 7> share{0.15f, 0.25f, 0.3f, 0.3f, 0.35f, 0.25f, 0.4f};
-    constexpr std::array<float, 7> twist_share{0.05f, 0.05f, 0.1f, 0.1f, 0.2f, 0.2f, 0.3f};
+    constexpr std::array<float, 7> twist_share{0.1f, 0.1f, 0.15f, 0.2f, 0.15f, 0.1f, 0.2f};
     for (std::size_t i = 0; i < hunched_joints.size(); ++i) {
         std::array<Placed, head_chain.size()> w{};
         if (!compose(pose, head_chain, w)) return false;
@@ -221,28 +228,37 @@ Held hold_one(std::span<Bone> pose, const Goal &goal) noexcept {
     std::array<Placed, right_chain.size()> w{};
     if (!finite(goal.lens) || !finite(goal.aim)) return {};
     const float body_weight = std::clamp(goal.weight, 0.0f, 1.0f);
-    if (goal.crouch > 0.0f && !crouch(pose, goal.crouch * body_weight)) return {};
-    if (goal.hunch > 0.0f) {
-        // Over the camera in the hand, the way the body faces: toward the aim, but no more than 60 degrees
-        // off the body's own facing (never folded backwards), and further the lower it points.
+    // Which way the camera points against the way the body faces (round the upright), for the body
+    // turning to it: the hips a quarter, the back and shoulders and head the rest.
+    float full = 0.0f, pitch = 0.0f;
+    Vec3 facing{0, 0, 1}, level{0, 0, 1};
+    if (goal.hunch > 0.0f || goal.crouch > 0.0f) {
         std::array<Placed, 6> right_thigh{}, left_thigh{};
         if (!compose(pose, right_leg, right_thigh) || !compose(pose, left_leg, left_thigh)) return {};
         Vec3 across = sub(left_thigh[3].position, right_thigh[3].position);
         across[1] = 0.0f;
-        const Vec3 facing = unit(cross(across, {0.0f, 1.0f, 0.0f}), {0, 0, 1});
+        facing = unit(cross(across, {0.0f, 1.0f, 0.0f}), {0, 0, 1});
         const Vec3 pointing = rotate(normalized(goal.aim), {0.0f, 0.0f, -1.0f});
-        const Vec3 level = unit(Vec3{pointing[0], 0.0f, pointing[2]}, facing);
-        const float full = std::atan2(dot(cross(facing, level), {0.0f, 1.0f, 0.0f}), dot(facing, level));
+        level = unit(Vec3{pointing[0], 0.0f, pointing[2]}, facing);
+        full = std::clamp(std::atan2(dot(cross(facing, level), {0.0f, 1.0f, 0.0f}), dot(facing, level)), -1.6f, 1.6f);
+        pitch = std::asin(std::clamp(pointing[1], -1.0f, 1.0f)); // down is negative
+    }
+    constexpr float hips_share = 0.25f;
+    const bool turning = goal.hunch > 0.0f;
+    if ((goal.crouch > 0.0f || turning) &&
+        !crouch(pose, goal.crouch * body_weight, turning ? full * hips_share * body_weight : 0.0f)) return {};
+    if (turning) {
+        // Over the camera in the hand, the way the body faces: toward the aim, but no more than 60 degrees
+        // off the body's own facing (never folded backwards), and further the lower it points.
         const float off = std::clamp(full, -1.05f, 1.05f);
         const Quat turn{0.0f, std::sin(off / 2), 0.0f, std::cos(off / 2)};
         const Vec3 toward = rotate(turn, facing);
-        const float pitch = std::asin(std::clamp(pointing[1], -1.0f, 1.0f)); // down is negative
         // The back no more than about 57 degrees over, the head down at most about 34 more: it stays a
         // filmer looking down at the camera, never folded past it.
         const float amount = std::min(goal.hunch * std::clamp(1.0f - pitch * 1.2f, 0.3f, 1.6f), 1.0f) * body_weight;
         const float look = std::min(amount * 0.8f, 0.6f * body_weight);
-        // The head turns to look at the camera off to the side (the back a little with it).
-        if (!hunch(pose, toward, amount, look, std::clamp(full, -1.6f, 1.6f) * body_weight)) return {};
+        // The shoulders and head turn the rest of the way to the camera off to the side.
+        if (!hunch(pose, toward, amount, look, full * (1.0f - hips_share) * body_weight)) return {};
     }
     if (!compose(pose, joints, w)) return {};
     const Quat aim = normalized(goal.aim);
@@ -264,6 +280,9 @@ Held hold_one(std::span<Bone> pose, const Goal &goal) noexcept {
         const float out = dot(sub(lens, s), ahead);
         if (!goal.free_reach) {
             if (out < min_reach_out) lens = add(lens, scaled(ahead, min_reach_out - out));
+            // Aimed up, it comes up toward the chest (all the way at about 40 degrees up).
+            const float up = std::clamp(rotate(aim, {0.0f, 0.0f, -1.0f})[1] / 0.64f, 0.0f, 1.0f);
+            lens[1] = std::max(lens[1], lens[1] + (s[1] - lift_below_shoulder - lens[1]) * up);
             lens[1] = std::min(lens[1], s[1] - below_shoulder);
         }
     }

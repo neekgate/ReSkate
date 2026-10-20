@@ -119,6 +119,8 @@ inline constexpr float body_radius = 0.24f;
 // The lens is shown held at least this far out in front of the shoulder (along the aim), and at least
 // this far below it.
 inline constexpr float min_reach_out = 0.4f, below_shoulder = 0.05f;
+// Aimed up, the lens comes up to this far below the shoulder.
+inline constexpr float lift_below_shoulder = 0.15f;
 struct Held {
     bool valid{};
     Placed palm; // where the camera's handle is, turned the way it points
@@ -131,7 +133,8 @@ struct Held {
 Held hold(std::span<Bone> pose, const Goal &goal) noexcept;
 // Lowers the hips by `depth` (metres) and bends the knees so each foot stays where it was, turned as
 // it was. False when the legs are not there (the pose is left alone).
-bool crouch(std::span<Bone> pose, float depth) noexcept;
+// `twist`: the hips turned round the upright too (radians), the feet still kept.
+bool crouch(std::span<Bone> pose, float depth, float twist = 0.0f) noexcept;
 // Curls the back over toward `toward` (a direction in the world, level) by `angle` radians spread
 // down the spine, and the neck and head on down by `look` more; first turns the upper body and the
 // head round the upright by `twist` radians (most of it in the neck and head), to look that way.
