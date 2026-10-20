@@ -65,7 +65,8 @@ struct Settings {
     std::string camera_item;  // that cosmetic, put in your hand while you film (filmer_outfit.h); empty: the default
     std::string camera_slot;  // the outfit slot that carries it ("hand", "eyewear"); empty: hand
     bool crouch = true;       // you film: your skater crouches, on the board and off it
-    float crouch_depth = 0.25f; // how far the hips go down (metres)
+    float crouch_depth = 0.12f; // how far the hips go down (metres)
+    float hunch_degrees = 30.0f; // how far the back curls over toward the camera, the head looking down at it
     std::string camera_model; // the camera model's blueprint; empty: reskate/filmer/vx1000
 };
 

@@ -56,6 +56,8 @@ struct Arm {
     float weight{};
     ULONGLONG last_update{};
     std::atomic<std::uint32_t> bent{}, unreadable{}, own_from_pose{};
+    hold::Vec3 forearm_scale{1, 1, 1}; // the forearm's own size, while it is hidden on your screen (under the mutex)
+    bool forearm_hidden{};
 };
 Arm &arm() {
     static auto *value = new Arm;
@@ -104,6 +106,9 @@ void bend(std::uintptr_t component, std::uintptr_t holder, bool animated) noexce
             for (const auto &leg : {std::span<const std::uint16_t>(hold::right_leg), std::span<const std::uint16_t>(hold::left_leg)})
                 for (const auto joint : leg)
                     if (!read_joint(joint)) { a.unreadable.fetch_add(1, std::memory_order_relaxed); return; }
+        if (a.seen.hunch > 0.0f)
+            for (const auto joint : hold::head_chain)
+                if (!read_joint(joint)) { a.unreadable.fetch_add(1, std::memory_order_relaxed); return; }
         hold::Goal goal;
         goal.hand = a.seen.hand;
         goal.aim = a.seen.aim;
@@ -112,6 +117,8 @@ void bend(std::uintptr_t component, std::uintptr_t holder, bool animated) noexce
         goal.lens = a.seen.lens;
         goal.worn = a.seen.worn;
         goal.crouch = a.seen.crouch;
+        goal.hunch = a.seen.hunch;
+        const auto forearm_scale = pose[joints[9]].scale;
         if (a.seen.relative) {
             std::array<hold::Placed, hold::right_chain.size()> placed{};
             if (!hold::compose(pose, joints, placed)) return;
@@ -133,6 +140,21 @@ void bend(std::uintptr_t component, std::uintptr_t holder, bool animated) noexce
                 for (const auto joint : {std::uint16_t{8}, std::uint16_t{9}, std::uint16_t{10}, std::uint16_t{341}, std::uint16_t{342}, std::uint16_t{343}})
                     if (!write_turn(joint)) return;
             }
+            if (goal.hunch > 0.0f)
+                for (const auto joint : hold::hunched_joints)
+                    if (!write_turn(joint)) return;
+            // Looking through the camera: the forearm (and the hand and camera on it) not drawn on your
+            // screen; the others are sent its own size (on_outgoing).
+            if (a.seen.hide_own) {
+                {
+                    std::lock_guard lock(a.mutex);
+                    a.forearm_scale = forearm_scale;
+                    a.forearm_hidden = true;
+                }
+                const hold::Vec3 tiny{0.001f, 0.001f, 0.001f};
+                if (!seh_write(layout.buffer + joints[9] * bone_stride, tiny.data(), sizeof(tiny))) return;
+            }
+        }
         }
         a.bent.fetch_add(1, std::memory_order_relaxed);
         std::unique_lock lock(a.mutex, std::try_to_lock);
@@ -186,7 +208,14 @@ void on_outgoing(std::uintptr_t component, std::vector<multiplayer::Transform> &
         goal.lens = request.lens;
         goal.worn = request.worn;
         goal.crouch = request.crouch;
+        goal.hunch = request.hunch;
         const auto joints = hold::chain(request.hand);
+        // The forearm hidden on your own screen keeps its own size in what the others see.
+        {
+            std::lock_guard lock(a.mutex);
+            if (a.forearm_hidden && joints[9] < skater.size() && skater[joints[9]].scale[0] < 0.01f)
+                skater[joints[9]].scale = a.forearm_scale;
+        }
         if (request.relative) {
             std::array<hold::Placed, hold::right_chain.size()> placed{};
             if (!hold::compose(pose, joints, placed)) return;
@@ -196,6 +225,8 @@ void on_outgoing(std::uintptr_t component, std::vector<multiplayer::Transform> &
         if (!hold::hold(pose, goal).valid) return;
         for (const std::size_t at : {std::size_t{8}, std::size_t{9}, std::size_t{10}})
             skater[joints[at]].rotation = pose[joints[at]].rotation;
+        if (goal.hunch > 0.0f)
+            for (const auto joint : hold::hunched_joints) skater[joint].rotation = pose[joint].rotation;
         if (goal.crouch > 0.0f) {
             skater[hold::hips_joint].position = pose[hold::hips_joint].position;
             for (const auto joint : {std::uint16_t{8}, std::uint16_t{9}, std::uint16_t{10}, std::uint16_t{341}, std::uint16_t{342}, std::uint16_t{343}})

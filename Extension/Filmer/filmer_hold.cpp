@@ -170,11 +170,38 @@ bool crouch(std::span<Bone> pose, float depth) noexcept {
     return true;
 }
 
+bool hunch(std::span<Bone> pose, const Vec3 &toward, float angle, float look) noexcept {
+    if (!(std::abs(angle) + std::abs(look) > 1e-4f) || !finite(toward)) return true;
+    Vec3 level{toward[0], 0.0f, toward[2]};
+    if (length(level) < 1e-4f) return true;
+    level = unit(level, {0, 0, 1});
+    // Turning about this bends the top of the body over toward `level`.
+    const Vec3 axis = unit(cross(Vec3{0.0f, 1.0f, 0.0f}, level), {1, 0, 0});
+    // Spine, Spine1, Spine2, Spine3 share the back's angle; Neck, Neck1 and Head the look.
+    constexpr std::array<float, 7> share{0.15f, 0.25f, 0.3f, 0.3f, 0.35f, 0.25f, 0.4f};
+    for (std::size_t i = 0; i < hunched_joints.size(); ++i) {
+        std::array<Placed, head_chain.size()> w{};
+        if (!compose(pose, head_chain, w)) return false;
+        const std::size_t at = 3 + i; // its place in head_chain
+        const float turn = (i < 4 ? angle : look) * share[i];
+        const Quat bend{axis[0] * std::sin(turn / 2), axis[1] * std::sin(turn / 2), axis[2] * std::sin(turn / 2), std::cos(turn / 2)};
+        const Quat world = normalized(multiply(bend, w[at].rotation));
+        pose[hunched_joints[i]].rotation = local_of(w[at - 1], world);
+    }
+    return true;
+}
+
 Held hold(std::span<Bone> pose, const Goal &goal) noexcept {
     const auto joints = chain(goal.hand);
     std::array<Placed, right_chain.size()> w{};
     if (!finite(goal.lens) || !finite(goal.aim)) return {};
-    if (goal.crouch > 0.0f && !crouch(pose, goal.crouch * std::clamp(goal.weight, 0.0f, 1.0f))) return {};
+    const float body_weight = std::clamp(goal.weight, 0.0f, 1.0f);
+    if (goal.crouch > 0.0f && !crouch(pose, goal.crouch * body_weight)) return {};
+    if (goal.hunch > 0.0f) {
+        std::array<Placed, head_chain.size()> h{};
+        if (!compose(pose, head_chain, h)) return {};
+        if (!hunch(pose, sub(goal.lens, h[2].position), goal.hunch * body_weight, goal.hunch * 1.5f * body_weight)) return {};
+    }
     if (!compose(pose, joints, w)) return {};
     const Quat aim = normalized(goal.aim);
     const Vec3 s = w[upper].position, e = w[fore].position, h = w[hand_at].position;

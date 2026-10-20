@@ -43,6 +43,9 @@ inline constexpr std::span<const std::uint16_t> chain(Hand hand) noexcept { retu
 inline constexpr std::array<std::uint16_t, 6> right_leg{0, 1, 7, 8, 9, 10};
 inline constexpr std::array<std::uint16_t, 6> left_leg{0, 1, 7, 341, 342, 343};
 inline constexpr std::uint16_t hips_joint = 7;
+// The back and head, from the root: Spine, Spine1, Spine2, Spine3, Neck, Neck1, Head.
+inline constexpr std::array<std::uint16_t, 10> head_chain{0, 1, 7, 42, 43, 44, 45, 101, 102, 103};
+inline constexpr std::array<std::uint16_t, 7> hunched_joints{42, 43, 44, 45, 101, 102, 103};
 // Every joint hold() may change, for whoever copies its result out (the hips move; the rest turn).
 inline constexpr std::array<std::uint16_t, 9> moved_joints(Hand hand) noexcept {
     return {hips_joint, 8, 9, 10, 341, 342, 343, hand == Hand::left ? std::uint16_t{276} : std::uint16_t{47},
@@ -95,6 +98,9 @@ struct Goal {
     bool worn{};
     // How far the hips go down (metres, before `weight`), the feet kept where they are: a filmer's crouch.
     float crouch{};
+    // How far the back curls over toward the camera and the head looks down at it (radians, before
+    // `weight`; the back takes this, the neck and head half again).
+    float hunch{};
     // The arm goes round the body: a hand target inside the torso, or an arm that would pass through
     // it, is pushed out to its surface.
     bool around_body = true;
@@ -118,6 +124,9 @@ Held hold(std::span<Bone> pose, const Goal &goal) noexcept;
 // Lowers the hips by `depth` (metres) and bends the knees so each foot stays where it was, turned as
 // it was. False when the legs are not there (the pose is left alone).
 bool crouch(std::span<Bone> pose, float depth) noexcept;
+// Curls the back over toward `toward` (a direction in the world, level) by `angle` radians spread
+// down the spine, and the neck and head on down by `look` more.
+bool hunch(std::span<Bone> pose, const Vec3 &toward, float angle, float look) noexcept;
 // Where the camera is in a pose that already holds it (another player's, as they sent it): the palm
 // of the hand, turned by the aim they sent.
 Held held_in(std::span<const Bone> pose, Hand hand, const Quat &aim) noexcept;
