@@ -2,6 +2,7 @@
 #include "filmer_beacon.h"
 #include "filmer_held.h"
 #include "filmer_outfit.h"
+#include "Engine/Game/Build/20260929/no_bail.h"
 #include "Extension/Multiplayer/Remote/native_prop.h"
 #include "Engine/Core/Json/json.h"
 #include "Engine/Core/Log/logging.h"
@@ -190,6 +191,8 @@ void load_store() {
         s.settings.crouch_depth = clamped(o, "crouch_depth2", d.crouch_depth, 0.0f, 0.5f);
         s.settings.hunch_degrees = clamped(o, "hunch_degrees2", d.hunch_degrees, 0.0f, 60.0f);
         s.settings.two_hands = flag(o, "two_hands", d.two_hands);
+        s.settings.still_body = flag(o, "still_body", d.still_body);
+        s.settings.hide_board = flag(o, "hide_board", d.hide_board);
         s.settings.camera_item = o.value("camera_item", std::string());
         if (s.settings.camera_item.size() > 200) s.settings.camera_item.clear();
         s.settings.camera_slot = o.value("camera_slot", std::string());
@@ -279,6 +282,8 @@ void save_store() {
         json["crouch_depth2"] = s.settings.crouch_depth;
         json["hunch_degrees2"] = s.settings.hunch_degrees;
         json["two_hands"] = s.settings.two_hands;
+        json["still_body"] = s.settings.still_body;
+        json["hide_board"] = s.settings.hide_board;
         json["camera_item"] = s.settings.camera_item;
         json["camera_slot"] = s.settings.camera_slot;
         json["camera_model"] = s.settings.camera_model;
@@ -651,6 +656,13 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready, bool camera_ph
         hold_request.worn = s.settings.camera_worn;
         hold_request.crouch = s.settings.crouch ? s.settings.crouch_depth : 0.0f;
         hold_request.two_hands = s.settings.two_hands;
+        {
+            // On foot (or through a bail): a still upper body, and the board out of sight.
+            const auto telemetry = trainer::telemetry();
+            const bool on_foot = telemetry.skater && telemetry.physics_state == game::build::v20260929::no_bail::offboard_physics_state;
+            hold_request.still = on_foot && s.settings.still_body;
+            hold_request.hide_board = on_foot && s.settings.hide_board;
+        }
         hold_request.hunch = s.settings.crouch ? s.settings.hunch_degrees * 3.14159265f / 180.0f : 0.0f;
         // Where everyone is this frame (the session places them every frame).
         s.others = multiplayer::filmable_players();
@@ -745,6 +757,7 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready, bool camera_ph
                 const Subject target_subject = target ? remote_subject(*target) : Subject{};
                 name = target ? target->name : "your own framing";
                 const StickInput stick = read_stick(s);
+                s.rig.set_body_yaw(held::body_yaw());
                 frame = s.rig.film(t, dt, self, target ? &target_subject : nullptr, stick, s.settings.rig);
             }
             // Cruise control: filming a friend, you ride at the speed that keeps you the gap behind them
@@ -971,6 +984,8 @@ std::string set_option(State &s, const std::string &key, const std::string &valu
     if (key == "worn") return toggle(s.settings.camera_worn);
     if (key == "crouch") return toggle(s.settings.crouch);
     if (key == "twohands") return toggle(s.settings.two_hands);
+    if (key == "still") return toggle(s.settings.still_body);
+    if (key == "hideboard") return toggle(s.settings.hide_board);
     if (key == "crouchdepth") return real(s.settings.crouch_depth, 0.0f, 0.5f);
     if (key == "hunch") return real(s.settings.hunch_degrees, 0.0f, 60.0f);
     if (key == "camitem") {

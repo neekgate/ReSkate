@@ -63,6 +63,13 @@ struct Arm {
     // and every joint written is put back when the camera is put down. Under the mutex.
     std::array<hold::Bone, hold::pose_joints> original{}, written{};
     std::bitset<hold::pose_joints> touched{};
+    // Which way your body faces (from the hips, before anything here changes them), and when.
+    std::atomic<float> body_yaw{};
+    std::atomic<ULONGLONG> body_yaw_at{};
+    // Your board's animation holder, and its root's own size while it is hidden (render thread).
+    std::atomic<std::uintptr_t> board_holder{};
+    hold::Vec3 board_scale{1, 1, 1};
+    bool board_hidden{};
 };
 Arm &arm() {
     static auto *value = new Arm;
@@ -166,6 +173,11 @@ void bend(std::uintptr_t component, std::uintptr_t holder, bool animated) noexce
                 else a.original[j] = pose[j];
             }
         }
+        {
+            const auto facing = hold::body_facing(pose);
+            a.body_yaw.store(std::atan2(facing[0], facing[2]), std::memory_order_relaxed);
+            a.body_yaw_at.store(now, std::memory_order_release);
+        }
         const auto before = pose;
         hold::Goal goal;
         goal.hand = a.seen.hand;
@@ -177,6 +189,7 @@ void bend(std::uintptr_t component, std::uintptr_t holder, bool animated) noexce
         goal.crouch = a.seen.crouch;
         goal.hunch = a.seen.hunch;
         goal.two_hands = a.seen.two_hands;
+        goal.still = a.seen.still;
         if (a.seen.relative) {
             std::array<hold::Placed, hold::right_chain.size()> placed{};
             if (!hold::compose(pose, joints, placed)) return;
@@ -229,8 +242,9 @@ Outgoing &outgoing() {
     static auto *value = new Outgoing;
     return *value;
 }
-void on_outgoing(std::uintptr_t component, std::vector<multiplayer::Transform> &skater) noexcept {
+void on_outgoing(std::uintptr_t component, multiplayer::Pose &sent) noexcept {
     auto &a = arm();
+    auto &skater = sent.skater;
     auto &o = outgoing();
     try {
         if (!component || component != a.component.load(std::memory_order_acquire)) return;
@@ -247,6 +261,8 @@ void on_outgoing(std::uintptr_t component, std::vector<multiplayer::Transform> &
         o.last = now;
         const bool wanted = request.hold && now - requested < fresh_ms;
         o.weight = std::clamp(o.weight + (wanted ? dt : -dt) / ease_seconds, 0.0f, 1.0f);
+        // The board out of sight for the others too: placed far under the ground.
+        if (wanted && request.hide_board && !sent.board.empty()) sent.board.front().position[1] -= 100.0f;
         if (skater.size() < hold::pose_joints) return;
         thread_local std::vector<hold::Bone> pose;
         pose.resize(skater.size());
@@ -271,6 +287,7 @@ void on_outgoing(std::uintptr_t component, std::vector<multiplayer::Transform> &
         goal.crouch = request.crouch;
         goal.hunch = request.hunch;
         goal.two_hands = request.two_hands;
+        goal.still = request.still;
         const auto joints = hold::chain(request.hand);
 
         if (request.relative) {
@@ -288,7 +305,36 @@ void on_outgoing(std::uintptr_t component, std::vector<multiplayer::Transform> &
     } catch (...) {}
 }
 
+// Your board drawn or not: its root shrunk out of sight while you film on foot, and given its own size
+// back after (the game never sets a joint's size again itself).
+void board_render(std::uintptr_t holder) noexcept {
+    auto &a = arm();
+    const auto now = GetTickCount64();
+    const bool hide = a.seen.hold && a.seen.hide_board && now - a.seen_at < fresh_ms;
+    if (!hide && !a.board_hidden) return;
+    try {
+        const auto layout = multiplayer::read_native_pose_layout(seh_read, a.base.load(std::memory_order_acquire), holder, 63);
+        if (!layout.buffer || !layout.count) return;
+        hold::Vec3 scale{};
+        if (!seh_read(layout.buffer, scale.data(), sizeof(scale))) return;
+        if (hide) {
+            if (!a.board_hidden || scale[0] > 0.01f) a.board_scale = scale;
+            const hold::Vec3 tiny{0.001f, 0.001f, 0.001f};
+            if (seh_write(layout.buffer, tiny.data(), sizeof(tiny))) a.board_hidden = true;
+        } else {
+            if (scale[0] < 0.01f) (void)seh_write(layout.buffer, a.board_scale.data(), sizeof(a.board_scale));
+            a.board_hidden = false;
+        }
+    } catch (...) {}
+}
+
 void on_render(std::uintptr_t animation_interface) noexcept {
+    if (const auto board = arm().board_holder.load(std::memory_order_acquire); board && animation_interface == board + 0xc0) {
+        const auto error = GetLastError();
+        board_render(board);
+        SetLastError(error);
+        return;
+    }
     const auto component = arm().component.load(std::memory_order_acquire);
     if (!component) return;
     std::uintptr_t holder{};
@@ -372,6 +418,15 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool in_level, const Optio
         // The pose the others are sent always goes through here (cheap while the camera is not held).
         multiplayer::set_local_pose_filter(&on_outgoing);
         a.component.store(multiplayer::local_skater_component(base, client), std::memory_order_release);
+        // Your board's animation holder, for hiding it while you film on foot.
+        try {
+            const auto local = multiplayer::capture_local(base, client, false);
+            std::uintptr_t board{};
+            if (local.ready && local.entity) board = multiplayer::read_native_board(seh_read, base, local.entity).holder;
+            a.board_holder.store(board, std::memory_order_release);
+        } catch (...) {
+            a.board_holder.store(0, std::memory_order_release);
+        }
         Request request;
         {
             std::lock_guard lock(a.mutex);
@@ -432,6 +487,13 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool in_level, const Optio
                                                  options.stand_in);
         shown = !cameras.empty();
     } catch (...) {}
+}
+
+std::optional<float> body_yaw() noexcept {
+    auto &a = arm();
+    const auto at = a.body_yaw_at.load(std::memory_order_acquire);
+    if (!at || GetTickCount64() - at > 500) return std::nullopt;
+    return a.body_yaw.load(std::memory_order_relaxed);
 }
 
 std::string status() {

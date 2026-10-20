@@ -243,6 +243,10 @@ Held hold_one(std::span<Bone> pose, const Goal &goal) noexcept {
         full = std::clamp(std::atan2(dot(cross(facing, level), {0.0f, 1.0f, 0.0f}), dot(facing, level)), -1.6f, 1.6f);
         pitch = std::asin(std::clamp(pointing[1], -1.0f, 1.0f)); // down is negative
     }
+    if (goal.still)
+        for (std::size_t i = 0; i < hunched_joints.size(); ++i)
+            if (hunched_joints[i] < pose.size())
+                pose[hunched_joints[i]].rotation = blend(pose[hunched_joints[i]].rotation, standing_back[i], body_weight);
     constexpr float hips_share = 0.25f;
     const bool turning = goal.hunch > 0.0f;
     if ((goal.crouch > 0.0f || turning) &&
@@ -279,7 +283,16 @@ Held hold_one(std::span<Bone> pose, const Goal &goal) noexcept {
         ahead = unit(ahead, unit(Vec3{lens[0] - s[0], 0.0f, lens[2] - s[2]}, {0, 0, 1}));
         const float out = dot(sub(lens, s), ahead);
         if (!goal.free_reach) {
-            if (out < min_reach_out) lens = add(lens, scaled(ahead, min_reach_out - out));
+            // Toward the holding hand's own side the arm would stretch across to its full length: the
+            // camera comes in closer and up a little there, the elbow bent.
+            Vec3 own_side = sub(s, w[chest].position);
+            own_side[1] = 0.0f;
+            own_side = unit(own_side, ahead);
+            const float toward_side = std::clamp(dot(ahead, own_side), 0.0f, 1.0f);
+            const float reach_out = min_reach_out * (1.0f - 0.35f * toward_side);
+            if (out < reach_out) lens = add(lens, scaled(ahead, reach_out - out));
+            else if (toward_side > 0.0f && out > reach_out + 0.1f) lens = sub(lens, scaled(ahead, (out - reach_out - 0.1f) * toward_side));
+            lens[1] += side_lift * toward_side;
             // Aimed up, it comes up toward the chest (all the way at about 40 degrees up).
             const float up = std::clamp(rotate(aim, {0.0f, 0.0f, -1.0f})[1] / 0.64f, 0.0f, 1.0f);
             lens[1] = std::max(lens[1], lens[1] + (s[1] - lift_below_shoulder - lens[1]) * up);
@@ -380,6 +393,14 @@ Held hold_one(std::span<Bone> pose, const Goal &goal) noexcept {
 }
 
 } // namespace
+
+Vec3 body_facing(std::span<const Bone> pose) noexcept {
+    std::array<Placed, 6> right_thigh{}, left_thigh{};
+    if (!compose(pose, right_leg, right_thigh) || !compose(pose, left_leg, left_thigh)) return {0, 0, 1};
+    Vec3 across = sub(left_thigh[3].position, right_thigh[3].position);
+    across[1] = 0.0f;
+    return unit(cross(across, {0.0f, 1.0f, 0.0f}), {0, 0, 1});
+}
 
 Held held_in(std::span<const Bone> pose, Hand hand, const Quat &aim) noexcept {
     std::array<Placed, right_chain.size()> w{};

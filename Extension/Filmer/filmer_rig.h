@@ -111,6 +111,9 @@ class Rig {
 public:
     Rig();
     void set_world(Cast cast) { cast_ = std::move(cast); }
+    // Which way your body faces (yaw, radians; from your hips, filmer_held.h), when known: the middle
+    // of the way the camera may turn while you film (on a board, toe side; on foot, ahead).
+    void set_body_yaw(std::optional<float> yaw) noexcept { body_yaw_ = yaw; }
     // follow: the filmer stops where they are and films from there, or rides again.
     void set_planted(bool planted) noexcept;
     bool planted() const noexcept { return planted_; }
@@ -145,6 +148,7 @@ public:
                const RigSettings &settings);
     // A hand slapping the lens: the camera jolts. The overlay draws the hand.
     void slap(double now) noexcept;
+    std::optional<float> body_yaw_;
     // For the menu: where auto is riding (degrees round the skater; 0 behind, 180 ahead).
     float angle_degrees() const noexcept;
     // The camera is held still: the AI filmer stopped (the left stick, or braked at a drop), or you

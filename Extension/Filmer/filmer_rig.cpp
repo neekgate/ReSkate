@@ -1351,15 +1351,19 @@ Frame Rig::film(double now, float dt, const Subject &self, const Subject *target
     }
     // A filmer turns from the waist, not right round: the camera points no further than square off
     // either side of the way you face (from your 9 o'clock round the front to your 3).
+    // The middle is the way your body faces (from your hips): on a board that is toe side, where your
+    // feet point, not the nose; on foot, ahead.
     {
         constexpr float side = 1.5707963f;
-        const float rel = wrap_angle(want_yaw - heading);
+        const float middle = body_yaw_ ? *body_yaw_ : heading;
+        const float rel = wrap_angle(want_yaw - middle);
         if (std::abs(rel) > side) {
-            want_yaw = heading + std::copysign(side, rel);
+            want_yaw = middle + std::copysign(side, rel);
             yaw_rate = 0.0f;
+            // Your own framing stops at the edge too (no winding on past it).
+            if (!(s.assist && aiming_at)) offset_yaw_ = wrap_angle(want_yaw - heading);
         }
         offset_yaw_ = std::clamp(offset_yaw_, -side * 2.0f, side * 2.0f);
-        if (!(s.assist && aiming_at)) offset_yaw_ = std::clamp(offset_yaw_, -side, side);
     }
     steer_aim(dt, want_yaw, want_pitch, omega, damping, yaw_rate, pitch_rate);
     const float turn = dt > 0 ? wrap_angle(heading - last_operator_yaw_) / std::max(dt, 0.001f) : 0.0f;

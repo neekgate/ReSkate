@@ -109,7 +109,21 @@ struct Goal {
     // The lens is reached for where it is (no holding it out in front and below the shoulder): the
     // supporting hand's reach.
     bool free_reach{};
+    // The back, neck and head start from a still standing pose, not the game's (its idle fidgets do
+    // not show through): on foot.
+    bool still{};
 };
+// The back, neck and head as the skeleton stands (each joint's own turn, from its bind pose).
+inline constexpr std::array<Quat, 7> standing_back{{{0.0f, 0.0f, 0.16592f, 0.98614f},
+                                                    {0.0f, 0.0f, -0.19038f, 0.98171f},
+                                                    {0.0f, 0.0f, -0.10393f, 0.99458f},
+                                                    {0.0f, 0.0f, 0.22027f, 0.97544f},
+                                                    {0.0f, 0.0f, 0.11357f, 0.99353f},
+                                                    {0.0f, 0.0f, -0.19607f, 0.98059f},
+                                                    {0.0f, 0.0f, -0.00959f, 0.99995f}}};
+// Which way the body faces (level, in the world), from the line across its hips; {0, 0, 1} when the
+// legs are not there.
+Vec3 body_facing(std::span<const Bone> pose) noexcept;
 // Where the supporting hand takes the camera, in the camera's own frame (right, up, back; the grip
 // at the origin), for a right-hand grip: the left side of the body, underneath. Mirrored for a left grip.
 inline constexpr Vec3 support_from_grip{-0.08f, -0.16f, -0.04f};
@@ -121,6 +135,8 @@ inline constexpr float body_radius = 0.24f;
 inline constexpr float min_reach_out = 0.4f, below_shoulder = 0.05f;
 // Aimed up, the lens comes up to this far below the shoulder.
 inline constexpr float lift_below_shoulder = 0.15f;
+// Toward the holding hand's own side the camera comes up this much (all the way square to that side).
+inline constexpr float side_lift = 0.2f;
 struct Held {
     bool valid{};
     Placed palm; // where the camera's handle is, turned the way it points

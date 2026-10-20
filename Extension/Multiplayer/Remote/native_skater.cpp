@@ -529,8 +529,7 @@ NativeFrame capture_local(std::uintptr_t base, std::uintptr_t client, bool captu
                 std::lock_guard hidden_lock(hidden.mutex);
                 if (hidden.component == component && hidden.joint < frame.pose.skater.size())
                     frame.pose.skater[hidden.joint].scale = hidden.scale;
-                if (const auto filter = local_pose_filter().load(std::memory_order_acquire); filter && !frame.pose.skater.empty())
-                    filter(component, frame.pose.skater);
+
                 frame.detail =
                     frame.pose.skater.empty() ? "Waiting for skater animation buffers." : "Local pose ready.";
             } catch (const std::exception &e) {
@@ -558,6 +557,13 @@ NativeFrame capture_local(std::uintptr_t base, std::uintptr_t client, bool captu
         cache = {};
         frame.detail = e.what();
     }
+    // The pose as it is sent, after anyone who changes only what is drawn (the Filmer's arm) has had it.
+    if (capture_pose && frame.ready && !frame.pose.skater.empty())
+        if (const auto filter = local_pose_filter().load(std::memory_order_acquire); filter) {
+            try {
+                filter(ptr(frame.entity, 0x628), frame.pose);
+            } catch (...) {}
+        }
     return frame;
 }
 NativeFrame capture_local(std::uintptr_t base, std::uintptr_t client) {

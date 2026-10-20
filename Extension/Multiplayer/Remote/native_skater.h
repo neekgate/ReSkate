@@ -50,7 +50,7 @@ using RenderPosePublished = void (*)(std::uintptr_t animation_interface) noexcep
 // Called with the local skater's pose as capture_local reads it to be sent (its animation component
 // and joints), so a change made only as the pose is drawn (the Filmer's arm holding its camera) is in
 // what the others see too. One listener; nullptr for none. Client thread.
-using LocalPoseFilter = void (*)(std::uintptr_t component, std::vector<Transform> &skater) noexcept;
+using LocalPoseFilter = void (*)(std::uintptr_t component, Pose &pose) noexcept;
 void set_local_pose_filter(LocalPoseFilter filter) noexcept;
 // Each slot holds one listener (0: first person, 1: the Filmer's arm holding its camera), called in
 // slot order. What a listener writes into the skeleton's pose is what is drawn: the game has finished

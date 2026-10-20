@@ -12,6 +12,7 @@
 // Everyone's camera: a model placed every frame at the palm, turned the way they aim.
 #include "filmer_hold.h"
 #include <cstdint>
+#include <optional>
 #include <string>
 
 namespace dingosdk::multiplayer {
@@ -33,7 +34,9 @@ struct Request {
     float crouch{};          // how far the hips go down while the camera is held (metres; 0: standing)
     float hunch{};           // how far the back curls over toward the camera (radians), the head looking down at it
     bool two_hands{};        // the other hand holds the camera too
-    bool hide_own{};         // you look through the camera: your camera arm is not drawn on your own screen
+    bool hide_own{};
+    bool still{};            // on foot: the back, neck and head from a still standing pose (no idle fidgets)
+    bool hide_board{};       // on foot: the board out of sight (yours and as the others see it)         // you look through the camera: your camera arm is not drawn on your own screen
 };
 // Game thread, every Filmer tick.
 void set_local(const Request &request) noexcept;
@@ -50,6 +53,9 @@ struct Options {
 // Client thread, every frame while in a level (`in_level`) and after the Filmer's tick: hooks the
 // animation once, and places the camera models.
 void tick(std::uintptr_t base, std::uintptr_t client, bool in_level, const Options &options) noexcept;
+// Which way your body faces (yaw, radians, as the Filmer's rig counts it), from your hips as the game
+// last posed them, while that is fresh. Any thread.
+std::optional<float> body_yaw() noexcept;
 // One line for `filmer status` and the menu.
 std::string status();
 } // namespace dingosdk::filmer::held
