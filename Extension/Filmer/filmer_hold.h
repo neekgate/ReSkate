@@ -104,13 +104,21 @@ struct Goal {
     // The arm goes round the body: a hand target inside the torso, or an arm that would pass through
     // it, is pushed out to its surface.
     bool around_body = true;
+    // The other hand holds the camera too, from the side and underneath, as a filmer cradles it.
+    bool two_hands{};
+    // The lens is reached for where it is (no holding it out in front and below the shoulder): the
+    // supporting hand's reach.
+    bool free_reach{};
 };
+// Where the supporting hand takes the camera, in the camera's own frame (right, up, back; the grip
+// at the origin), for a right-hand grip: the left side of the body, underneath. Mirrored for a left grip.
+inline constexpr Vec3 support_from_grip{-0.08f, -0.16f, -0.04f};
 // The body as a column the arm keeps out of: about the hips' and chest's line, this far out at most
 // (and inside the shoulders).
 inline constexpr float body_radius = 0.24f;
 // The lens is shown held at least this far out in front of the shoulder (along the aim), and at least
 // this far below it.
-inline constexpr float min_reach_out = 0.5f, below_shoulder = 0.05f;
+inline constexpr float min_reach_out = 0.4f, below_shoulder = 0.05f;
 struct Held {
     bool valid{};
     Placed palm; // where the camera's handle is, turned the way it points

@@ -141,6 +141,8 @@ void bend(std::uintptr_t component, std::uintptr_t holder, bool animated) noexce
         const auto fail = [&] { a.unreadable.fetch_add(1, std::memory_order_relaxed); };
         for (const auto joint : joints)
             if (!read_joint(joint)) return fail();
+        for (const auto joint : hold::chain(a.seen.hand == hold::Hand::left ? hold::Hand::right : hold::Hand::left))
+            if (!read_joint(joint)) return fail();
         for (const auto &leg : {std::span<const std::uint16_t>(hold::right_leg), std::span<const std::uint16_t>(hold::left_leg)})
             for (const auto joint : leg)
                 if (!read_joint(joint)) return fail();
@@ -165,6 +167,7 @@ void bend(std::uintptr_t component, std::uintptr_t holder, bool animated) noexce
         goal.worn = a.seen.worn;
         goal.crouch = a.seen.crouch;
         goal.hunch = a.seen.hunch;
+        goal.two_hands = a.seen.two_hands;
         if (a.seen.relative) {
             std::array<hold::Placed, hold::right_chain.size()> placed{};
             if (!hold::compose(pose, joints, placed)) return;
@@ -245,6 +248,7 @@ void on_outgoing(std::uintptr_t component, std::vector<multiplayer::Transform> &
         goal.worn = request.worn;
         goal.crouch = request.crouch;
         goal.hunch = request.hunch;
+        goal.two_hands = request.two_hands;
         const auto joints = hold::chain(request.hand);
 
         if (request.relative) {

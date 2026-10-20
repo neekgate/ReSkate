@@ -188,7 +188,8 @@ void load_store() {
         s.settings.camera_worn = flag(o, "camera_worn", d.camera_worn);
         s.settings.crouch = flag(o, "crouch", d.crouch);
         s.settings.crouch_depth = clamped(o, "crouch_depth2", d.crouch_depth, 0.0f, 0.5f);
-        s.settings.hunch_degrees = clamped(o, "hunch_degrees", d.hunch_degrees, 0.0f, 60.0f);
+        s.settings.hunch_degrees = clamped(o, "hunch_degrees2", d.hunch_degrees, 0.0f, 60.0f);
+        s.settings.two_hands = flag(o, "two_hands", d.two_hands);
         s.settings.camera_item = o.value("camera_item", std::string());
         if (s.settings.camera_item.size() > 200) s.settings.camera_item.clear();
         s.settings.camera_slot = o.value("camera_slot", std::string());
@@ -276,7 +277,8 @@ void save_store() {
         json["camera_worn"] = s.settings.camera_worn;
         json["crouch"] = s.settings.crouch;
         json["crouch_depth2"] = s.settings.crouch_depth;
-        json["hunch_degrees"] = s.settings.hunch_degrees;
+        json["hunch_degrees2"] = s.settings.hunch_degrees;
+        json["two_hands"] = s.settings.two_hands;
         json["camera_item"] = s.settings.camera_item;
         json["camera_slot"] = s.settings.camera_slot;
         json["camera_model"] = s.settings.camera_model;
@@ -648,6 +650,7 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready, bool camera_ph
         hold_request.hand = s.settings.left_hand ? hold::Hand::left : hold::Hand::right;
         hold_request.worn = s.settings.camera_worn;
         hold_request.crouch = s.settings.crouch ? s.settings.crouch_depth : 0.0f;
+        hold_request.two_hands = s.settings.two_hands;
         hold_request.hunch = s.settings.crouch ? s.settings.hunch_degrees * 3.14159265f / 180.0f : 0.0f;
         // Where everyone is this frame (the session places them every frame).
         s.others = multiplayer::filmable_players();
@@ -967,6 +970,7 @@ std::string set_option(State &s, const std::string &key, const std::string &valu
     if (key == "standin") return toggle(s.settings.stand_in);
     if (key == "worn") return toggle(s.settings.camera_worn);
     if (key == "crouch") return toggle(s.settings.crouch);
+    if (key == "twohands") return toggle(s.settings.two_hands);
     if (key == "crouchdepth") return real(s.settings.crouch_depth, 0.0f, 0.5f);
     if (key == "hunch") return real(s.settings.hunch_degrees, 0.0f, 60.0f);
     if (key == "camitem") {

@@ -191,7 +191,29 @@ bool hunch(std::span<Bone> pose, const Vec3 &toward, float angle, float look) no
     return true;
 }
 
+namespace {
+Held hold_one(std::span<Bone> pose, const Goal &goal) noexcept;
+}
+
 Held hold(std::span<Bone> pose, const Goal &goal) noexcept {
+    auto held = hold_one(pose, goal);
+    if (!held.valid || !goal.two_hands) return held;
+    // The other hand to the camera's side, underneath, where the first one put it.
+    Vec3 support = support_from_grip;
+    if (goal.hand == Hand::left) support[0] = -support[0];
+    const Vec3 point = add(held.palm.position, rotate(held.palm.rotation, support));
+    Goal other;
+    other.hand = goal.hand == Hand::left ? Hand::right : Hand::left;
+    other.aim = normalized(goal.aim);
+    other.weight = goal.weight;
+    other.free_reach = true;
+    other.lens = add(point, rotate(other.aim, lens_from_handle)); // so its palm goes to `point`
+    (void)hold_one(pose, other);
+    return held;
+}
+
+namespace {
+Held hold_one(std::span<Bone> pose, const Goal &goal) noexcept {
     const auto joints = chain(goal.hand);
     std::array<Placed, right_chain.size()> w{};
     if (!finite(goal.lens) || !finite(goal.aim)) return {};
@@ -233,8 +255,10 @@ Held hold(std::span<Bone> pose, const Goal &goal) noexcept {
         ahead[1] = 0.0f;
         ahead = unit(ahead, unit(Vec3{lens[0] - s[0], 0.0f, lens[2] - s[2]}, {0, 0, 1}));
         const float out = dot(sub(lens, s), ahead);
-        if (out < min_reach_out) lens = add(lens, scaled(ahead, min_reach_out - out));
-        lens[1] = std::min(lens[1], s[1] - below_shoulder);
+        if (!goal.free_reach) {
+            if (out < min_reach_out) lens = add(lens, scaled(ahead, min_reach_out - out));
+            lens[1] = std::min(lens[1], s[1] - below_shoulder);
+        }
     }
     const auto &worn = grip(goal.hand);
     const Quat hand_world = normalized(multiply(aim, conjugate(worn.camera)));
@@ -328,6 +352,8 @@ Held hold(std::span<Bone> pose, const Goal &goal) noexcept {
     held.reached = wanted <= reach + 0.01f;
     return held;
 }
+
+} // namespace
 
 Held held_in(std::span<const Bone> pose, Hand hand, const Quat &aim) noexcept {
     std::array<Placed, right_chain.size()> w{};

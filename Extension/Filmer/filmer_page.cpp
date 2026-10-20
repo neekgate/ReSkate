@@ -172,6 +172,7 @@ void filmer_page(SkateMenu &menu, const Model &, const CallbacksV3 &callbacks) {
     int hand = s.left_hand ? 1 : 0;
     if (choice(menu, "hand", hand, {"Right", "Left"})) filmer_command(menu, callbacks, hand ? "set hand left" : "set hand right");
     filmer_toggle(menu, callbacks, "I wear the camcorder", "The camcorder cosmetic (hand wear, made with ReSkate Studio from the fingerless glove) goes in your hand while you film and comes off after; your hand turns so its lens points where you aim, and no separate model is placed. Others see it in your outfit.", "worn", s.camera_worn);
+    filmer_toggle(menu, callbacks, "Two hands", "Your other hand holds the camera too, from the side and underneath, as a filmer cradles it.", "twohands", s.two_hands);
     filmer_toggle(menu, callbacks, "Crouch while filming", "While the camera is held out your skater bends the knees a little and hunches over it, looking down at it, on the board and off it, feet where they are. The others see it too.", "crouch", s.crouch);
     filmer_slider(menu, callbacks, "Knee bend", "How far your hips go down.", "crouchdepth", s.crouch_depth, 0.0f, 0.5f, "%.2f m");
     filmer_slider(menu, callbacks, "Hunch", "How far your back curls over toward the camera; the head looks down at it.", "hunch", s.hunch_degrees, 0.0f, 60.0f, "%.0f deg");
