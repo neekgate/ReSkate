@@ -198,9 +198,22 @@ Held hold(std::span<Bone> pose, const Goal &goal) noexcept {
     const float body_weight = std::clamp(goal.weight, 0.0f, 1.0f);
     if (goal.crouch > 0.0f && !crouch(pose, goal.crouch * body_weight)) return {};
     if (goal.hunch > 0.0f) {
-        std::array<Placed, head_chain.size()> h{};
-        if (!compose(pose, head_chain, h)) return {};
-        if (!hunch(pose, sub(goal.lens, h[2].position), goal.hunch * body_weight, goal.hunch * 1.5f * body_weight)) return {};
+        // Over the camera in the hand, the way the body faces: toward the aim, but no more than 60 degrees
+        // off the body's own facing (never folded backwards), and further the lower it points.
+        std::array<Placed, 6> right_thigh{}, left_thigh{};
+        if (!compose(pose, right_leg, right_thigh) || !compose(pose, left_leg, left_thigh)) return {};
+        Vec3 across = sub(left_thigh[3].position, right_thigh[3].position);
+        across[1] = 0.0f;
+        const Vec3 facing = unit(cross(across, {0.0f, 1.0f, 0.0f}), {0, 0, 1});
+        const Vec3 pointing = rotate(normalized(goal.aim), {0.0f, 0.0f, -1.0f});
+        const Vec3 level = unit(Vec3{pointing[0], 0.0f, pointing[2]}, facing);
+        float off = std::atan2(dot(cross(facing, level), {0.0f, 1.0f, 0.0f}), dot(facing, level));
+        off = std::clamp(off, -1.05f, 1.05f);
+        const Quat turn{0.0f, std::sin(off / 2), 0.0f, std::cos(off / 2)};
+        const Vec3 toward = rotate(turn, facing);
+        const float pitch = std::asin(std::clamp(pointing[1], -1.0f, 1.0f)); // down is negative
+        const float amount = goal.hunch * std::clamp(1.0f - pitch * 1.2f, 0.3f, 1.6f) * body_weight;
+        if (!hunch(pose, toward, amount, amount * 1.5f)) return {};
     }
     if (!compose(pose, joints, w)) return {};
     const Quat aim = normalized(goal.aim);
