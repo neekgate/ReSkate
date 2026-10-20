@@ -112,7 +112,12 @@ struct Goal {
     // The back, neck and head start from a still standing pose, not the game's (its idle fidgets do
     // not show through): on foot.
     bool still{};
+    // The whole body turned round the upright through the hips (radians): a pivot on the spot after a
+    // camera turned past the range.
+    float pivot{};
 };
+// How much a pose is pushing on a board (0 to 1): one foot down on the ground well below the other.
+float pushing(std::span<const Bone> pose) noexcept;
 // The back, neck and head as the skeleton stands (each joint's own turn, from its bind pose).
 inline constexpr std::array<Quat, 7> standing_back{{{0.0f, 0.0f, 0.16592f, 0.98614f},
                                                     {0.0f, 0.0f, -0.19038f, 0.98171f},

@@ -114,6 +114,9 @@ public:
     // Which way your body faces (yaw, radians; from your hips, filmer_held.h), when known: the middle
     // of the way the camera may turn while you film (on a board, toe side; on foot, ahead).
     void set_body_yaw(std::optional<float> yaw) noexcept { body_yaw_ = yaw; }
+    // On foot the camera turns all the way round (your body pivots after it, filmer_held.h); on a board
+    // it stops square off either side.
+    void set_pivot(bool on_foot) noexcept { pivot_ = on_foot; }
     // follow: the filmer stops where they are and films from there, or rides again.
     void set_planted(bool planted) noexcept;
     bool planted() const noexcept { return planted_; }
@@ -149,6 +152,7 @@ public:
     // A hand slapping the lens: the camera jolts. The overlay draws the hand.
     void slap(double now) noexcept;
     std::optional<float> body_yaw_;
+    bool pivot_{};
     // For the menu: where auto is riding (degrees round the skater; 0 behind, 180 ahead).
     float angle_degrees() const noexcept;
     // The camera is held still: the AI filmer stopped (the left stick, or braked at a drop), or you

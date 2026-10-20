@@ -1357,7 +1357,7 @@ Frame Rig::film(double now, float dt, const Subject &self, const Subject *target
         constexpr float side = 1.5707963f;
         const float middle = body_yaw_ ? *body_yaw_ : heading;
         const float rel = wrap_angle(want_yaw - middle);
-        if (std::abs(rel) > side) {
+        if (std::abs(rel) > side && !pivot_) {
             want_yaw = middle + std::copysign(side, rel);
             yaw_rate = 0.0f;
             // Your own framing stops at the edge too (no winding on past it).

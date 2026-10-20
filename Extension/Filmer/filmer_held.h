@@ -36,7 +36,9 @@ struct Request {
     bool two_hands{};        // the other hand holds the camera too
     bool hide_own{};
     bool still{};            // on foot: the back, neck and head from a still standing pose (no idle fidgets)
-    bool hide_board{};       // on foot: the board out of sight (yours and as the others see it)         // you look through the camera: your camera arm is not drawn on your own screen
+    bool hide_board{};       // on foot: the board out of sight (yours and as the others see it)
+    bool on_board{};         // riding: the knees straighten while a foot is down pushing
+    float pivot{};           // on foot: the whole body turned on the spot after the camera (radians)         // you look through the camera: your camera arm is not drawn on your own screen
 };
 // Game thread, every Filmer tick.
 void set_local(const Request &request) noexcept;

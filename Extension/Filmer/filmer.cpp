@@ -98,6 +98,8 @@ struct State {
     float camera_fov{};
     bool holdtest{};               // `filmer holdtest`: the camera held out on your skater, the game's camera
     bool holding{};                // the arm holds the camera out this tick (the camcorder goes in the hand)
+    bool on_foot{};                // the skater is on foot (this tick)
+    float pivot{};                 // on foot: how far the body is turned on the spot after the camera
     std::string held_status;
     ULONGLONG next_held_status{};
 };
@@ -661,8 +663,10 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready, bool camera_ph
             // On foot (or through a bail): a still upper body, and the board out of sight.
             const auto telemetry = trainer::telemetry();
             const bool on_foot = telemetry.skater && telemetry.physics_state == game::build::v20260929::no_bail::offboard_physics_state;
+            s.on_foot = on_foot;
             hold_request.still = on_foot && s.settings.still_body;
             hold_request.hide_board = on_foot && s.settings.hide_board;
+            hold_request.on_board = telemetry.skater && !on_foot;
         }
         hold_request.hunch = s.settings.crouch ? s.settings.hunch_degrees * 3.14159265f / 180.0f : 0.0f;
         // Where everyone is this frame (the session places them every frame).
@@ -759,6 +763,7 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready, bool camera_ph
                 name = target ? target->name : "your own framing";
                 const StickInput stick = read_stick(s);
                 s.rig.set_body_yaw(held::body_yaw());
+                s.rig.set_pivot(s.on_foot);
                 frame = s.rig.film(t, dt, self, target ? &target_subject : nullptr, stick, s.settings.rig);
             }
             // Cruise control: filming a friend, you ride at the speed that keeps you the gap behind them
@@ -821,6 +826,18 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready, bool camera_ph
                         hold_request.hide_own = true;
                         hold_request.lens = {frame.camera[12], frame.camera[13], frame.camera[14]};
                         hold_request.aim = hold::from_rows(frame.camera);
+                        // On foot, a camera turned past square off: the body pivots on the spot after it,
+                        // at a person's pace, so the camera stays at the edge of its reach.
+                        float pivot_to = 0.0f;
+                        if (s.on_foot)
+                            if (const auto body = held::body_yaw()) {
+                                const float yaw = std::atan2(-frame.camera[8], -frame.camera[10]);
+                                float rel = std::remainder(yaw - *body, 6.2831853f);
+                                constexpr float side = 1.5707963f;
+                                pivot_to = rel - std::clamp(rel, -side, side);
+                            }
+                        s.pivot += std::clamp(pivot_to - s.pivot, -4.0f * dt, 4.0f * dt);
+                        hold_request.pivot = s.pivot;
                     }
                     if (!s.held) {
                         s.held = true;
@@ -864,6 +881,7 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready, bool camera_ph
             hold_request.aim = hold::from_yaw_pitch(std::atan2(self.facing[0], self.facing[2]), -0.3f);
             hold_request.show_own = true;
         }
+        if (!hold_request.hold) s.pivot = 0.0f;
         held::set_local(hold_request);
         s.holding = hold_request.hold;
         if (hold_request.hold) {

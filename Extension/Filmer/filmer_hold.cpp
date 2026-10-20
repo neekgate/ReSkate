@@ -228,6 +228,20 @@ Held hold_one(std::span<Bone> pose, const Goal &goal) noexcept {
     std::array<Placed, right_chain.size()> w{};
     if (!finite(goal.lens) || !finite(goal.aim)) return {};
     const float body_weight = std::clamp(goal.weight, 0.0f, 1.0f);
+    if (std::abs(goal.pivot) > 1e-4f && std::isfinite(goal.pivot) && pose.size() > hips_joint) {
+        // The whole body, placement and all, turned round the upright through the hips.
+        std::array<Placed, 3> w3{};
+        if (!compose(pose, std::span<const std::uint16_t>(right_leg).first(3), w3)) return {};
+        const float turn = goal.pivot * body_weight;
+        const Quat about_up{0.0f, std::sin(turn / 2), 0.0f, std::cos(turn / 2)};
+        const Placed &root = w3[0], &placement = w3[1];
+        const Vec3 pivot_at = w3[2].position;
+        const Vec3 moved = add(pivot_at, rotate(about_up, sub(placement.position, pivot_at)));
+        const Quat turned = normalized(multiply(about_up, placement.rotation));
+        auto &bone = pose[1];
+        bone.rotation = local_of(root, turned);
+        bone.position = scaled(rotate(conjugate(root.rotation), sub(moved, root.position)), 1.0f / std::max(root.scale, 0.1f));
+    }
     // Which way the camera points against the way the body faces (round the upright), for the body
     // turning to it: the hips a quarter, the back and shoulders and head the rest.
     float full = 0.0f, pitch = 0.0f;
@@ -393,6 +407,13 @@ Held hold_one(std::span<Bone> pose, const Goal &goal) noexcept {
 }
 
 } // namespace
+
+float pushing(std::span<const Bone> pose) noexcept {
+    std::array<Placed, 6> r{}, l{};
+    if (!compose(pose, right_leg, r) || !compose(pose, left_leg, l)) return 0.0f;
+    const float apart = std::abs(r[5].position[1] - l[5].position[1]);
+    return std::clamp((apart - 0.04f) / 0.06f, 0.0f, 1.0f);
+}
 
 Vec3 body_facing(std::span<const Bone> pose) noexcept {
     std::array<Placed, 6> right_thigh{}, left_thigh{};

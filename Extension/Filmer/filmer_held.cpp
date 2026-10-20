@@ -70,6 +70,7 @@ struct Arm {
     std::atomic<std::uintptr_t> board_holder{};
     hold::Vec3 board_scale{1, 1, 1};
     bool board_hidden{};
+    float push{};          // render thread: how much you are pushing, eased
 };
 Arm &arm() {
     static auto *value = new Arm;
@@ -190,6 +191,13 @@ void bend(std::uintptr_t component, std::uintptr_t holder, bool animated) noexce
         goal.hunch = a.seen.hunch;
         goal.two_hands = a.seen.two_hands;
         goal.still = a.seen.still;
+        goal.pivot = a.seen.pivot;
+        {
+            // Pushing on the board: the knees mostly straighten while the foot is down.
+            const float pushing = a.seen.on_board ? hold::pushing(pose) : 0.0f;
+            a.push += (pushing - a.push) * std::clamp(16.0f * 0.016f, 0.0f, 1.0f);
+            goal.crouch *= 1.0f - 0.65f * a.push;
+        }
         if (a.seen.relative) {
             std::array<hold::Placed, hold::right_chain.size()> placed{};
             if (!hold::compose(pose, joints, placed)) return;
@@ -234,7 +242,7 @@ void bend(std::uintptr_t component, std::uintptr_t holder, bool animated) noexce
 // itself, so the others see the camera held out whether or not the game drew or animated your skater
 // in between (a camera filming someone else looks away from you).
 struct Outgoing {
-    float weight{};
+    float weight{}, push{};
     ULONGLONG last{};
     std::atomic<std::uint32_t> sent{}, bent{};
 };
@@ -288,6 +296,9 @@ void on_outgoing(std::uintptr_t component, multiplayer::Pose &sent) noexcept {
         goal.hunch = request.hunch;
         goal.two_hands = request.two_hands;
         goal.still = request.still;
+        goal.pivot = request.pivot;
+        o.push += ((request.on_board ? hold::pushing(pose) : 0.0f) - o.push) * std::clamp(dt * 8.0f, 0.0f, 1.0f);
+        goal.crouch *= 1.0f - 0.65f * o.push;
         const auto joints = hold::chain(request.hand);
 
         if (request.relative) {
