@@ -1282,8 +1282,9 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
     bool trapped = false;
     const float planned = plan(now, angle_target_ + (grind_weight_ > 0.05f ? sign * 12.0f * degrees * grind_weight_ : 0.0f), base_d, height, speed, trapped);
     {
-        const float most = (plan_risk_ > 0.5f || planned * angle_ < 0.0f ? 30.0f : 15.0f) * degrees;
-        spring(angle_, angle_rate_, planned, 0.0f, plan_risk_ > 0.5f ? 1.6f : 0.8f, 1.0f, dt);
+        const bool crossing = planned * angle_ < 0.0f; // over to your other side (the left stick, or round something)
+        const float most = (crossing ? 60.0f : plan_risk_ > 0.5f ? 30.0f : 15.0f) * degrees;
+        spring(angle_, angle_rate_, planned, 0.0f, crossing ? 2.2f : plan_risk_ > 0.5f ? 1.6f : 0.8f, 1.0f, dt);
         angle_rate_ = std::clamp(angle_rate_, -most, most);
     }
     plan_scale_ = std::clamp(plan_scale_, 0.7f, 1.4f);
@@ -1415,7 +1416,9 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
     }
     if (raised && !raised_was_ && operator_have_ && post_ == Post::none && rise_index > 0) {
         const float rise = trail_[rise_index].at[1] - ground;
-        ledge_side_ = side_found && !(rise < 0.8f && unit(random_) < 0.35f);
+        // (They ride beside it and film the whole of whatever you do on it; only with no room beside it
+        // at all do they wait at its foot with the camera up over it.)
+        ledge_side_ = side_found;
         if (!ledge_side_ && rise < 1.3f) {
             // The foot of it: back along the trail from where you popped onto it (before the air), out
             // of the way of the face.
@@ -2133,9 +2136,11 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
         if (halt_ != Halt::none && (halt_stopped_ || operator_speed < 0.3f) && !halt_zoom_rolled_) {
             halt_zoom_rolled_ = true;
             zoom_kind_ = 0;
+            // (Close to you already: no zoom.)
+            const bool far_enough = far_off > (fish ? 5.0f : 10.0f);
             if (halt_ == Halt::slam) {
-                if (slam_zoom_ && seen && share < 0.45f) zoom_kind_ = 1;
-            } else if (stop_zoom_ && seen && unit(random_) < 0.4f && share < 0.4f) {
+                if (slam_zoom_ && seen && far_enough && share < 0.45f) zoom_kind_ = 1;
+            } else if (stop_zoom_ && seen && far_enough && unit(random_) < 0.4f && share < 0.4f) {
                 zoom_kind_ = 2;
             }
             if (zoom_kind_ != 0) zoom_since_ = now;
@@ -2412,13 +2417,15 @@ Frame Rig::film(double now, float dt, const Subject &self, const Subject *target
         film_down_ += (tucked - film_down_) * ease(dt, 0.2f);
     }
     const float hold_base = std::clamp(s.hold_height, 0.05f, 1.8f);
-    const float eye_line = 1.5f, stomach = 1.0f;
+    // (Up: at the eye, the arm out a little in front of the face, through the viewfinder. Down: low,
+    // almost between the feet, pointing at the ground, the back bent right over it.)
+    const float eye_line = 1.5f, between_feet = 0.45f;
     float hold = hold_base;
-    hold = mix(hold, std::max(hold, stomach), film_down_);
+    hold = mix(hold, between_feet, film_down_);
     hold = mix(hold, std::max(hold, eye_line), film_up_);
     const Vec3 body{me.position[0], operator_height_ + hold, me.position[2]};
     const float reach_yaw = aim_.have ? aim_.yaw : heading;
-    const float reach = mix(0.62f, 0.3f, std::max(film_up_, film_down_));
+    const float reach = mix(mix(0.62f, 0.42f, film_up_), 0.18f, film_down_);
     Vec3 eye = add(body, Vec3{std::sin(reach_yaw) * reach, 0, std::cos(reach_yaw) * reach});
     if (cast_) {
         const Vec3 chest{me.position[0], operator_height_ + std::max(hold, 0.9f), me.position[2]};

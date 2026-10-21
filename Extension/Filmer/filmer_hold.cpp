@@ -328,10 +328,25 @@ Held hold_one(std::span<Bone> pose, const Goal &goal) noexcept {
         // Pointed well up, it is held up to the eye instead: no curl over it, the head tilted back
         // to the viewfinder (eased in with the tilt).
         const float up_t = std::clamp((pitch - 0.3f) / 0.6f, 0.0f, 1.0f);
-        const float amount = std::min(goal.hunch * std::clamp(1.0f - pitch * 1.2f, 0.3f, 1.6f), 1.0f) * body_weight * (1.0f - up_t);
-        const float look = (std::min(amount * 0.8f, 0.6f * body_weight) * (1.0f - up_t) - up_t * std::min(pitch, 1.2f) * 0.75f * body_weight);
+        // Pointed right down at the ground: bent right over it (the shoulders come down to hold it
+        // low, almost between the feet).
+        const float down_t = std::clamp((-pitch - 0.6f) / 0.5f, 0.0f, 1.0f);
+        const float most = 1.0f + 0.4f * down_t;
+        const float amount = std::min(goal.hunch * std::clamp(1.0f - pitch * 1.2f, 0.3f, 1.6f) + 0.5f * down_t, most) * body_weight * (1.0f - up_t);
+        const float look = (std::min(amount * 0.8f, 0.6f * body_weight) * (1.0f - up_t) - up_t * std::min(pitch, 1.2f) * 0.45f * body_weight);
+        // Up to the eye: the shoulders turn a little, the holding arm's shoulder coming forward, so
+        // the arm reaches out in front of the face to the viewfinder.
+        float shoulders = 0.0f;
+        if (up_t > 0.0f) {
+            std::array<Placed, right_chain.size()> arm{};
+            if (compose(pose, joints, arm)) {
+                const Vec3 r = sub(arm[upper].position, arm[chest].position);
+                const float way = dot(cross({0.0f, 1.0f, 0.0f}, r), facing) >= 0.0f ? 1.0f : -1.0f;
+                shoulders = way * 0.35f * up_t * body_weight;
+            }
+        }
         // The shoulders and head turn the rest of the way to the camera off to the side.
-        if (!hunch(pose, toward, amount, look, full * (1.0f - hips_share) * body_weight)) return {};
+        if (!hunch(pose, toward, amount, look, full * (1.0f - hips_share) * body_weight + shoulders)) return {};
     }
     if (!compose(pose, joints, w)) return {};
     const Quat aim = normalized(goal.aim);
@@ -361,7 +376,9 @@ Held hold_one(std::span<Bone> pose, const Goal &goal) noexcept {
             const float pointing_y = rotate(aim, {0.0f, 0.0f, -1.0f})[1];
             const float to_eye = std::clamp((pointing_y - 0.35f) / 0.45f, 0.0f, 1.0f);
             const float tucked = std::clamp((-pointing_y - 0.55f) / 0.35f, 0.0f, 1.0f);
-            const float reach_out = min_reach_out * (1.0f - 0.35f * toward_side) * (1.0f - 0.4f * std::max(to_eye, tucked));
+            // (Up, the arm still out in front of the face, bent a little; down, the camera in close
+            // under the body.)
+            const float reach_out = min_reach_out * (1.0f - 0.35f * toward_side) * (1.0f - 0.6f * tucked);
             if (out < reach_out) lens = add(lens, scaled(ahead, reach_out - out));
             else if (toward_side > 0.0f && out > reach_out + 0.1f) lens = sub(lens, scaled(ahead, (out - reach_out - 0.1f) * toward_side));
             lens[1] += side_lift * toward_side;
@@ -379,10 +396,11 @@ Held hold_one(std::span<Bone> pose, const Goal &goal) noexcept {
                 if (out_now > reach_out + 0.05f) lens = sub(lens, scaled(ahead, (out_now - reach_out - 0.05f) * to_eye));
             }
             if (tucked > 0.0f) {
-                // Down over the stomach, close in.
-                lens[1] = std::max(lens[1], lens[1] + (s[1] - tucked_below_shoulder - lens[1]) * tucked);
-                const float out_now = dot(sub(lens, s), ahead);
-                if (out_now > reach_out + 0.05f) lens = sub(lens, scaled(ahead, (out_now - reach_out - 0.05f) * tucked));
+                // Down at the ground: low, almost between the feet, a little in front of the hips (the
+                // back bent right over it brings the shoulders down to reach it).
+                const Vec3 hips = w[2].position;
+                const Vec3 under{hips[0] + ahead[0] * 0.12f, hips[1] - tucked_below_hips, hips[2] + ahead[2] * 0.12f};
+                lens = add(lens, scaled(sub(under, lens), tucked));
             }
         }
     }
