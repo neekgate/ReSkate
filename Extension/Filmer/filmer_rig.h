@@ -396,6 +396,9 @@ private:
     bool drifting_{};
     float drift_sign_{1.0f}, drift_done_{};
     float auto_zoom_{1.0f};
+    int zoom_kind_{};          // 0 none, 1 the slam's, 2 a stop's
+    double zoom_since_{};
+    bool auto_zooming_{};      // the zoom is the filmer's own, still on its way
     // The skater pushing (their speed rising on the flat), stepping off the board.
     float speed_slow_{}, skater_accel_{}, last_speed_{};
     bool pushed_{}, was_on_foot_{}, on_foot_{};
@@ -429,6 +432,7 @@ private:
     // The camera's own lift: the grind's, the ledge's and the wall's, eased together; and the little
     // lift of the hands through an air.
     float lift_{}, lift_rate_{}, air_lift_{}, air_lift_rate_{};
+    float guard_{};                 // up over something low just ahead of the lens (metres over the usual height)
     // The height the framing follows: eased, so an ollie is a soft rise and fall, not a jolt.
     float focus_y_{};
     bool focus_have_{};

@@ -109,6 +109,8 @@ void Rig::reset() noexcept {
     halt_stopped_ = halt_zoom_rolled_ = drifting_ = false;
     bail_over_since_ = -1.0;
     auto_zoom_ = 1.0f;
+    zoom_kind_ = 0;
+    auto_zooming_ = false;
     speed_slow_ = 0.0f;
     pushed_ = was_on_foot_ = on_foot_ = false;
     caution_ = false;
@@ -252,10 +254,19 @@ float Rig::angle_degrees() const noexcept { return angle_ / degrees; }
 // out to the long lens's widest.
 void Rig::ease_zoom(float dt, const RigSettings &s) noexcept {
     if (s.lens != Lens::long_lens || !stationary()) zoom_target_ = 1.0f;
-    // A zoom of the filmer's own (a slam, a stop) goes in slowly and comes back out unhurried.
+    // A zoom of the filmer's own (a slam, a stop) goes in, and later back out, at one steady moderate
+    // pace (in steps of the picture's size, so it looks the same pace at any zoom), easing only as it
+    // arrives. Yours (the long lens held still) is a quick servo.
     const float want = std::max(zoom_target_, auto_zoom_);
-    const float tau = auto_zoom_ > 1.001f ? 0.7f : zoom_ > want + 0.01f ? 0.6f : 0.15f;
-    zoom_ += (want - zoom_) * ease(dt, tau);
+    if (auto_zoom_ > 1.001f || auto_zooming_) {
+        const float from = std::log(std::max(zoom_, 1.0f)), to = std::log(std::max(want, 1.0f));
+        const float diff = to - from;
+        const float step = std::min(std::abs(diff), dt * std::min(0.4f, std::abs(diff) * 2.5f + 0.05f));
+        zoom_ = std::exp(from + std::copysign(step, diff));
+        auto_zooming_ = auto_zoom_ > 1.001f || std::abs(zoom_ - want) > 0.002f;
+    } else {
+        zoom_ += (want - zoom_) * ease(dt, 0.15f);
+    }
     if (std::abs(zoom_ - want) < 0.002f) zoom_ = want;
 }
 
@@ -1046,7 +1057,9 @@ void Rig::resume_behind() noexcept {
     post_ = Post::none;
     planted_ = edge_ = holding_ = false;
     caution_ = false;
-    auto_zoom_ = 1.0f;
+    auto_zoom_ = zoom_ = 1.0f; // a cut: the new shot starts wide
+    zoom_kind_ = 0;
+    auto_zooming_ = false;
 }
 
 std::string Rig::doing() const {
@@ -1151,7 +1164,6 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
         case Halt::none:
             break;
         }
-        if (halt_ == Halt::none) auto_zoom_ = 1.0f;
     }
     // Lost sight of you for a while when riding along: cut.
     if (!planted_ && halt_ == Halt::none && !edge_ && !holding_ && post_ == Post::none && unseen_since_ >= 0 && now - unseen_since_ > 2.5)
@@ -1173,7 +1185,9 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
         post_ = Post::none;
         caution_ = false;
         drifting_ = false;
-        auto_zoom_ = 1.0f;
+        auto_zoom_ = zoom_ = 1.0f; // a cut: the new shot starts wide
+        zoom_kind_ = 0;
+        auto_zooming_ = false;
         wall_raise_target_ = 0.0f;
         hidden_since_ = -1.0;
         peeking_ = false;
@@ -1585,7 +1599,7 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
         }
         if (halt_ == Halt::wait && now - halt_since_ > 1.5) halt_ = Halt::none; // look again, riding
     }
-    if (halt_ == Halt::none) { drifting_ = false; auto_zoom_ = 1.0f; }
+    if (halt_ == Halt::none) drifting_ = false;
     // A drop ahead of you that would be too high to huck: a filmer sees it coming and eases off, so
     // that if you ollie off it they can stop at the top without slamming on the brakes. (You roll down
     // it instead, a ramp or a bank: they carry on after you.)
@@ -1728,7 +1742,8 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
             if (std::abs(steer_angle_) > 0.5f * degrees) {
                 // Ride that way at their pace, then back towards the spot once past.
                 const Vec3 turned = rotated(way, steer_angle_);
-                desired = add(Vec3{operator_[0], desired[1], operator_[2]}, scale(turned, std::max(dist, 1.2f)));
+                // (Only round it: a couple of metres that way, not off as far as their spot is.)
+                desired = add(Vec3{operator_[0], desired[1], operator_[2]}, scale(turned, std::clamp(dist, 1.2f, 2.2f)));
             }
         }
     } else {
@@ -1945,9 +1960,29 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
     {
         const float grind_lift = grind_weight_ * (grind_style_ == 1 ? 0.1f : grind_style_ == 2 ? 0.0f : 0.35f);
         const float ledge_lift = post_ == Post::ledge ? ledge_lift_ : 0.0f;
-        const float lift_target = std::max({grind_lift, ledge_lift, wall_raise_target_});
+        // Something low coming up in front of the lens (a manual pad, a ledge, a planter, a kerb-high
+        // box): the camera goes up over it before it gets there, whatever height it is set to, so it
+        // never bumps into it. (Too tall to see over, it is a wall: the way round is the planner's.)
+        float guard = 0.0f;
+        if (cast_ && world_answers()) {
+            const float v = flat_length(operator_velocity_);
+            Vec3 way = v > 0.3f ? scale(Vec3{operator_velocity_[0], 0.0f, operator_velocity_[2]}, 1.0f / v)
+                                : Vec3{std::sin(aim_.yaw), 0.0f, std::cos(aim_.yaw)};
+            probe_budget_ += 4;
+            // (A step up: sudden, not the gentle rise of a bank or a hill, which they ride up anyway.)
+            float top = operator_floor_, last = operator_floor_;
+            for (const float out : {0.0f, 0.35f, 0.75f, 0.75f + std::min(v, 8.0f) * 0.15f}) {
+                const auto g = ground_at(operator_[0] + way[0] * out, operator_[2] + way[2] * out, operator_floor_ + raise_ceiling - 0.9f);
+                if (!g) continue;
+                if (*g < operator_floor_ + raise_ceiling - 0.3f && *g - last > 0.18f) top = std::max(top, *g);
+                last = *g;
+            }
+            if (top > operator_floor_ + 0.1f) guard = std::min(raise_ceiling, top - operator_floor_ + 0.3f) - height;
+        }
+        guard_ = std::max(0.0f, guard);
+        const float lift_target = std::max({grind_lift, ledge_lift, wall_raise_target_, guard_});
         // (Up to see you over a wall: a touch quicker, as the arms go up.)
-        const bool for_wall = wall_raise_target_ > 0.0f && wall_raise_target_ >= lift_target - 1e-3f;
+        const bool for_wall = (wall_raise_target_ > 0.0f && wall_raise_target_ >= lift_target - 1e-3f) || (guard_ > 0.0f && guard_ >= lift_target - 1e-3f);
         spring(lift_, lift_rate_, lift_target, 0.0f, for_wall ? 6.5f : 1.8f, 1.0f, dt);
         lift_rate_ = std::clamp(lift_rate_, -0.8f, for_wall ? 3.6f : 0.8f);
         lift_ = std::max(0.0f, lift_);
@@ -1959,7 +1994,8 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
             air_target = std::max(air_target, join_to_ - operator_floor_ + 0.05f);
         spring(air_lift_, air_lift_rate_, air_target, 0.0f, 5.0f, 1.0f, dt);
     }
-    const float extra = stop_lift_ + lift_ + air_lift_;
+    // (The lift over something and the hop up after you onto it are the same lift: the higher of them.)
+    const float extra = stop_lift_ + std::max(lift_ + std::min(air_lift_, 0.08f), air_lift_);
     spring(operator_height_, operator_height_rate_, operator_floor_ + height + extra, floor_rate_, 5.5f, 0.9f, dt);
     operator_height_ = std::clamp(operator_height_, operator_floor_ + lens_clearance,
                                   operator_floor_ + std::max(height + extra + 0.15f, std::min(raise_ceiling, height + 0.15f)));
@@ -2085,20 +2121,37 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
             }
         }
     }
-    // The zoom: you slammed and look small in the frame (a long way off), slowly in until you fit it;
-    // now and then (about 4 in 10) when they stop by themselves, a slight zoom onto you. Off again once
-    // they ride on.
-    if (halt_ != Halt::none && (halt_stopped_ || operator_speed < 0.3f) && !halt_zoom_rolled_) {
-        halt_zoom_rolled_ = true;
+    // The zoom: you slammed and look small in the frame (a long way off), in until you fill it; now and
+    // then (about 4 in 10) when they stop by themselves, a slight zoom onto you. As much as it takes for
+    // how far off you are (kept so as you move), at a steady, moderate pace. Held at least 3.5 seconds,
+    // and only after they ride on (or you are up), back out at the same pace.
+    {
         const float far_off = std::max(length(sub(centre, eye)), 0.5f);
         const float base_half = render_fov(s.lens) * 0.5f * degrees;
         const float share = std::atan(0.9f / far_off) / base_half; // half your height against half the frame
-        const float most = fish ? 2.0f : max_zoom;
         const bool seen = unseen_since_ < 0.0;
-        if (halt_ == Halt::slam) {
-            if (slam_zoom_ && seen && share < 0.45f) auto_zoom_ = std::clamp(0.55f / share, 1.0f, most);
-        } else if (stop_zoom_ && seen && unit(random_) < 0.4f && share < 0.4f) {
-            auto_zoom_ = std::clamp(0.4f / share, 1.0f, fish ? 1.5f : 2.5f);
+        if (halt_ != Halt::none && (halt_stopped_ || operator_speed < 0.3f) && !halt_zoom_rolled_) {
+            halt_zoom_rolled_ = true;
+            zoom_kind_ = 0;
+            if (halt_ == Halt::slam) {
+                if (slam_zoom_ && seen && share < 0.45f) zoom_kind_ = 1;
+            } else if (stop_zoom_ && seen && unit(random_) < 0.4f && share < 0.4f) {
+                zoom_kind_ = 2;
+            }
+            if (zoom_kind_ != 0) zoom_since_ = now;
+        }
+        if (zoom_kind_ != 0) {
+            const bool still_on = halt_ != Halt::none || now - zoom_since_ < 3.5;
+            if (!still_on) {
+                zoom_kind_ = 0;
+                auto_zoom_ = 1.0f;
+            } else if (seen || auto_zoom_ <= 1.0f) {
+                const float fill = zoom_kind_ == 1 ? 0.55f : 0.4f;
+                const float most = zoom_kind_ == 1 ? (fish ? 2.0f : max_zoom) : (fish ? 1.5f : 2.5f);
+                auto_zoom_ = std::clamp(fill / std::max(share, 0.02f), 1.0f, most);
+            }
+        } else {
+            auto_zoom_ = 1.0f;
         }
     }
     // Aim: at where the skater was a moment ago (reaction), a little off-centre (a person framing),
