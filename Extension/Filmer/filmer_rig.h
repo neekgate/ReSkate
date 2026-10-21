@@ -376,7 +376,7 @@ private:
     float drift_sign_{1.0f}, drift_done_{};
     float auto_zoom_{1.0f};
     // The skater pushing (their speed rising on the flat), stepping off the board.
-    float speed_slow_{};
+    float speed_slow_{}, skater_accel_{}, last_speed_{};
     bool pushed_{}, was_on_foot_{}, on_foot_{};
     // A drop ahead of you, seen before you get to it: the filmer eases off so they could stop at it.
     bool caution_{};
@@ -396,11 +396,15 @@ private:
     Vec3 post_spot_{};
     double post_since_{};
     float ledge_lift_{};
+    Vec3 ledge_face_{}, ledge_back_{0, 0, -1};
     bool raised_was_{}, ledge_side_{};
     // The camera raised to see you over a wall or a fence (up to raise_ceiling), and when to look again.
     float wall_raise_{}, wall_raise_target_{}, wall_raise_rate_{};
     double wall_next_{}, hidden_since_{-1.0}, seen_low_since_{-1.0};
     float wall_delay_{0.4f};
+    // Gone closer to what hides you to look over it: where to.
+    bool peeking_{};
+    Vec3 peek_spot_{};
     // The camera's own lift: the grind's, the ledge's and the wall's, eased together; and the little
     // lift of the hands through an air.
     float lift_{}, lift_rate_{}, air_lift_{}, air_lift_rate_{};
