@@ -4,6 +4,7 @@
 #include "filmer_outfit.h"
 #include <Windows.h>
 #include "Engine/Game/Build/20260929/no_bail.h"
+#include "Engine/Game/Skater/first_person_cycle.h"
 #include "Extension/Multiplayer/Remote/native_prop.h"
 #include "Engine/Core/Json/json.h"
 #include "Engine/Core/Log/logging.h"
@@ -38,7 +39,8 @@ namespace dingosdk::filmer {
 namespace {
 constexpr unsigned filter_slot = 1;            // DingoSDKOverlaySetGamepadFilterSlot
 constexpr std::uint16_t left_thumb = 0x0040;   // XINPUT_GAMEPAD_LEFT_THUMB: following, stop and film / ride again
-constexpr std::uint16_t right_thumb = 0x0080;  // XINPUT_GAMEPAD_RIGHT_THUMB: the stick click, a slap
+constexpr std::uint16_t right_thumb = 0x0080;  // XINPUT_GAMEPAD_RIGHT_THUMB: the stick click (the camera cycle, or a slap)
+constexpr std::uint16_t dpad_up = 0x0001, dpad_down = 0x0002, back_button = 0x0020;
 constexpr float stick_dead_zone = 7849.0f;     // the left stick's XInput dead zone: fine framing
 constexpr std::size_t clip_history = 20;
 
@@ -96,6 +98,8 @@ struct State {
     float zoom_shown{1.0f};
     std::string cruise_note;
     float camera_fov{};
+    bool hud_hidden{};             // the game's interface was hidden, as the console last said (for the camera cycle)
+    bool lagging_shown{}, resting_shown{};
     bool holdtest{};               // `filmer holdtest`: the camera held out on your skater, the game's camera
     bool holding{};                // the arm holds the camera out this tick (the camcorder goes in the hand)
     bool on_foot{};                // the skater is on foot (this tick)
@@ -174,7 +178,9 @@ void load_store() {
         r.stop_at_drops = flag(o, "stop_at_drops", d.rig.stop_at_drops);
         r.cruise = flag(o, "cruise", d.rig.cruise);
         r.stop_style = o.value("stop_style", std::string("instant")) == "stair" ? StopStyle::stair : StopStyle::instant;
-        r.angles = static_cast<std::uint8_t>(std::clamp(o.value("angles", 7), 1, 7));
+        r.angles = static_cast<std::uint8_t>(std::clamp(o.value("angles", 3), 1, 7) & (angle_behind | angle_side));
+        if (!r.angles) r.angles = angle_side; // saved as ahead only: never in front any more, so out wide
+        if (r.style == Style::ahead) r.style = Style::side;
         r.distance_variety = clamped(o, "distance_variety", d.rig.distance_variety, 0.0f, 1.0f);
         r.height_variety = clamped(o, "height_variety", d.rig.height_variety, 0.0f, 1.0f);
         r.tripod_track = flag(o, "tripod_track", d.rig.tripod_track);
@@ -185,6 +191,12 @@ void load_store() {
         r.mouse_sensitivity = clamped(o, "mouse_sensitivity", d.rig.mouse_sensitivity, 0.1f, 5.0f);
         r.lunge = flag(o, "lunge", d.rig.lunge);
         s.settings.stick_clicks = flag(o, "stick_clicks", d.stick_clicks);
+        s.settings.camera_cycle = flag(o, "camera_cycle", d.camera_cycle);
+        {
+            const auto slap = o.value("slap_button", std::string(slap_button_name(d.slap_button)));
+            s.settings.slap_button = slap == "rs" ? SlapButton::right_stick : slap == "up" ? SlapButton::dpad_up
+                : slap == "back" ? SlapButton::back : slap == "none" ? SlapButton::none : SlapButton::dpad_down;
+        }
         s.settings.hold_camera = flag(o, "hold_camera", d.hold_camera);
         s.settings.left_hand = false; // the left hand never held it properly: always the right
         s.settings.show_cameras = flag(o, "show_cameras", d.show_cameras);
@@ -276,6 +288,8 @@ void save_store() {
         json["mouse_sensitivity"] = r.mouse_sensitivity;
         json["lunge"] = r.lunge;
         json["stick_clicks"] = s.settings.stick_clicks;
+        json["camera_cycle"] = s.settings.camera_cycle;
+        json["slap_button"] = slap_button_name(s.settings.slap_button);
         json["hold_camera"] = s.settings.hold_camera;
         json["camera_hand"] = s.settings.left_hand ? "left" : "right";
         json["show_cameras"] = s.settings.show_cameras;
@@ -514,6 +528,8 @@ void publish_view(State &s) {
     next->auto_angle = s.rig.angle_degrees();
     next->planted = s.rig.planted();
     next->at_edge = s.rig.at_edge();
+    next->lagging = s.lagging_shown;
+    next->resting = s.resting_shown;
     next->camera_fov = s.camera_fov;
     next->stationary = s.stationary_shown;
     next->zoom = s.zoom_shown;
@@ -537,14 +553,35 @@ void set_status(State &s, std::string text) {
     say(logging::Level::info, "Filmer: " + s.status);
 }
 
-// The right stick and its click are the camera's while you film; following, the two stick clicks are
-// the filmer's (stop and film, slap). Nothing is taken otherwise.
+// The pad bit of the slap button, while it is the slap's: the right stick click is the camera cycle's
+// while following with the cycle on, so it does not slap then.
+std::uint16_t slap_bit(const State &s) {
+    switch (s.settings.slap_button) {
+    case SlapButton::right_stick:
+        if (s.settings.mode == Mode::film) return right_thumb;
+        if (s.settings.mode == Mode::follow && s.settings.camera_cycle) return 0;
+        return s.settings.stick_clicks ? right_thumb : std::uint16_t{0};
+    case SlapButton::dpad_down: return dpad_down;
+    case SlapButton::dpad_up: return dpad_up;
+    case SlapButton::back: return back_button;
+    case SlapButton::none: break;
+    }
+    return 0;
+}
+
+// The right stick and its click are the camera's while you film; following, the left stick's click is
+// the filmer's (stop and film / ride again), and the slap button is the slap's. With the camera cycle
+// on, the right stick's click stays the game's (its camera height button), so the cycle goes on.
+// Nothing is taken while the Filmer does not have the camera.
 void update_filter(State &s) {
     const bool film = s.settings.mode == Mode::film && s.held && s.settings.take_stick;
-    const bool follow = (s.settings.mode == Mode::follow || s.settings.mode == Mode::tripod) && s.held && s.settings.stick_clicks;
+    const bool clicks = (s.settings.mode == Mode::follow || s.settings.mode == Mode::tripod) && s.held && s.settings.stick_clicks;
+    std::uint16_t mask = 0;
+    if (film) mask |= right_thumb;
+    if (clicks) mask |= left_thumb;
+    if (s.held && s.settings.mode != Mode::off) mask |= slap_bit(s);
     take_right_stick.store(film, std::memory_order_release);
-    masked_buttons.store(film ? right_thumb : follow ? static_cast<std::uint16_t>(left_thumb | right_thumb) : std::uint16_t{0},
-                         std::memory_order_release);
+    masked_buttons.store(mask, std::memory_order_release);
     const bool wanted = s.settings.mode != Mode::off;
     if (wanted != s.filter_installed) {
         DingoSDKOverlaySetGamepadFilterSlot(filter_slot, wanted ? &filter_pad : nullptr);
@@ -552,13 +589,13 @@ void update_filter(State &s) {
     }
 }
 
-// The stick clicks: the right one slaps the lens (filming, or following with stick_clicks); the left
-// one, following, stops the filmer to film from where they stand, and sends them riding again.
+// The pad: the slap button slaps the lens; the left stick's click, following, stops the filmer to
+// film from where they stand, and sends them riding again (on the tripod, sets it down where you are).
 void read_clicks(State &s, std::uint16_t buttons) {
-    const auto pressed = [&](std::uint16_t button) { return (buttons & button) != 0 && (s.previous_buttons & button) == 0; };
+    const auto pressed = [&](std::uint16_t button) { return button && (buttons & button) != 0 && (s.previous_buttons & button) == 0; };
     const bool follow = s.settings.mode == Mode::follow && s.settings.stick_clicks;
     const bool tripod = s.settings.mode == Mode::tripod && s.settings.stick_clicks;
-    if (s.held && pressed(right_thumb) && (s.settings.mode == Mode::film || follow || tripod)) s.last = slap(s);
+    if (s.held && pressed(slap_bit(s))) s.last = slap(s);
     if (s.held && tripod && pressed(left_thumb)) {
         // The tripod: set down again where you stand, facing your way.
         if (const Subject self = local_subject(); self.valid) {
@@ -613,12 +650,27 @@ void release_camera(State &s, std::uintptr_t base, std::uintptr_t client, bool c
 }
 } // namespace
 
+namespace {
+std::string set_mode(State &s, Mode mode, bool hud_hidden);
+}
+
 void tick(std::uintptr_t base, std::uintptr_t client, bool ready, bool camera_phase, int game_state) noexcept {
     try {
         auto &s = state();
         if (!s.loaded) {
             load_store();
             s.view_due = true;
+        }
+        // The camera cycle (the game's camera height button) asked the Filmer in or out.
+        {
+            auto &link = first_person::filmer_link;
+            const auto step = static_cast<first_person::CycleStep>(link.request.exchange(0, std::memory_order_acq_rel));
+            if (step == first_person::CycleStep::enter && s.settings.mode == Mode::off) {
+                s.last = set_mode(s, Mode::follow, s.hud_hidden);
+                s.rig.reset();
+            } else if (step == first_person::CycleStep::leave && s.settings.mode == Mode::follow) {
+                s.last = set_mode(s, Mode::off, s.hud_hidden);
+            }
         }
         if (!s.world_set) {
             // The game's own collision (the Park Editor's ray, as the drone uses): the AI filmer rides
@@ -853,6 +905,8 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready, bool camera_ph
                     std::string where;
                     if (s.settings.mode == Mode::follow && s.rig.planted()) where = " (stopped: click the left stick to ride again)";
                     else if (s.settings.mode == Mode::follow && s.rig.at_edge()) where = " (stopped at the drop)";
+                    else if (s.settings.mode == Mode::follow && s.rig.lagging()) where = " (too far behind: rolling to a stop)";
+                    else if (s.settings.mode == Mode::follow && s.rig.resting()) where = " (you are still: they wait behind you)";
                     if (s.settings.mode == Mode::tripod)
                         set_status(s, s.rig.tripod_tracking() ? "Tripod: panning with " + name + "." : "Tripod: waiting for " + name + " to ride into the frame.");
                     else
@@ -890,6 +944,22 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready, bool camera_ph
             if (s.settings.camera_worn) flags |= beacon::flag_worn;
             if (s.settings.rig.lens == Lens::long_lens) flags |= beacon::flag_long_lens;
             beacon::publish_local(flags, hold_request.aim);
+        }
+        // The camera cycle: whether the Filmer is in it this moment, has the camera, or could take it.
+        {
+            const bool in_cycle = s.settings.camera_cycle && ready && self.valid;
+            std::uint8_t flags = 0;
+            if (in_cycle) flags |= first_person::filmer_flag_enabled;
+            if (s.settings.mode == Mode::follow) flags |= first_person::filmer_flag_on;
+            if (s.settings.mode == Mode::off) flags |= first_person::filmer_flag_can_enter;
+            auto &link = first_person::filmer_link;
+            link.flags.store(flags, std::memory_order_release);
+            link.published.store(ticks, std::memory_order_release);
+        }
+        if (s.rig.lagging() != s.lagging_shown || s.rig.resting() != s.resting_shown) {
+            s.lagging_shown = s.rig.lagging();
+            s.resting_shown = s.rig.resting();
+            s.view_due = true;
         }
         // The look's clock runs on even when nothing changed, so the snapshot is not republished every
         // tick: only when something did, and a few times a second for the menu's distances.
@@ -956,8 +1026,10 @@ std::string set_mode(State &s, Mode mode, bool hud_hidden) {
     if (before == Mode::off && mode != Mode::off && s.settings.hide_hud && !hud_hidden) {
         console::request_debug(overlay::DebugAction::set_game_ui_hidden, true);
         s.hid_hud = true;
+        s.hud_hidden = true;
     } else if (mode == Mode::off && s.hid_hud) {
         console::request_debug(overlay::DebugAction::set_game_ui_hidden, false);
+        s.hud_hidden = false;
         s.hid_hud = false;
     }
     switch (mode) {
@@ -989,10 +1061,10 @@ std::string set_option(State &s, const std::string &key, const std::string &valu
     };
     if (key == "style") {
         const auto v = lower(value);
-        if (v == "auto") { r.style = Style::automatic; r.angles = 7; }
+        if (v == "auto") { r.style = Style::automatic; r.angles = angle_behind | angle_side; }
         else if (v == "behind") { r.style = Style::behind; r.angles = angle_behind; }
         else if (v == "side") { r.style = Style::side; r.angles = angle_side; }
-        else if (v == "ahead") { r.style = Style::ahead; r.angles = angle_ahead; }
+        else if (v == "ahead") { r.style = Style::side; r.angles = angle_side; } // never in front any more
         else return "error: style is auto, behind, side or ahead.";
         changed(s);
         return std::string("style = ") + style_name(r.style);
@@ -1062,6 +1134,18 @@ std::string set_option(State &s, const std::string &key, const std::string &valu
     if (key == "tilt") return real(r.tilt, 0.0f, 1.0f);
     if (key == "drops") return toggle(r.stop_at_drops);
     if (key == "clicks") return toggle(s.settings.stick_clicks);
+    if (key == "cycle") return toggle(s.settings.camera_cycle);
+    if (key == "slapbutton") {
+        const auto v = lower(value);
+        if (v == "rs" || v == "r3" || v == "rightstick") s.settings.slap_button = SlapButton::right_stick;
+        else if (v == "down" || v == "dpaddown") s.settings.slap_button = SlapButton::dpad_down;
+        else if (v == "up" || v == "dpadup") s.settings.slap_button = SlapButton::dpad_up;
+        else if (v == "back" || v == "view" || v == "select") s.settings.slap_button = SlapButton::back;
+        else if (v == "none" || v == "off") s.settings.slap_button = SlapButton::none;
+        else return "error: slapbutton is rs, down, up, back or none.";
+        changed(s);
+        return std::string("slap button = ") + slap_button_name(s.settings.slap_button);
+    }
     if (key == "anywhere") return toggle(k.anywhere);
     if (key == "lunge") return toggle(r.lunge);
     if (key == "cruise") return toggle(r.cruise);
@@ -1117,6 +1201,7 @@ std::string describe(const State &s) {
 std::string command(std::string_view verb, const std::vector<std::string> &arguments, bool hud_hidden) {
     auto &s = state();
     if (!s.loaded) load_store();
+    s.hud_hidden = hud_hidden;
     const auto arg = [&](std::size_t i) { return i < arguments.size() ? arguments[i] : std::string{}; };
     std::string reply;
     if (verb == "status") {
@@ -1171,16 +1256,18 @@ std::string command(std::string_view verb, const std::vector<std::string> &argum
         const auto bit = [](const std::string &name) -> std::uint8_t {
             return name == "behind" ? angle_behind : name == "side" ? angle_side : name == "ahead" ? angle_ahead : 0;
         };
+        // (The Filmer never rides in front of you any more: ahead is out to the side.)
+        constexpr std::uint8_t both = angle_behind | angle_side;
+        const auto riding = static_cast<std::uint8_t>(r.angles & both ? r.angles & both : angle_behind);
         if (wanted == "next") {
-            // Auto (all of them), behind, side, ahead, and round again.
-            r.angles = static_cast<std::uint8_t>(r.angles == 7 ? angle_behind : r.angles == angle_behind ? angle_side
-                                                 : r.angles == angle_side ? angle_ahead : 7);
+            // Auto (both), behind, side, and round again.
+            r.angles = static_cast<std::uint8_t>(riding == both ? angle_behind : riding == angle_behind ? angle_side : both);
         } else if (wanted == "auto" || wanted == "all") {
-            r.angles = 7;
+            r.angles = both;
         } else if (bit(wanted)) {
-            r.angles = bit(wanted);
+            r.angles = wanted == "ahead" ? angle_side : bit(wanted);
         } else if (wanted == "toggle" && bit(which)) {
-            const auto toggled = static_cast<std::uint8_t>(r.angles ^ bit(which));
+            const auto toggled = static_cast<std::uint8_t>(riding ^ (which == "ahead" ? angle_side : bit(which)));
             if (toggled) r.angles = toggled; // never none
         } else {
             reply = "error: filmer angle next|auto|behind|side|ahead|toggle behind|side|ahead.";

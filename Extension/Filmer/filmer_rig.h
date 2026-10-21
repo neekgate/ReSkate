@@ -50,7 +50,7 @@ struct RigSettings {
     bool stop_at_drops = true; // the filmer stops at the top of a set or a gap you jumped, and films from there
     StopStyle stop_style = StopStyle::instant;
     // The angles Auto moves between (angle_behind | angle_side | angle_ahead): one alone is held.
-    std::uint8_t angles = 7;
+    std::uint8_t angles = angle_behind | angle_side;
     // Through a line the filmer drifts closer and further (distance) and lower and higher (height): 0
     // never, 1 a lot (about half the distance either way; a foot or so of height).
     float distance_variety = 0.0f, height_variety = 0.0f;
@@ -122,6 +122,11 @@ public:
     bool planted() const noexcept { return planted_; }
     // follow: stopped at the top of a drop you went over (stop_at_drops).
     bool at_edge() const noexcept { return edge_; }
+    // follow: too far behind to get good footy, slowing to a stop (they cut to a new spot behind you
+    // once you are well away, as if the next clip).
+    bool lagging() const noexcept { return lagging_; }
+    // follow: you are standing still and the filmer has settled on a spot behind you.
+    bool resting() const noexcept { return rest_have_; }
     // What the operator is working from, for `filmer trace`.
     struct Debug {
         Vec3 subject{}, operator_at{};
@@ -319,6 +324,27 @@ private:
     double slap_at_{-100.0};
     float slap_yaw_{}, slap_pitch_{};
     std::array<Wobble, 9> wobble_{};
+    // The way planner (follow): a few times a second it looks at the spots the filmer could take (out
+    // to the side the default cameras sit, the other side, straight behind you) where you are now and
+    // where you are heading, and keeps to the one with ground at their level, no wall between them and
+    // you and nothing in the way of getting there. `plan_angle_` the angle chosen round you,
+    // `plan_risk_` how bad the wanted angle looked (above 0: the planner turned away from it).
+    float plan(double now, float want, float d, float height, float speed);
+    float plan_angle_{}, plan_risk_{};
+    double plan_next_{}, plan_keep_{};
+    // The skater was just placed afresh (a teleport, back to a marker, a respawn).
+    bool fresh_{};
+    // Too far behind for good footy: braking to lag_stop_.
+    bool lagging_{};
+    double lagging_since_{};
+    Vec3 lag_stop_{};
+    // You standing still: the spot the filmer settled on, where you were then, and how long the spot
+    // has been bad (in front of you, or out of sight of you).
+    bool rest_have_{};
+    Vec3 rest_spot_{}, rest_from_{};
+    double still_since_{-1.0}, rest_bad_since_{-1.0}, rest_next_check_{};
+    bool choose_rest(float d, float height);
+    bool rest_spot_ok(const Vec3 &spot, float d, float height) const;
 };
 
 // Helpers the tests and the overlay share.

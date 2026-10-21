@@ -60,7 +60,7 @@ void people(SkateMenu &menu, const CallbacksV3 &callbacks, const filmer::View &v
         ImGui::PopID();
     }
     if (view.players.empty())
-        note(follow ? "Nobody else is in the session: the AI filmer films you." : "Nobody else is in the session: frame your own shots.");
+        note(follow ? "Nobody else is in the session: the Filmer films you." : "Nobody else is in the session: frame your own shots.");
     ImGui::PopID();
 }
 } // namespace
@@ -71,13 +71,16 @@ void filmer_page(SkateMenu &menu, const Model &, const CallbacksV3 &callbacks) {
     const auto &v = *snapshot;
     const auto &s = v.settings;
     const auto &r = s.rig;
-    ImGui::BeginChild("filmer-page", ImVec2(0, page_body_height(menu)));
-
+    category_tabs(menu, menu.filmer_tab, {"CAMERA", "IN HAND", "LOOK", "CLIPS", "CONTROLS", "DEBUG"}, "filmer-tabs");
+    ImGui::PushID(menu.filmer_tab);
+    ImGui::BeginChild("filmer-page", ImVec2(0, page_body_height(menu)), ImGuiChildFlags_NavFlattened);
+    switch (menu.filmer_tab) {
+    case 0: {
     begin_card(menu, "filmer-camera", "CAMERA", "Who holds the VX, and who is in front of it.");
     int mode = static_cast<int>(s.mode);
-    if (choice(menu, "mode", mode, {"Off", "AI filmer", "You film", "Tripod"}, true, 0.0f,
-               {"The game's own camera.", "An AI filmer rides with a skater and films them. You skate as normal.",
-                "You are the filmer: left stick rides, right stick aims, click it to slap the lens.",
+    if (choice(menu, "mode", mode, {"Off", "Filmer", "You film", "Tripod"}, true, 0.0f,
+               {"The game's own camera.", "Another skater rides with you on their board and films you (or someone in the session): behind you or out to your side, never in front. You skate as normal.",
+                "You are the filmer: left stick rides, right stick aims.",
                 "A camera set down on a tripod: it holds its framing, and pans with the skater once they ride into it."}))
         filmer_command(menu, callbacks, std::string("mode ") + filmer::mode_name(static_cast<filmer::Mode>(mode)));
     info(menu, "Status", v.status);
@@ -94,7 +97,8 @@ void filmer_page(SkateMenu &menu, const Model &, const CallbacksV3 &callbacks) {
         ImGui::PopFont();
         people(menu, callbacks, v, false);
     } else {
-        note("Put \"Filmer on / off\" on a button in Settings > Binds to start filming without the menu.");
+        note(s.camera_cycle ? "Click the right stick to cycle the cameras: high, low, first person (when it is in the cycle), the Filmer. See CONTROLS."
+                            : "Put \"Filmer on / off\" on a button in Settings > Binds to start filming without the menu.");
     }
     end_card();
 
@@ -103,16 +107,15 @@ void filmer_page(SkateMenu &menu, const Model &, const CallbacksV3 &callbacks) {
     int lens = r.lens == filmer::Lens::long_lens ? 1 : 0;
     if (choice(menu, "lens", lens, {"Fisheye (MK1)", "Long lens"})) filmer_command(menu, callbacks, lens ? "set lens long" : "set lens fisheye");
     if (s.mode == filmer::Mode::tripod) {
-        note("Set it down where the camera is now (stop the AI filmer where you want it first), or where you stand. "
+        note("Set it down where the camera is now (stop the Filmer where you want it first), or where you stand. "
              "Turn it with the mouse while nobody is in frame; with the long lens the wheel zooms. "
              "Clicking the left stick sets it down where you stand.");
         if (primary_button(menu, "SET IT DOWN WHERE THE CAMERA IS", v.active)) filmer_command(menu, callbacks, "tripod");
         if (primary_button(menu, "SET IT DOWN WHERE I STAND")) filmer_command(menu, callbacks, "tripod here");
         filmer_toggle(menu, callbacks, "Tracking", "On: it holds its framing until the skater rides into it, then pans with them. Off: a locked-off shot that never moves. Bindable.", "track", r.tripod_track);
         filmer_slider(menu, callbacks, "Tripod height", "Set down where you stand: how high the lens is above the ground.", "tripodheight", r.tripod_height, 0.1f, 2.5f, "%.2f m");
-        filmer_toggle(menu, callbacks, "Stick clicks", "On the tripod: click the left stick to set it down where you stand, the right stick to slap the lens. The game does not get those clicks while this is on.", "clicks", s.stick_clicks);
     } else if (s.mode != filmer::Mode::film) {
-        field(menu, "Angles", "Where the AI filmer rides. Switch on the angles you want: one is held; with more, they move between them through a line as a filmer does. Bind \"next angle\" to cycle.");
+        field(menu, "Angles", "Where the Filmer rides. Switch on the angles you want: one is held; with both, they move between them through a line as a filmer does. They find their way: the side that is clear where you are heading, or straight behind you, never in front.");
         const std::uint8_t angles = r.angles;
         const auto angle_row = [&](const char *label, const char *hint, const char *name, std::uint8_t bit) {
             bool on = (angles & bit) != 0;
@@ -121,8 +124,7 @@ void filmer_page(SkateMenu &menu, const Model &, const CallbacksV3 &callbacks) {
         };
         angle_row("Behind", "A little off to one side, behind you: the classic follow.", "behind", filmer::angle_behind);
         angle_row("Side", "Out wide, alongside you.", "side", filmer::angle_side);
-        angle_row("Ahead", "Riding backwards in front of you (only when you are fast enough to stay ahead of).", "ahead", filmer::angle_ahead);
-        field(menu, "Side", "Which side of you the AI filmer keeps to. Auto: wherever they happen to be.");
+        field(menu, "Side", "Which side of you the Filmer keeps to when it is clear (they take the other side, or straight behind, to get round what is in the way). Auto: wherever they happen to be.");
         int side = static_cast<int>(r.side);
         if (choice(menu, "side", side, {"Auto", "Left", "Right"}))
             filmer_command(menu, callbacks, std::string("set side ") + (side == 1 ? "left" : side == 2 ? "right" : "auto"));
@@ -137,7 +139,6 @@ void filmer_page(SkateMenu &menu, const Model &, const CallbacksV3 &callbacks) {
         if (choice(menu, "stop", stop, {"Instant", "Stair"})) filmer_command(menu, callbacks, stop ? "set stop stair" : "set stop instant");
         if (r.stop_style == filmer::StopStyle::stair)
             filmer_slider(menu, callbacks, "Stair lift", "Stair stop: how much the camera rises once stopped.", "lift", r.stop_lift, 0.0f, 1.5f, "%.2f m");
-        filmer_toggle(menu, callbacks, "Stick clicks", "While the AI films: click the left stick to have them stop and film from where they are (again to ride on), the right stick to slap the lens. The game does not get those clicks while this is on.", "clicks", s.stick_clicks);
         if (s.mode == filmer::Mode::follow && primary_button(menu, v.planted ? "RIDE AGAIN" : "STOP AND FILM FROM HERE", v.active))
             filmer_command(menu, callbacks, "plant");
     }
@@ -150,12 +151,11 @@ void filmer_page(SkateMenu &menu, const Model &, const CallbacksV3 &callbacks) {
         filmer_toggle(menu, callbacks, "Invert up / down", "Push up to point the camera down.", "invert", r.invert_y);
         filmer_toggle(menu, callbacks, "Recenter", "Without the assist: let go and the camera drifts back to where you ride.", "recenter", r.recenter, !r.assist);
         filmer_slider(menu, callbacks, "Hold height", "Where you hold the camera above the ground: low by the board and out at arm's length, clear of your body.", "hold", r.hold_height, 0.05f, 1.8f, "%.2f m");
-        filmer_toggle(menu, callbacks, "Take the right stick", "Keep the right stick (and its click) from the game while you film. Off: it also flicks tricks.", "stick", s.take_stick);
         filmer_toggle(menu, callbacks, "Cruise control", "Filming a friend, you ride at the speed that keeps you the gap behind them: you steer and aim, your push and brake still work. Off in a session whose host has turned boosts off. Bindable.", "cruise", r.cruise);
         filmer_slider(menu, callbacks, "Cruise gap", "How far behind the skater cruise control holds you.", "gap", r.cruise_gap, 1.0f, 12.0f, "%.1f m");
         if (r.cruise && !v.cruise_note.empty()) note(v.cruise_note.c_str());
     }
-    filmer_toggle(menu, callbacks, "Mouse look", "While the camera is held still (the AI filmer stopped, or you standing still filming), the mouse turns it, and with the long lens the wheel zooms.", "mouse", r.mouse_look);
+    filmer_toggle(menu, callbacks, "Mouse look", "While the camera is held still (the Filmer stopped, or you standing still filming), the mouse turns it, and with the long lens the wheel zooms.", "mouse", r.mouse_look);
     filmer_slider(menu, callbacks, "Mouse speed", "How fast the mouse turns the camera.", "mousesens", r.mouse_sensitivity, 0.1f, 5.0f, "x %.2f");
     if (r.lens == filmer::Lens::long_lens) {
         field(menu, "Zoom", "Long lens, while the camera is held still: the wheel, or the zoom binds. Riding again, it eases back out.");
@@ -166,6 +166,9 @@ void filmer_page(SkateMenu &menu, const Model &, const CallbacksV3 &callbacks) {
     }
     end_card();
 
+        break;
+    }
+    case 1: {
     begin_card(menu, "filmer-hand", "CAMERA IN HAND", "The VX in your hand, as the others in the session see you filming.");
     filmer_toggle(menu, callbacks, "Hold the camera out", "You film: your arm holds the camera out where the lens is, low by the board with the fisheye. Others in the session see it in your hand (they need this build too). You look through it, so you never see it yourself.", "holdcam", s.hold_camera);
     filmer_toggle(menu, callbacks, "I wear the camcorder", "The camcorder cosmetic (hand wear, made with ReSkate Studio from the fingerless glove) goes in your hand while you film and comes off after; your hand turns so its lens points where you aim, and no separate model is placed. Others see it in your outfit.", "worn", s.camera_worn);
@@ -177,13 +180,12 @@ void filmer_page(SkateMenu &menu, const Model &, const CallbacksV3 &callbacks) {
     filmer_slider(menu, callbacks, "Hunch", "How far your back curls over toward the camera; the head looks down at it.", "hunch", s.hunch_degrees, 0.0f, 60.0f, "%.0f deg");
     filmer_toggle(menu, callbacks, "Show other filmers' cameras", "A camera in the hand of anyone in the session who is filming.", "cameras", s.show_cameras);
     filmer_toggle(menu, callbacks, "Stand-in when there is no model", "The camera's own model has to be built with ReSkate Studio (assets/models/vx1000). Until it is, show a traffic cone in the hand instead of nothing.", "standin", s.stand_in);
-    if (primary_button(menu, v.holdtest ? "STOP THE HOLD TEST" : "HOLD TEST: SEE YOUR SKATER HOLD IT"))
-        filmer_command(menu, callbacks, std::string("holdtest ") + (v.holdtest ? "off" : "on"));
-    note("Hold test: with the game's own camera (or the AI filmer's), your skater holds the camera out in front at arm's length so you can see it. A stand-in cone shows if the model is not built.");
-    if (!v.held_status.empty()) note(v.held_status.c_str());
     note("Camera model: Camcorder Video Camera by James.Hasegawa (CC BY 4.0), rescaled for the game.");
     end_card();
 
+        break;
+    }
+    case 2: {
     begin_card(menu, "filmer-look", "VX1000 LOOK", "What the tape looks like. Each part can be switched off.");
     filmer_toggle(menu, callbacks, "VX look", "The whole look, drawn over the game while the Filmer films.", "look", s.look.enabled);
     const bool look = s.look.enabled;
@@ -213,15 +215,53 @@ void filmer_page(SkateMenu &menu, const Model &, const CallbacksV3 &callbacks) {
     filmer_toggle(menu, callbacks, "Red smear", "Reds trail to the right, as on a composite tape.", "smear", s.look.smear, tape);
     end_card();
 
+        break;
+    }
+    case 3: {
     begin_card(menu, "filmer-clips", "CLIPS", "Slap the lens to end a clip.");
     info(menu, "Rolling", std::format("Clip {}", v.clip));
     if (primary_button(menu, "SLAP THE LENS", s.mode != filmer::Mode::off)) filmer_command(menu, callbacks, "slap");
-    note("Click the right stick (filming, or following with Stick clicks on), or put \"Filmer: slap the lens\" on a button in Settings > Binds.");
+    note(s.slap_button == filmer::SlapButton::none ? "Put \"Filmer: slap the lens\" on a button in Settings > Binds, or choose a slap button in CONTROLS."
+                                                   : "The slap button (CONTROLS), or put \"Filmer: slap the lens\" on a button in Settings > Binds.");
     for (auto it = v.clips.rbegin(); it != v.clips.rend() && it - v.clips.rbegin() < 6; ++it)
         info(menu, std::format("Clip {}", it->number).c_str(), std::format("{:.1f} s, ended {}", it->seconds, it->ended_at));
     if (!v.clips.empty()) note("Every clip is listed with its time in %LOCALAPPDATA%\\ReSkate\\filmer\\clips.csv, for finding them in a recording.");
     end_card();
 
+        break;
+    }
+    case 4: {
+    begin_card(menu, "filmer-controls", "CONTROLLER", "The Filmer's buttons. Each is taken from the game only while the Filmer has the camera.");
+    filmer_toggle(menu, callbacks, "Filmer in the camera cycle", "The game's camera height button (click the right stick) goes high, low, ReSkate's first person (when it is in the cycle: Skater settings), then the Filmer filming you, and back to high.", "cycle", s.camera_cycle);
+    field(menu, "Slap the lens", "The button that slaps the lens to end a clip, while the Filmer has the camera. The right stick's click is the camera cycle's while the Filmer follows you with the cycle on, so it only slaps when you film or with the cycle off.");
+    {
+        int slap = static_cast<int>(s.slap_button);
+        if (choice(menu, "slap", slap, {"Right stick click", "D-pad down", "D-pad up", "View / Back", "None"}))
+            filmer_command(menu, callbacks, std::string("set slapbutton ") + filmer::slap_button_name(static_cast<filmer::SlapButton>(slap)));
+    }
+    filmer_toggle(menu, callbacks, "Left stick click", "While the Filmer follows: click the left stick to have them stop and film from where they are (again to ride on). On the tripod: sets it down where you stand. The game does not get that click while this is on.", "clicks", s.stick_clicks);
+    filmer_toggle(menu, callbacks, "Take the right stick (you film)", "Keep the right stick (and its click) from the game while you film. Off: it also flicks tricks.", "stick", s.take_stick);
+    note("Every Filmer action (on / off, slap, stop and film, next angle, zoom) can also go on any button in Settings > Binds.");
+    end_card();
+        break;
+    }
+    default: {
+    begin_card(menu, "filmer-debug", "DEBUG", "For checking the camera in hand and the Filmer.");
+    info(menu, "Status", v.status);
+    if (s.mode == filmer::Mode::follow)
+        info(menu, "Filmer", v.planted ? "stopped by you" : v.at_edge ? "stopped at a drop" : v.lagging ? "too far behind: rolling to a stop"
+                             : v.resting ? "waiting behind you" : std::format("riding, {:.0f} deg round you", v.auto_angle));
+    if (primary_button(menu, v.holdtest ? "STOP THE HOLD TEST" : "HOLD TEST: SEE YOUR SKATER HOLD IT"))
+        filmer_command(menu, callbacks, std::string("holdtest ") + (v.holdtest ? "off" : "on"));
+    note("Hold test: with the game's own camera (or the Filmer's), your skater holds the camera out in front at arm's length so you can see it. A stand-in cone shows if the model is not built.");
+    if (!v.held_status.empty()) note(v.held_status.c_str());
+    if (primary_button(menu, "TRACE 30 SECONDS", s.mode != filmer::Mode::off)) filmer_command(menu, callbacks, "trace");
+    note("Writes what the Filmer sees each tick to %LOCALAPPDATA%\\ReSkate\\filmer\\trace.csv, to send for tuning.");
+    end_card();
+        break;
+    }
+    }
     ImGui::EndChild();
+    ImGui::PopID();
 }
 } // namespace dingosdk::overlay::menu

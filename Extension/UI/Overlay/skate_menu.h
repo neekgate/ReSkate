@@ -89,6 +89,7 @@ struct SkateMenu {
     std::array<char, 128> world_layer_search{};
     int progression_tab = 0;
     int drone_tab = 0; // the DRONE page (drone_page.cpp)
+    int filmer_tab = 0; // the FILMER page (Extension/Filmer/filmer_page.cpp)
     int bus_stop_map = 0;
     int challenge_type = 0;
     std::array<char, 128> challenge_search{};

@@ -44,8 +44,16 @@ struct Look {
     bool iris = true;         // the auto-iris lags the scene: blown out into the sun, murky into shade
 };
 
+// The button that slaps the lens while the Filmer has the camera (taken from the game while it does).
+// The right stick click is the camera cycle's when that is on, so the slap moved off it by default.
+enum class SlapButton : std::uint8_t { right_stick, dpad_down, dpad_up, back, none };
+
 struct Settings {
     Mode mode = Mode::off;
+    // The game's camera height button (the right stick click) cycles: high, low, ReSkate's first person
+    // (when that is in the cycle, Skater settings), the Filmer, and back to high.
+    bool camera_cycle = true;
+    SlapButton slap_button = SlapButton::dpad_down;
     RigSettings rig;
     Look look;
     bool hide_hud = true;   // hide the game's interface while filming
@@ -96,6 +104,8 @@ struct View {
     std::vector<PlayerRow> players;
     float auto_angle{};       // auto: degrees round the skater
     bool planted{};           // follow: the filmer was told to stop and film from where they stand
+    bool lagging{};           // follow: too far behind for good footy, rolling to a stop
+    bool resting{};           // follow: you are still, and the filmer has settled behind you
     bool at_edge{};           // follow: the filmer stopped where you went over a drop or a gap
     float camera_fov{};       // the game camera's own field of view (the look over another camera)
     bool stationary{};        // the camera is held still: mouse look and the long lens's zoom work
@@ -135,4 +145,5 @@ std::string command(std::string_view verb, const std::vector<std::string> &argum
 const char *mode_name(Mode) noexcept;
 const char *style_name(Style) noexcept;
 const char *lens_name(Lens) noexcept;
+const char *slap_button_name(SlapButton) noexcept;
 } // namespace dingosdk::filmer
