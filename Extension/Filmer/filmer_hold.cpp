@@ -90,6 +90,14 @@ Quat from_rows(const std::array<float, 16> &m) noexcept {
     }
     return normalized(q);
 }
+Vec3 level_heading(const Quat &aim) noexcept {
+    const Quat q = normalized(aim);
+    const Vec3 forward = rotate(q, {0.0f, 0.0f, -1.0f}), up = rotate(q, {0.0f, 1.0f, 0.0f});
+    const float sin_p = std::clamp(forward[1], -1.0f, 1.0f), cos_p = std::sqrt(std::max(0.0f, 1.0f - sin_p * sin_p));
+    const Vec3 h{forward[0] * cos_p - up[0] * sin_p, 0.0f, forward[2] * cos_p - up[2] * sin_p};
+    return unit(h, {0.0f, 0.0f, 1.0f});
+}
+
 Quat from_yaw_pitch(float yaw, float pitch) noexcept {
     const Vec3 forward{std::sin(yaw) * std::cos(pitch), std::sin(pitch), std::cos(yaw) * std::cos(pitch)};
     const Vec3 back = scaled(forward, -1.0f);
@@ -297,7 +305,7 @@ Held hold_one(std::span<Bone> pose, const Goal &goal) noexcept {
         across[1] = 0.0f;
         facing = unit(cross(across, {0.0f, 1.0f, 0.0f}), {0, 0, 1});
         const Vec3 pointing = rotate(normalized(goal.aim), {0.0f, 0.0f, -1.0f});
-        level = unit(Vec3{pointing[0], 0.0f, pointing[2]}, facing);
+        level = level_heading(goal.aim);
         full = std::clamp(std::atan2(dot(cross(facing, level), {0.0f, 1.0f, 0.0f}), dot(facing, level)), -1.6f, 1.6f);
         pitch = std::asin(std::clamp(pointing[1], -1.0f, 1.0f)); // down is negative
     }
@@ -317,8 +325,11 @@ Held hold_one(std::span<Bone> pose, const Goal &goal) noexcept {
         const Vec3 toward = rotate(turn, facing);
         // The back no more than about 57 degrees over, the head down at most about 34 more: it stays a
         // filmer looking down at the camera, never folded past it.
-        const float amount = std::min(goal.hunch * std::clamp(1.0f - pitch * 1.2f, 0.3f, 1.6f), 1.0f) * body_weight;
-        const float look = std::min(amount * 0.8f, 0.6f * body_weight);
+        // Pointed well up, it is held up to the eye instead: no curl over it, the head tilted back
+        // to the viewfinder (eased in with the tilt).
+        const float up_t = std::clamp((pitch - 0.3f) / 0.6f, 0.0f, 1.0f);
+        const float amount = std::min(goal.hunch * std::clamp(1.0f - pitch * 1.2f, 0.3f, 1.6f), 1.0f) * body_weight * (1.0f - up_t);
+        const float look = (std::min(amount * 0.8f, 0.6f * body_weight) * (1.0f - up_t) - up_t * std::min(pitch, 1.2f) * 0.75f * body_weight);
         // The shoulders and head turn the rest of the way to the camera off to the side.
         if (!hunch(pose, toward, amount, look, full * (1.0f - hips_share) * body_weight)) return {};
     }
@@ -336,9 +347,7 @@ Held hold_one(std::span<Bone> pose, const Goal &goal) noexcept {
     // body would fold the arm up into the face).
     Vec3 lens = goal.lens;
     {
-        Vec3 ahead = rotate(aim, {0.0f, 0.0f, -1.0f});
-        ahead[1] = 0.0f;
-        ahead = unit(ahead, unit(Vec3{lens[0] - s[0], 0.0f, lens[2] - s[2]}, {0, 0, 1}));
+        const Vec3 ahead = level_heading(aim);
         const float out = dot(sub(lens, s), ahead);
         if (!goal.free_reach) {
             // Toward the holding hand's own side the arm would stretch across to its full length: the
@@ -362,7 +371,9 @@ Held hold_one(std::span<Bone> pose, const Goal &goal) noexcept {
             lens[1] = std::max(lens[1], lens[1] + (s[1] - lift_below_shoulder - lens[1]) * up);
             lens[1] = std::min(lens[1], s[1] - below_shoulder + (eye_above_shoulder + below_shoulder) * to_eye);
             if (to_eye > 0.0f) {
-                lens[1] = std::max(lens[1], s[1] - below_shoulder + (eye_above_shoulder + below_shoulder) * to_eye);
+                // (Eased in with the tilt: no jump as it starts.)
+                const float eye_y = s[1] + eye_above_shoulder;
+                lens[1] = std::max(lens[1], lens[1] + (eye_y - lens[1]) * to_eye);
                 // In close in front of the face.
                 const float out_now = dot(sub(lens, s), ahead);
                 if (out_now > reach_out + 0.05f) lens = sub(lens, scaled(ahead, (out_now - reach_out - 0.05f) * to_eye));

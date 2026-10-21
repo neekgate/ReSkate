@@ -951,7 +951,10 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready, bool camera_ph
                         if (const auto body = held::body_yaw(); s.on_foot && body) {
                             constexpr float two_pi = 6.2831853f;
                             if (!s.facing_have) { s.facing_shown = *body + s.pivot; s.facing_have = true; }
-                            const float cam = std::atan2(-frame.camera[8], -frame.camera[10]);
+                            // (The way the camera faces round the upright, steady even pointed straight
+                            // up or down, where its forward has no level part left.)
+                            const auto level = hold::level_heading(hold::from_rows(frame.camera));
+                            const float cam = std::atan2(level[0], level[2]);
                             const float push = s.rig.edge_push();
                             if (push != 0.0f) s.turning = push > 0.0f ? 1 : -1;
                             if (s.turning != 0) {

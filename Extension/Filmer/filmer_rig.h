@@ -255,6 +255,8 @@ private:
     const TrailPoint *nearest_trail(float x, float z, float within) const;
     bool step_allowed(const Vec3 &to, float to_ground, bool stop_at_drops) const;
     bool wide_at(std::size_t k) const;
+    bool rideable_slope(std::size_t before, std::size_t landing) const;
+    mutable std::unordered_map<std::uint64_t, bool> slope_cache_;
     // Following you up onto a ledge or a manual pad you ollied onto: where it rises and by how much,
     // and the top they may step up to this tick (world height; 0 none).
     bool joining_{};
@@ -321,7 +323,7 @@ private:
     float lens_ground_{};
     float lunge_{}, lunge_rate_{};  // 0..1: how far into a lunge under an air
     float side_lock_{};             // +1 the skater's left, -1 their right, 0 either
-    float side_hard_{};             // the side you told them to keep to (+1 / -1), the planner's too; 0 theirs to choose
+    float side_hard_{}, last_side_lock_{};             // the side you told them to keep to (+1 / -1), the planner's too; 0 theirs to choose
     bool planted_{}, edge_{}, holding_{};
     bool edge_locked_{};
     // Stair stop: rolling to a halt at stop_point_ (along stop_dir_), the framing it then pans to, and

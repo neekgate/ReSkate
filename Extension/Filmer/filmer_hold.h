@@ -84,6 +84,10 @@ Quat from_rows(const std::array<float, 16> &m) noexcept;
 // A turn of `yaw` about up then `pitch` about the result's right (radians): the camera's rows for a
 // heading and a tilt.
 Quat from_yaw_pitch(float yaw, float pitch) noexcept;
+// The way a camera faces round the upright (level, unit), steady however steeply it points up or
+// down: straight down, its forward has no level part left, but its up does (the top of the picture is
+// the way it faces).
+Vec3 level_heading(const Quat &aim) noexcept;
 
 // Every joint along `joints` (each the parent of the next, the first hanging from nothing) composed
 // into the world. `out` gets one per joint; false when a joint is missing or not a number.
