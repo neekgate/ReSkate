@@ -218,7 +218,8 @@ const Rig::TrailPoint *Rig::nearest_trail(float x, float z, float within) const 
 // stretch you flew over (a set, a gap): there they stop at the edge and film.
 bool Rig::step_allowed(const Vec3 &, float to_ground, bool stop_at_drops) const {
     const float rise = to_ground - operator_ground_;
-    if (rise > 0.3f) return false;
+    // Up onto what you ollied onto (a ledge, a manual pad): an ollie up, never higher than that.
+    if (rise > 0.3f && !(join_ok_ && to_ground <= join_to_ + 0.15f && rise <= join_height + 0.15f)) return false;
     if (!stop_at_drops) return true;
     return rise >= -0.85f; // a curb, a planter's edge: rolled off; a set or a big drop: not
 }
@@ -550,6 +551,26 @@ std::size_t Rig::trail_index_back(float arc) const {
     return 0;
 }
 
+// Something you can ride on, under trail point `k` (a ledge, a manual pad, a planter's top), not a
+// rail: the same top a little either side of your line.
+bool Rig::wide_at(std::size_t k) const {
+    if (!cast_ || k >= trail_.size()) return false;
+    const Vec3 &here = trail_[k].at;
+    const Vec3 &prev = trail_[k > 0 ? k - 1 : std::min(k + 1, trail_.size() - 1)].at;
+    Vec3 along = sub(here, prev);
+    const float l = flat_length(along);
+    if (l < 0.01f) return false;
+    const Vec3 across{-along[2] / l * 0.35f, 0.0f, along[0] / l * 0.35f};
+    const float top = world(here[1]);
+    for (const float side_sign : {1.0f, -1.0f}) {
+        // (Asked whatever the budget: an answer a couple of seconds old is used again, so this is cheap.)
+        ++probe_budget_;
+        const auto g = ground_at(here[0] + across[0] * side_sign, here[2] + across[2] * side_sign, top + 0.3f);
+        if (!g || std::abs(*g - top) > 0.15f) return false;
+    }
+    return true;
+}
+
 // From trail point `from` (where the filmer is, at `level`) towards `to`. The filmer follows the
 // ground you rolled on up and down banks and slopes, step by step. Where you went up onto something
 // (a ledge, a rail) they stay down at their level and ride alongside. Where you came down from their
@@ -591,8 +612,10 @@ Rig::Walk Rig::walk(std::size_t from, std::size_t to, float level, bool stop_at_
             result.level = ground;
         } else if (std::abs(ground - result.level) <= 0.35f) {
             result.level = ground; // rolling along, up and down banks and slopes
+        } else if (jumped && ground - result.level <= join_height && wide_at(k)) {
+            result.level = ground; // ollied up onto a ledge or a manual pad: they ollie up after you
         }
-        // (Higher up, after a jump: on a ledge or a rail. The filmer stays at their level.)
+        // (Higher up otherwise, after a jump: a rail, or too high. The filmer stays at their level.)
         air_start = none;
         result.reach = k;
     }
@@ -763,7 +786,7 @@ float Rig::plan(double now, float want, float d, float height, float speed, bool
     // Where the skater is up on something (a ledge, a rail), the spots are judged against the filmer's
     // own level; otherwise against the ground under the skater there (riding down a bank or a ramp,
     // the spots beside them are lower too, and that is no drop).
-    const bool up = t.ground > level_ + 0.3f;
+    const bool up = t.ground > level_ + 0.3f && !joining_;
     std::array<float, 3> reference{};
     probe_budget_ += 48;
     ray_budget_ += 60;
@@ -979,6 +1002,7 @@ std::string Rig::doing() const {
     }
     if (post_ == Post::rail_end) return "racing to the end of the ledge for a low angle";
     if (post_ == Post::ledge) return "behind the ledge, camera up over it";
+    if (joining_) return operator_floor_ < join_to_ - 0.2f ? "ollying up onto the ledge after you" : "up on the ledge with you";
     if (grinding_) return grind_style_ == 1 ? "out wide for the landing" : "out wide, camera up a little";
     if (rest_have_) return "you are still: waiting behind you";
     if (caution_) return "easing off: a drop ahead";
@@ -1110,7 +1134,7 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
     {
         const float up = t.ground - level_;
         // (Held for a moment first: a landing's first tick can still read high.)
-        const bool up_there = operator_have_ && !t.airborne && up > 0.3f && up < 3.0f && speed > 0.5f;
+        const bool up_there = operator_have_ && !t.airborne && up > 0.3f && up < 3.0f && speed > 0.5f && !joining_;
         if (!up_there) grind_seen_since_ = -1.0;
         else if (grind_seen_since_ < 0.0) grind_seen_since_ = now;
         const bool grinding = up_there && (grinding_ || now - grind_seen_since_ > 0.25);
@@ -1237,13 +1261,46 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
         const float look_ahead = 4.0f + std::min(flat_length(operator_velocity_), 8.0f) * 0.4f;
         const std::size_t ahead = trail_index_back(std::max(0.25f, arc - look_ahead));
         const std::size_t from = at_index ? std::min(*at_index, index) : index;
-        for (std::size_t i = from; i <= std::max(ahead, index) && i < trail_.size(); ++i)
-            if (!trail_[i].air && trail_[i].at[1] > ground + 0.3f) { raised_ahead = true; rise_index = i; break; }
+        // Ollied up onto something low and wide (a ledge, a manual pad): they ollie up after you and
+        // ride it (a little lift of the camera as they go up), then down off the end after you, or stop
+        // at the end if it is too high to huck off.
+        {
+            float lvl = ground;
+            bool jumped = false;
+            const bool was_joining = joining_;
+            joining_ = false;
+            for (std::size_t i = from > 12 ? from - 12 : 0; i < trail_.size(); ++i) {
+                if (trail_[i].air) { jumped = true; continue; }
+                const float y = trail_[i].at[1];
+                if (y > lvl + 0.3f) {
+                    if (jumped && y - lvl <= join_height && wide_at(i)) {
+                        if (!joining_) { join_point_ = trail_[i].at; join_rise_ = y - lvl; }
+                        joining_ = true;
+                        lvl = y;
+                    } else if (i <= std::max(ahead, index)) {
+                        raised_ahead = true;
+                        rise_index = i;
+                        break;
+                    }
+                } else if (y < lvl - 0.35f) {
+                    lvl = y;
+                }
+                jumped = false;
+            }
+            // Once on their way up, they carry on up (until they are up there, or a few seconds on).
+            if (joining_ && !was_joining) join_since_ = now;
+            if (!joining_ && was_joining && operator_floor_ < join_to_ - 0.2f && now - join_since_ < 3.0 && raised_ahead) {
+                joining_ = true;
+                raised_ahead = false;
+            }
+        }
     } else {
         base = sub(Vec3{t.position[0], t.ground, t.position[2]}, scale(heading, d * std::cos(angle)));
         offset = d * std::sin(angle);
         if (!operator_have_) ground = t.ground;
     }
+    join_ok_ = joining_ && operator_have_;
+    join_to_ = world(join_point_[1]);
     // Out to the side only where the ground is the filmer's level: not over a gap or off the end of a
     // ledge. Where you are up on something (a ledge, a rail, a planter) they keep at least a metre off
     // your line, beside it, never on it. The share of the offset used eases, so the spot never jumps.
@@ -1299,7 +1356,13 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
         if (!raised && !t.airborne) post_ = Post::none;
         else if (flat_length(sub(t.position, operator_)) > 4.5f) { post_ = Post::none; ledge_side_ = true; }
     }
-    if (raised) {
+    if (joining_ && operator_floor_ < join_to_ - 0.2f) {
+        // Ollying up after you: in behind you, on your line, so they land on it, not off its side.
+        raised_offset_ += (0.0f - raised_offset_) * ease(dt, 0.15f);
+        side_keep_ = 0.0f;
+        desired = Vec3{base[0], ground, base[2]};
+        if (std::abs(raised_offset_) > 0.02f) desired = add(desired, scale(side, raised_offset_));
+    } else if (raised) {
         raised_offset_ += (side_wanted - raised_offset_) * ease(dt, 0.25f);
         side_keep_ = 1.0f;
         desired = add(Vec3{base[0], ground, base[2]}, scale(side, raised_offset_));
@@ -1478,7 +1541,9 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
     // Steering round what is in the way (a pole, a bench, a bin, a low wall): a few times a second
     // they look ahead the way they are riding, and if it is not clear, take the nearest way round that
     // is (towards their spot first), keeping to that side until they are past it (no dithering).
-    if (cast_ && !planted_ && !edge_ && !holding_ && halt_ == Halt::none) {
+    // (Ollying up after you onto a ledge: on your line, which you just rode; no steering off it.)
+    const bool popping_up = joining_ && operator_floor_ < join_to_ - 0.2f;
+    if (cast_ && !planted_ && !edge_ && !holding_ && halt_ == Halt::none && !popping_up) {
         const Vec3 to{desired[0] - operator_[0], 0.0f, desired[2] - operator_[2]};
         const float dist = flat_length(to);
         const float riding = flat_length(operator_velocity_);
@@ -1506,22 +1571,25 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
                     // planter is one big one, a ledge's end a sudden drop).
                     float last = operator_floor_;
                     const float piece = look / 3.0f;
+                    // Following you up onto a ledge: its top is ground to them, not a wall.
+                    const bool popping = join_ok_ && flat_length(sub(operator_, join_point_)) < look + 1.0f;
+                    const float start_low = popping ? std::max(operator_floor_, join_to_) + 0.22f : operator_floor_ + 0.22f;
                     for (const float u : {1.0f / 3.0f, 2.0f / 3.0f, 1.0f}) {
                         const Vec3 at = add(operator_, scale(heading_way, look * u));
                         const auto g = ground_at(at[0], at[2], last + 0.5f);
-                        if (!g || *g - last > 0.25f) return 1;
+                        if (!g || (*g - last > 0.25f && !(popping && *g <= join_to_ + 0.15f))) return 1;
                         if (s.stop_at_drops && last - *g > piece * 1.2f + 0.1f) return 1;
                         last = *g;
                     }
                     const Vec3 end = add(operator_, scale(heading_way, look));
-                    if (obstructed(Vec3{operator_[0], operator_floor_ + 0.22f, operator_[2]}, Vec3{end[0], last + 0.22f, end[2]}, 0.22f, true) ||
+                    if (obstructed(Vec3{operator_[0], start_low, operator_[2]}, Vec3{end[0], (popping ? std::max(last, join_to_) : last) + 0.22f, end[2]}, 0.22f, true) ||
                         obstructed(Vec3{operator_[0], operator_floor_ + 1.0f, operator_[2]}, Vec3{end[0], last + 1.0f, end[2]}, 1.0f, true))
                         return 1;
                     // A body wide: either shoulder, at the knee.
                     const Vec3 across{-heading_way[2] * 0.2f, 0.0f, heading_way[0] * 0.2f};
                     for (const float shoulder : {1.0f, -1.0f})
-                        if (obstructed(Vec3{operator_[0] + across[0] * shoulder, operator_floor_ + 0.22f, operator_[2] + across[2] * shoulder},
-                                       Vec3{end[0] + across[0] * shoulder, last + 0.22f, end[2] + across[2] * shoulder}, 0.22f, true))
+                        if (obstructed(Vec3{operator_[0] + across[0] * shoulder, start_low, operator_[2] + across[2] * shoulder},
+                                       Vec3{end[0] + across[0] * shoulder, (popping ? std::max(last, join_to_) : last) + 0.22f, end[2] + across[2] * shoulder}, 0.22f, true))
                             return 2;
                     return 0;
                 };
@@ -1723,10 +1791,14 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
                 const Vec3 dir = scale(move, 1.0f / l);
                 const Vec3 reach = add(to, scale(dir, 0.3f));
                 const Vec3 across{-dir[2] * 0.22f, 0.0f, dir[0] * 0.22f};
-                if (obstructed(Vec3{before[0], operator_ground_ + 0.25f, before[2]}, Vec3{reach[0], *g + 0.25f, reach[2]}, 0.25f, true)) return false;
+                // Ollying up onto the ledge after you: looked along over its top, not into its face.
+                const bool popping = join_ok_ && flat_length(sub(to, join_point_)) < 1.6f;
+                const float low_from = popping ? std::max(operator_ground_, join_to_) : operator_ground_;
+                const float low_to = popping ? std::max(*g, join_to_) : *g;
+                if (obstructed(Vec3{before[0], low_from + 0.25f, before[2]}, Vec3{reach[0], low_to + 0.25f, reach[2]}, 0.25f, true)) return false;
                 for (const float shoulder : {1.0f, -1.0f})
-                    if (obstructed(Vec3{before[0] + across[0] * shoulder, operator_ground_ + 0.25f, before[2] + across[2] * shoulder},
-                                   Vec3{reach[0] + across[0] * shoulder, *g + 0.25f, reach[2] + across[2] * shoulder}, 0.25f, true))
+                    if (obstructed(Vec3{before[0] + across[0] * shoulder, low_from + 0.25f, before[2] + across[2] * shoulder},
+                                   Vec3{reach[0] + across[0] * shoulder, low_to + 0.25f, reach[2] + across[2] * shoulder}, 0.25f, true))
                         return false;
             }
             operator_ground_ = *g;
@@ -1775,12 +1847,16 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
         const float lift_target = std::max({grind_lift, ledge_lift, wall_raise_target_});
         // (Up to see you over a wall: a touch quicker, as the arms go up.)
         const bool for_wall = wall_raise_target_ > 0.0f && wall_raise_target_ >= lift_target - 1e-3f;
-        spring(lift_, lift_rate_, lift_target, 0.0f, for_wall ? 2.8f : 1.8f, 1.0f, dt);
-        lift_rate_ = std::clamp(lift_rate_, -0.8f, for_wall ? 1.4f : 0.8f);
+        spring(lift_, lift_rate_, lift_target, 0.0f, for_wall ? 4.2f : 1.8f, 1.0f, dt);
+        lift_rate_ = std::clamp(lift_rate_, -0.8f, for_wall ? 2.4f : 0.8f);
         lift_ = std::max(0.0f, lift_);
         wall_raise_ = wall_raise_target_ > 0.0f ? std::min(lift_, wall_raise_target_) : 0.0f;
         // Through an air the hands come up a touch and back: a soft rise and fall with you, not a jolt.
-        spring(air_lift_, air_lift_rate_, t.airborne && lunge_ < 0.2f ? 0.08f : 0.0f, 0.0f, 3.0f, 1.0f, dt);
+        // Ollying up onto a ledge after you: the camera goes up with them just before, not after.
+        float air_target = t.airborne && lunge_ < 0.2f ? 0.08f : 0.0f;
+        if (join_ok_ && operator_floor_ < join_to_ - 0.2f && flat_length(sub(operator_, join_point_)) < 1.4f)
+            air_target = std::max(air_target, join_to_ - operator_floor_ + 0.05f);
+        spring(air_lift_, air_lift_rate_, air_target, 0.0f, 5.0f, 1.0f, dt);
     }
     const float extra = stop_lift_ + lift_ + air_lift_;
     spring(operator_height_, operator_height_rate_, operator_floor_ + height + extra, floor_rate_, 5.5f, 0.9f, dt);
@@ -1850,7 +1926,7 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
         else if (unseen_since_ < 0) unseen_since_ = now;
         if (hidden && hidden_since_ < 0.0) {
             hidden_since_ = now;
-            wall_delay_ = 0.2f + 0.3f * unit(random_);
+            wall_delay_ = 0.1f + 0.2f * unit(random_);
         } else if (!hidden && wall_raise_target_ <= 0.0f && !peeking_) {
             hidden_since_ = -1.0;
         }
@@ -2250,7 +2326,10 @@ Frame Rig::film(double now, float dt, const Subject &self, const Subject *target
         constexpr float side = 1.5707963f;
         const float middle = body_yaw_ ? *body_yaw_ : heading;
         const float rel = wrap_angle(want_yaw - middle);
-        if (std::abs(rel) > side && !pivot_) {
+        // Pushing past the stop (the stick, or the assist after someone round behind you): said, so
+        // that on foot your whole body can turn round after the camera (filmer.cpp).
+        edge_push_ = std::abs(rel) > side + 2.0f * degrees ? (rel > 0.0f ? 1.0f : -1.0f) : 0.0f;
+        if (std::abs(rel) > side) {
             want_yaw = middle + std::copysign(side, rel);
             yaw_rate = 0.0f;
             // Your own framing stops at the edge too (no winding on past it).

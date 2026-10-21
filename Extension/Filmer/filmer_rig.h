@@ -88,6 +88,8 @@ struct RigSettings {
 constexpr float huck_height = 1.1f;
 // The highest a filmer holds the camera up to see over something (about 7 ft, above their ground).
 constexpr float raise_ceiling = 2.13f;
+// The highest a filmer ollies up onto something after you (a ledge, a manual pad).
+constexpr float join_height = 0.8f;
 
 // One skater as the rig sees it.
 struct Subject {
@@ -131,6 +133,9 @@ public:
     // On foot the camera turns all the way round (your body pivots after it, filmer_held.h); on a board
     // it stops square off either side.
     void set_pivot(bool on_foot) noexcept { pivot_ = on_foot; }
+    // You film: the camera was held at the edge of its turn this tick, wanting to go further that way
+    // (+1 left, -1 right, 0 not at the edge).
+    float edge_push() const noexcept { return edge_push_; }
     // follow: the filmer stops where they are and films from there, or rides again.
     void set_planted(bool planted) noexcept;
     bool planted() const noexcept { return planted_; }
@@ -183,6 +188,7 @@ public:
     void slap(double now) noexcept;
     std::optional<float> body_yaw_;
     bool pivot_{};
+    float edge_push_{};
     // For the menu: where auto is riding (degrees round the skater; 0 behind, 180 ahead).
     float angle_degrees() const noexcept;
     // The camera is held still: the AI filmer stopped (the left stick, or braked at a drop), or you
@@ -244,6 +250,14 @@ private:
     bool obstructed(const Vec3 &from, const Vec3 &to, float above, bool always = false) const;
     const TrailPoint *nearest_trail(float x, float z, float within) const;
     bool step_allowed(const Vec3 &to, float to_ground, bool stop_at_drops) const;
+    bool wide_at(std::size_t k) const;
+    // Following you up onto a ledge or a manual pad you ollied onto: where it rises and by how much,
+    // and the top they may step up to this tick (world height; 0 none).
+    bool joining_{};
+    Vec3 join_point_{};
+    float join_rise_{}, join_to_{};
+    bool join_ok_{};
+    double join_since_{};
     float frame_pitch(const Vec3 &eye, const Vec3 &root, bool airborne, float lift, const RigSettings &settings) const;
     Vec3 trail_point(float arc, Vec3 fallback) const;
     void choose_angle(double now, float speed, std::uint8_t angles);

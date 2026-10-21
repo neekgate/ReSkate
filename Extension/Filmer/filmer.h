@@ -46,7 +46,7 @@ struct Look {
 
 // The button that slaps the lens while the Filmer has the camera (taken from the game while it does).
 // The right stick click is the camera cycle's when that is on, so the slap moved off it by default.
-enum class SlapButton : std::uint8_t { right_stick, dpad_down, dpad_up, back, none };
+enum class SlapButton : std::uint8_t { right_stick, right_bumper, dpad_down, dpad_up, back, none };
 
 struct Settings {
     Mode mode = Mode::off;

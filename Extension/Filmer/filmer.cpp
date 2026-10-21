@@ -42,6 +42,7 @@ constexpr unsigned filter_slot = 1;            // DingoSDKOverlaySetGamepadFilte
 constexpr std::uint16_t left_thumb = 0x0040;   // XINPUT_GAMEPAD_LEFT_THUMB: following, stop and film / ride again
 constexpr std::uint16_t right_thumb = 0x0080;  // XINPUT_GAMEPAD_RIGHT_THUMB: the stick click (the camera cycle, or a slap)
 constexpr std::uint16_t dpad_up = 0x0001, dpad_down = 0x0002, back_button = 0x0020;
+constexpr std::uint16_t right_shoulder = 0x0200; // XINPUT_GAMEPAD_RIGHT_SHOULDER: RB
 constexpr float stick_dead_zone = 7849.0f;     // the left stick's XInput dead zone: fine framing
 constexpr std::size_t clip_history = 20;
 
@@ -109,6 +110,12 @@ struct State {
     bool holding{};                // the arm holds the camera out this tick (the camcorder goes in the hand)
     bool on_foot{};                // the skater is on foot (this tick)
     float pivot{};                 // on foot: how far the body is turned on the spot after the camera
+    // On foot: the way the body is shown facing (absolute yaw), whether it is turning round after the
+    // camera (+1 / -1), and the skater's speed this tick.
+    float facing_shown{};
+    bool facing_have{};
+    int turning{};
+    float speed{};
     std::string held_status;
     ULONGLONG next_held_status{};
 };
@@ -202,7 +209,7 @@ void load_store() {
         s.settings.camera_cycle = flag(o, "camera_cycle", d.camera_cycle);
         {
             const auto slap = o.value("slap_button", std::string(slap_button_name(d.slap_button)));
-            s.settings.slap_button = slap == "rs" ? SlapButton::right_stick : slap == "up" ? SlapButton::dpad_up
+            s.settings.slap_button = slap == "rs" ? SlapButton::right_stick : slap == "rb" ? SlapButton::right_bumper : slap == "up" ? SlapButton::dpad_up
                 : slap == "back" ? SlapButton::back : slap == "none" ? SlapButton::none : SlapButton::dpad_down;
         }
         s.settings.hold_camera = flag(o, "hold_camera", d.hold_camera);
@@ -574,6 +581,7 @@ std::uint16_t slap_bit(const State &s) {
         if (s.settings.mode == Mode::film) return right_thumb;
         if (s.settings.mode == Mode::follow && s.settings.camera_cycle) return 0;
         return s.settings.stick_clicks ? right_thumb : std::uint16_t{0};
+    case SlapButton::right_bumper: return right_shoulder;
     case SlapButton::dpad_down: return dpad_down;
     case SlapButton::dpad_up: return dpad_up;
     case SlapButton::back: return back_button;
@@ -738,6 +746,7 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready, bool camera_ph
             const auto telemetry = trainer::telemetry();
             const bool on_foot = telemetry.skater && telemetry.physics_state == game::build::v20260929::no_bail::offboard_physics_state;
             s.on_foot = on_foot;
+            s.speed = telemetry.speed;
             hold_request.still = on_foot && s.settings.still_body;
             hold_request.hide_board = on_foot && s.settings.hide_board;
             hold_request.on_board = telemetry.skater && !on_foot;
@@ -836,8 +845,14 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready, bool camera_ph
                 const Subject target_subject = target ? remote_subject(*target) : Subject{};
                 name = target ? target->name : "your own framing";
                 const StickInput stick = read_stick(s);
-                s.rig.set_body_yaw(held::body_yaw());
-                s.rig.set_pivot(s.on_foot);
+                // The stop on the camera's turn is centred on the way the body is shown facing (on foot,
+                // turned round after the camera; on a board, toe side).
+                {
+                    auto body = held::body_yaw();
+                    if (body && s.on_foot) body = *body + s.pivot;
+                    s.rig.set_body_yaw(body);
+                }
+                s.rig.set_pivot(false);
                 frame = s.rig.film(t, dt, self, target ? &target_subject : nullptr, stick, s.settings.rig);
             }
             // Cruise control: filming a friend, you ride at the speed that keeps you the gap behind them
@@ -900,17 +915,34 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready, bool camera_ph
                         hold_request.hide_own = true;
                         hold_request.lens = {frame.camera[12], frame.camera[13], frame.camera[14]};
                         hold_request.aim = hold::from_rows(frame.camera);
-                        // On foot, a camera turned past square off: the body pivots on the spot after it,
-                        // at a person's pace, so the camera stays at the edge of its reach.
-                        float pivot_to = 0.0f;
-                        if (s.on_foot)
-                            if (const auto body = held::body_yaw()) {
-                                const float yaw = std::atan2(-frame.camera[8], -frame.camera[10]);
-                                float rel = std::remainder(yaw - *body, 6.2831853f);
-                                constexpr float side = 1.5707963f;
-                                pivot_to = rel - std::clamp(rel, -side, side);
+                        // On foot the camera stops square off either side of the way you face. Keep
+                        // pushing against that stop and your whole body turns round after it, feet
+                        // stepping round, at a person's pace, until you face where the camera points:
+                        // walk off and you are already facing the right way. (The game's own turn
+                        // takes over from ours as you walk.)
+                        if (const auto body = held::body_yaw(); s.on_foot && body) {
+                            constexpr float two_pi = 6.2831853f;
+                            if (!s.facing_have) { s.facing_shown = *body + s.pivot; s.facing_have = true; }
+                            const float cam = std::atan2(-frame.camera[8], -frame.camera[10]);
+                            const float push = s.rig.edge_push();
+                            if (push != 0.0f) s.turning = push > 0.0f ? 1 : -1;
+                            if (s.turning != 0) {
+                                const float rel = std::remainder(cam - s.facing_shown, two_pi);
+                                const float step = std::min(2.6f * dt, std::abs(rel));
+                                s.facing_shown += static_cast<float>(s.turning) * step;
+                                // Facing where the camera points (and not still pushing): stop turning.
+                                if (push == 0.0f && (std::abs(rel) < 0.2f || rel * static_cast<float>(s.turning) < 0.0f)) s.turning = 0;
+                            } else if (s.speed > 0.4f) {
+                                // Walking: the body is the game's again, turned over gently.
+                                const float back = std::remainder(*body - s.facing_shown, two_pi);
+                                s.facing_shown += std::clamp(back, -2.0f * dt, 2.0f * dt);
                             }
-                        s.pivot += std::clamp(pivot_to - s.pivot, -4.0f * dt, 4.0f * dt);
+                            s.pivot = std::remainder(s.facing_shown - *body, two_pi);
+                        } else {
+                            s.facing_have = false;
+                            s.turning = 0;
+                            s.pivot += std::clamp(-s.pivot, -3.0f * dt, 3.0f * dt);
+                        }
                         hold_request.pivot = s.pivot;
                     }
                     if (!s.held) {
@@ -958,7 +990,11 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready, bool camera_ph
             hold_request.aim = hold::from_yaw_pitch(std::atan2(self.facing[0], self.facing[2]), -0.3f);
             hold_request.show_own = true;
         }
-        if (!hold_request.hold) s.pivot = 0.0f;
+        if (!hold_request.hold) {
+            s.pivot = 0.0f;
+            s.facing_have = false;
+            s.turning = 0;
+        }
         held::set_local(hold_request);
         s.holding = hold_request.hold;
         if (hold_request.hold) {
@@ -1182,11 +1218,12 @@ std::string set_option(State &s, const std::string &key, const std::string &valu
     if (key == "slapbutton") {
         const auto v = lower(value);
         if (v == "rs" || v == "r3" || v == "rightstick") s.settings.slap_button = SlapButton::right_stick;
+        else if (v == "rb" || v == "r1" || v == "bumper" || v == "rightbumper") s.settings.slap_button = SlapButton::right_bumper;
         else if (v == "down" || v == "dpaddown") s.settings.slap_button = SlapButton::dpad_down;
         else if (v == "up" || v == "dpadup") s.settings.slap_button = SlapButton::dpad_up;
         else if (v == "back" || v == "view" || v == "select") s.settings.slap_button = SlapButton::back;
         else if (v == "none" || v == "off") s.settings.slap_button = SlapButton::none;
-        else return "error: slapbutton is rs, down, up, back or none.";
+        else return "error: slapbutton is rs, rb, down, up, back or none.";
         changed(s);
         return std::string("slap button = ") + slap_button_name(s.settings.slap_button);
     }

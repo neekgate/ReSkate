@@ -18,7 +18,7 @@ void register_filmer_commands(Commands &registry) {
         {"subject", "Whom the Filmer follows", "me|<player>", false},
         {"target", "Whom the assist frames while you film", "auto|<player>", false},
         {"set", "Change a Filmer option",
-         "style auto|behind|side|ahead, side auto|left|right|swap, cammodel <blueprint>|default, camitem <cosmetic>|default, camslot hand|eyewear|default, lens fisheye|long, stop instant|stair, slapbutton rs|down|up|back|none, distance|height|tilt|human|reaction|sensitivity|hold|bend|age|gap|mousesens|lift|tripodheight|crouchdepth|hunch|distvariety|heightvariety <number>, "
+         "style auto|behind|side|ahead, side auto|left|right|swap, cammodel <blueprint>|default, camitem <cosmetic>|default, camslot hand|eyewear|default, lens fisheye|long, stop instant|stair, slapbutton rs|rb|down|up|back|none, distance|height|tilt|human|reaction|sensitivity|hold|bend|age|gap|mousesens|lift|tripodheight|crouchdepth|hunch|distvariety|heightvariety <number>, "
          "cycle|slamzoom|stopzoom|holdcam|cameras|standin|worn|crouch|twohands|still|hideboard|assist|invert|recenter|hidehud|stick|clicks|drops|lunge|cruise|mouse|track|look|anywhere|fisheye|bars|hood|grade|soft|scanlines|grain|date|viewfinder|"
          "dropouts|headswitch|tracking|smear|iris 0|1",
          true},

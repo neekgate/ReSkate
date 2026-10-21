@@ -238,7 +238,7 @@ void filmer_page(SkateMenu &menu, const Model &, const CallbacksV3 &callbacks) {
     field(menu, "Slap the lens", "The button that slaps the lens to end a clip, while the Filmer has the camera. The right stick's click is the camera cycle's while the Filmer follows you with the cycle on, so it only slaps when you film or with the cycle off.");
     {
         int slap = static_cast<int>(s.slap_button);
-        if (choice(menu, "slap", slap, {"Right stick click", "D-pad down", "D-pad up", "View / Back", "None"}))
+        if (choice(menu, "slap", slap, {"Right stick click", "RB (right bumper)", "D-pad down", "D-pad up", "View / Back", "None"}))
             filmer_command(menu, callbacks, std::string("set slapbutton ") + filmer::slap_button_name(static_cast<filmer::SlapButton>(slap)));
     }
     filmer_toggle(menu, callbacks, "Left stick click", "While the Filmer follows: click the left stick to have them stop and film from where they are (again to ride on). On the tripod: sets it down where you stand. The game does not get that click while this is on.", "clicks", s.stick_clicks);

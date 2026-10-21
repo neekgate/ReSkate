@@ -55,7 +55,10 @@ skate. filmed the way a skater with a VX1000 films a line.
   as far as it takes to see you, up to about 7 ft. On a ledge you ollied onto it either rides round
   beside it or (a low one, now and then) waits at its foot with the camera raised over it. On a
   grind it rides out wider with the camera up a little, or pushes well out for the landing, or, on a
-  slow grind with time to get there, races to the far end for a low angle; the board sits in the
+  slow grind with time to get there, races to the far end for a low angle. Ollie up onto something
+  low and wide (a ledge, a manual pad, up to about 0.8 m) and it ollies up after you, on your line,
+  camera going up with it, rides it, and comes down off the end after you, or stops at the end if
+  that drop is too high to huck; the board sits in the
   middle of the frame, easing back to your body after. Ollies are a soft rise and fall of the frame.
   Down a hill it stays down by the ground.
 - **Hall of Meat** is switched off (and greyed out) while the Filmer films, and back on after.
@@ -106,7 +109,7 @@ Slap the lens: a hand rushes at it and smacks it, the camera is knocked back, th
 the palm is on the glass and overshoots as it comes off, and the clip ends. Clips are numbered and logged with their end time in
 `%LOCALAPPDATA%\ReSkate\filmer\clips.csv`, so they can be found in a recording.
 
-- The slap button (`filmer set slapbutton rs|down|up|back|none`, CONTROLS tab; D-pad down by
+- The slap button (`filmer set slapbutton rs|rb|down|up|back|none`, CONTROLS tab; D-pad down by
   default). The right stick click is the camera cycle's while the Filmer follows with the cycle on.
 - Any time: bind **Filmer: slap the lens** in Settings > Binds, or `filmer slap`.
 
@@ -132,7 +135,7 @@ Filmer's own camera does not run in replays yet.
 | `filmer mode off\|follow\|film` | |
 | `filmer subject me\|<player>` | Whom the Filmer films |
 | `filmer target auto\|<player>` | Whom the assist frames while you film |
-| `filmer set <option> <value>` | `style auto\|behind\|side`, `lens fisheye\|long`, `slapbutton rs\|down\|up\|back\|none`, `distance`, `height`, `tilt`, `human`, `reaction`, `sensitivity`, `hold`, `bend`, `age`; switches `cycle`, `assist`, `invert`, `recenter`, `hidehud`, `stick`, `clicks`, `drops`, `lunge`, `look`, `anywhere`, `dropouts`, `headswitch`, `tracking`, `smear`, `iris`, `fisheye`, `bars`, `hood`, `grade`, `soft`, `scanlines`, `grain`, `date`, `viewfinder` |
+| `filmer set <option> <value>` | `style auto\|behind\|side`, `lens fisheye\|long`, `slapbutton rs\|rb\|down\|up\|back\|none`, `distance`, `height`, `tilt`, `human`, `reaction`, `sensitivity`, `hold`, `bend`, `age`; switches `cycle`, `assist`, `invert`, `recenter`, `hidehud`, `stick`, `clicks`, `drops`, `lunge`, `look`, `anywhere`, `dropouts`, `headswitch`, `tracking`, `smear`, `iris`, `fisheye`, `bars`, `hood`, `grade`, `soft`, `scanlines`, `grain`, `date`, `viewfinder` |
 | `filmer plant [on\|off]` | The Filmer stops and films from where it is, or rides again |
 | `filmer slap` | End the clip |
 | `filmer clips` | This session's clips |
