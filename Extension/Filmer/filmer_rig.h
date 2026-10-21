@@ -15,6 +15,7 @@
 #include <functional>
 #include <optional>
 #include <random>
+#include <string>
 #include <unordered_map>
 
 namespace dingosdk::filmer {
@@ -74,7 +75,19 @@ struct RigSettings {
     // filming); the wheel zooms the long lens then.
     bool mouse_look = true;
     float mouse_sensitivity = 1.0f;
+    // follow: when you slam, the filmer stops (still panning with you) and, if you are small in the
+    // frame, zooms in slowly until you fit it.
+    bool slam_zoom = true;
+    // follow: when the filmer stops by itself (a drop too high to huck, too far behind, nowhere clear),
+    // now and then (about 4 times in 10) a slight zoom onto you.
+    bool stop_zoom = true;
 };
+
+// The highest a filmer hucks down after you (metres, from where they ride to where you landed):
+// bigger than that (a big set, a gap down) they stop at the top and film you from there.
+constexpr float huck_height = 1.1f;
+// The highest a filmer holds the camera up to see over something (about 7 ft, above their ground).
+constexpr float raise_ceiling = 2.13f;
 
 // One skater as the rig sees it.
 struct Subject {
@@ -83,6 +96,7 @@ struct Subject {
     Vec3 facing{0, 0, 1};     // the way they face, horizontal
     std::optional<bool> airborne; // known for your own skater; worked out from height for others
     bool bailing{};
+    std::optional<bool> on_foot;  // off the board (known for your own skater)
 };
 
 struct StickInput {
@@ -122,9 +136,20 @@ public:
     bool planted() const noexcept { return planted_; }
     // follow: stopped at the top of a drop you went over (stop_at_drops).
     bool at_edge() const noexcept { return edge_; }
-    // follow: too far behind to get good footy, slowing to a stop (they cut to a new spot behind you
-    // once you are well away, as if the next clip).
-    bool lagging() const noexcept { return lagging_; }
+    // follow: the filmer has stopped by itself, why, and what it is waiting for:
+    //   drop   you went off something too high for them to huck: they stopped at the top
+    //   lag    too far behind for good footy
+    //   slam   you slammed
+    //   wait   nowhere clear to ride (wedged by walls): they wait for you to come past
+    // Still panning with you. Drop and lag stops end when you push, step off the board, or click the
+    // left stick (resume_behind); a slam when you are back up; a wait when there is room again.
+    enum class Halt : std::uint8_t { none, drop, lag, slam, wait };
+    Halt halt() const noexcept { return halt_; }
+    bool lagging() const noexcept { return halt_ == Halt::lag; }
+    // Straight back in behind you (the left stick while they are stopped by themselves).
+    void resume_behind() noexcept;
+    // follow: what the filmer is up to, for the menu.
+    std::string doing() const;
     // follow: you are standing still and the filmer has settled on a spot behind you.
     bool resting() const noexcept { return rest_have_; }
     // What the operator is working from, for `filmer trace`.
@@ -214,7 +239,9 @@ private:
     void learn_root(float dt, const Vec3 &root);
     // `always`: the ground under the lens itself, asked whatever is left of this tick's budget.
     std::optional<float> ground_at(float x, float z, float near_y, bool always = false) const;
-    bool blocked(const Vec3 &from, const Vec3 &to, Vec3 *hit = nullptr) const;
+    // `always`: asked whatever is left of this tick's budget (what the body is about to do).
+    bool blocked(const Vec3 &from, const Vec3 &to, Vec3 *hit = nullptr, bool always = false) const;
+    bool obstructed(const Vec3 &from, const Vec3 &to, float above, bool always = false) const;
     const TrailPoint *nearest_trail(float x, float z, float within) const;
     bool step_allowed(const Vec3 &to, float to_ground, bool stop_at_drops) const;
     float frame_pitch(const Vec3 &eye, const Vec3 &root, bool airborne, float lift, const RigSettings &settings) const;
@@ -281,6 +308,7 @@ private:
     // Stair stop: rolling to a halt at stop_point_ (along stop_dir_), the framing it then pans to, and
     // how far the camera has risen (eased).
     bool stair_style_{}, rolling_stop_{}, stop_due_{}, framed_{}, pan_active_{};
+    bool slam_zoom_{true}, stop_zoom_{true};
     // ...and while it turns to frame the set after stopping (then held). set_yaw_: the way the set goes.
     bool composing_{};
     double compose_start_{};
@@ -305,7 +333,7 @@ private:
     // Steering round obstacles: the angle off the way to the spot (eased), the one being steered to,
     // the side being taken round (+1/-1, 0 none) and until when it is kept.
     float steer_angle_{}, steer_target_{}, steer_side_{};
-    double steer_next_{}, steer_hold_{};            // stopped at a drop and come to a standstill: the framing is held
+    double steer_next_{}, steer_hold_{}, trail_follow_until_{};            // stopped at a drop and come to a standstill: the framing is held
     float level_{};                 // the ground level the filmer rides at
     std::size_t last_index_{};      // the trail point nearest the filmer, last tick
     Vec3 edge_point_{}, edge_dir_{0, 0, 1}; // where the filmer stopped, and which way is over it
@@ -329,15 +357,58 @@ private:
     // where you are heading, and keeps to the one with ground at their level, no wall between them and
     // you and nothing in the way of getting there. `plan_angle_` the angle chosen round you,
     // `plan_risk_` how bad the wanted angle looked (above 0: the planner turned away from it).
-    float plan(double now, float want, float d, float height, float speed);
-    float plan_angle_{}, plan_risk_{};
+    float plan(double now, float want, float d, float height, float speed, bool &trapped);
+    float plan_angle_{}, plan_risk_{}, plan_scale_{1.0f};
+    double clear_since_{-1.0};
     double plan_next_{}, plan_keep_{};
     // The skater was just placed afresh (a teleport, back to a marker, a respawn).
     bool fresh_{};
-    // Too far behind for good footy: braking to lag_stop_.
-    bool lagging_{};
-    double lagging_since_{};
-    Vec3 lag_stop_{};
+    // Stopped by themselves (Halt): rolling to a stop along halt_dir_ at halt_point_, how fast still,
+    // whether they have come to a halt, the zoom roll for this stop, and the drift of the pan at the end
+    // of the shot.
+    Halt halt_{Halt::none};
+    double halt_since_{}, bail_over_since_{-1.0};
+    Vec3 halt_point_{}, halt_dir_{0, 0, 1};
+    float halt_speed_{};
+    bool halt_stopped_{}, halt_zoom_rolled_{};
+    void begin_halt(Halt why, double now, float room);
+    bool drifting_{};
+    float drift_sign_{1.0f}, drift_done_{};
+    float auto_zoom_{1.0f};
+    // The skater pushing (their speed rising on the flat), stepping off the board.
+    float speed_slow_{};
+    bool pushed_{}, was_on_foot_{}, on_foot_{};
+    // A drop ahead of you, seen before you get to it: the filmer eases off so they could stop at it.
+    bool caution_{};
+    Vec3 caution_point_{};
+    float caution_top_{};
+    double caution_next_{};
+    // Up on something (a ledge, a rail): how, and since when. 0 raise the camera a little and ride out
+    // wider, 1 push well out for the landing and roll away, 2 race to the end of it for a low angle.
+    bool grinding_{};
+    int grind_style_{};
+    double grind_since_{}, grind_over_since_{-1.0}, grind_seen_since_{-1.0};
+    float grind_weight_{}, board_weight_{};
+    // A spot ridden to and waited at: the end of a ledge (a low angle), or the foot of a ledge you
+    // ollied onto (the camera raised over it, as if following behind on it).
+    enum class Post : std::uint8_t { none, rail_end, ledge };
+    Post post_{Post::none};
+    Vec3 post_spot_{};
+    double post_since_{};
+    float ledge_lift_{};
+    bool raised_was_{}, ledge_side_{};
+    // The camera raised to see you over a wall or a fence (up to raise_ceiling), and when to look again.
+    float wall_raise_{}, wall_raise_target_{}, wall_raise_rate_{};
+    double wall_next_{}, hidden_since_{-1.0}, seen_low_since_{-1.0};
+    float wall_delay_{0.4f};
+    // The camera's own lift: the grind's, the ledge's and the wall's, eased together; and the little
+    // lift of the hands through an air.
+    float lift_{}, lift_rate_{}, air_lift_{}, air_lift_rate_{};
+    // The height the framing follows: eased, so an ollie is a soft rise and fall, not a jolt.
+    float focus_y_{};
+    bool focus_have_{};
+    float floor_rate_{};
+    double placed_at_{-100.0}, losing_since_{-1.0};
     // You standing still: the spot the filmer settled on, where you were then, and how long the spot
     // has been bad (in front of you, or out of sight of you).
     bool rest_have_{};

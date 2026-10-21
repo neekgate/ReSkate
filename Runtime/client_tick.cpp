@@ -1107,7 +1107,11 @@ void update_model(std::uintptr_t client, TickState& frame) {
     const auto missions_model = dingosdk::local_profile_missions();
     model.progression = dingosdk::local_profile_progression();
     model.player_card = dingosdk::local_profile_player_card();
-    model.hall_of_meat = {dingosdk::hall_of_meat::available(), dingosdk::hall_of_meat::enabled()};
+    {
+        // While the Filmer films, Hall of Meat is off and its switch can not be used.
+        const bool held_off = dingosdk::filmer::holds_hall_of_meat();
+        model.hall_of_meat = {dingosdk::hall_of_meat::available() && !held_off, dingosdk::hall_of_meat::enabled(), held_off};
+    }
     model.road_rash = {dingosdk::road_rash::available(), dingosdk::road_rash::enabled(), dingosdk::road_rash::blood()};
     const auto breakable_deck = dingosdk::board_break::deck();
     model.board_break = {dingosdk::board_break::available(), dingosdk::board_break::enabled(), !breakable_deck.empty(),

@@ -283,7 +283,9 @@ void hall_of_meat_addon(SkateMenu& menu, const Model& model, const CallbacksV3& 
     bool hall_of_meat = model.hall_of_meat.enabled;
     // No Bail (and noclip, which includes it) stops the bails Hall of Meat scores.
     const bool bails_off = debug.no_bail || debug.no_bail_active;
-    const char* meat_help = hall_of_meat && bails_off
+    const char* meat_help = model.hall_of_meat.held_off
+        ? "Off while the Filmer films (Addons > Filmer): it comes back on when you stop filming."
+        : hall_of_meat && bails_off
         ? "On, but No Bail is stopping your bails, so nothing shows. Turn No Bail (and noclip) off in Skater > Cheats."
         : bails_off
         ? "Your bails show the bones they hurt and score a Meat card. Needs No Bail (and noclip) off."

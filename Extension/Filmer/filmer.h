@@ -106,6 +106,7 @@ struct View {
     bool planted{};           // follow: the filmer was told to stop and film from where they stand
     bool lagging{};           // follow: too far behind for good footy, rolling to a stop
     bool resting{};           // follow: you are still, and the filmer has settled behind you
+    std::string doing;        // follow: what the filmer is up to
     bool at_edge{};           // follow: the filmer stopped where you went over a drop or a gap
     float camera_fov{};       // the game camera's own field of view (the look over another camera)
     bool stationary{};        // the camera is held still: mouse look and the long lens's zoom work
@@ -140,6 +141,10 @@ void tick_held(std::uintptr_t base, std::uintptr_t client, bool in_level) noexce
 // `hud_hidden`: whether the game's interface is hidden right now (the Filmer hides it while it films
 // and only shows it again if it was the one that hid it).
 std::string command(std::string_view verb, const std::vector<std::string> &arguments, bool hud_hidden);
+
+// Hall of Meat is held off while the Filmer films (any thread): it was switched off as filming began
+// and comes back on when it stops, and its switch can not be used meanwhile.
+bool holds_hall_of_meat() noexcept;
 
 // Names, for the command line and the menu.
 const char *mode_name(Mode) noexcept;

@@ -35,6 +35,31 @@ skate. filmed the way a skater with a VX1000 films a line.
   keeps a friend in frame (the closest one ahead, or `filmer target <name>`) and the stick shifts
   the framing. The slap button slaps the lens.
 
+## How the Filmer rides
+
+- **Way finding**: a few times a second it scores the spots it could take round you (its side, a
+  quarter round, straight behind, the other side, each closer or further out) where you are and where
+  you are heading, and the way there a body wide: ground level with your line beside it, no wall
+  between it and you, nothing in the way (a trunk, a post, a building's corner). With something
+  coming up on its side the clearest side and distance win, held a few seconds and carved back from
+  slowly. Steering round things looks up to about 3 m ahead; through a tight gap it follows your own
+  line. Wedged with nowhere clear, it waits for you to come past, then pushes off after you. It never
+  gets closer than about a metre and a bit, and speeds up a push at a time.
+- **Stops by itself** (still panning with you; the left stick puts it straight back behind you in
+  one click): a drop too high to huck after an ollie or a flip (it eases off as you near a lip, so
+  it stops gently; rolling down a hill or bank it follows), too far behind, a slam (and, with **Slam
+  zoom**, a slow zoom in if you are small in the frame), or wedged. About 4 times in 10 a stop brings a
+  slight zoom onto you (**Zoom when they stop**). Once you are well away the pan drifts on the way you
+  went and down. Drop and too-far stops end when you push or step off the board.
+- **Height**: hidden behind a wall or fence you went over, after a beat the camera rises gently,
+  as far as it takes to see you, up to about 7 ft. On a ledge you ollied onto it either rides round
+  beside it or (a low one, now and then) waits at its foot with the camera raised over it. On a
+  grind it rides out wider with the camera up a little, or pushes well out for the landing, or, on a
+  slow grind with time to get there, races to the far end for a low angle; the board sits in the
+  middle of the frame, easing back to your body after. Ollies are a soft rise and fall of the frame.
+  Down a hill it stays down by the ground.
+- **Hall of Meat** is switched off (and greyed out) while the Filmer films, and back on after.
+
 ## Stopping, and the tripod
 
 - **Stop style** (`filmer set stop instant|stair`): how the Filmer stops, with the left stick or at

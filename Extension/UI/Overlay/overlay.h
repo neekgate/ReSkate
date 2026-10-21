@@ -227,6 +227,7 @@ struct MissionRow {
 // Hall of Meat's switch (Extension/HallOfMeat/hall_of_meat.h): started, and switched on.
 struct HallOfMeatModel {
     bool available = false, enabled = false;
+    bool held_off = false; // the Filmer is filming: switched off, and back on when it stops
 };
 
 // Road Rash's switches (Extension/RoadRash/road_rash.h): started, switched on, and whether its

@@ -17,6 +17,7 @@
 #include "Engine/Game/Multiplayer/session_tools.h"
 #include "Extension/Skater/client_source_spawn.h"
 #include "Extension/Trainer/trainer.h"
+#include "Extension/HallOfMeat/hall_of_meat.h"
 #include "Extension/UI/Overlay/overlay.h"
 #include <windows.h>
 #include <shlobj.h>
@@ -46,6 +47,8 @@ constexpr std::size_t clip_history = 20;
 
 // What the pad filter takes from the game. Read on whatever thread the game polls its pad from.
 std::atomic<bool> take_right_stick{};
+// Hall of Meat switched off by the Filmer while it films (it switches it back on after).
+std::atomic<bool> meat_held{};
 std::atomic<std::uint16_t> masked_buttons{};
 
 void filter_pad(unsigned, overlay::GamepadValues &pad) noexcept {
@@ -99,6 +102,8 @@ struct State {
     std::string cruise_note;
     float camera_fov{};
     bool hud_hidden{};             // the game's interface was hidden, as the console last said (for the camera cycle)
+    bool meat_restore{};           // Hall of Meat was on when filming began: back on when it stops (saved, in case)
+    std::string doing_shown;
     bool lagging_shown{}, resting_shown{};
     bool holdtest{};               // `filmer holdtest`: the camera held out on your skater, the game's camera
     bool holding{};                // the arm holds the camera out this tick (the camcorder goes in the hand)
@@ -190,6 +195,9 @@ void load_store() {
         r.mouse_look = flag(o, "mouse_look", d.rig.mouse_look);
         r.mouse_sensitivity = clamped(o, "mouse_sensitivity", d.rig.mouse_sensitivity, 0.1f, 5.0f);
         r.lunge = flag(o, "lunge", d.rig.lunge);
+        r.slam_zoom = flag(o, "slam_zoom", d.rig.slam_zoom);
+        r.stop_zoom = flag(o, "stop_zoom", d.rig.stop_zoom);
+        s.meat_restore = flag(o, "meat_restore", false);
         s.settings.stick_clicks = flag(o, "stick_clicks", d.stick_clicks);
         s.settings.camera_cycle = flag(o, "camera_cycle", d.camera_cycle);
         {
@@ -287,6 +295,9 @@ void save_store() {
         json["mouse_look"] = r.mouse_look;
         json["mouse_sensitivity"] = r.mouse_sensitivity;
         json["lunge"] = r.lunge;
+        json["slam_zoom"] = r.slam_zoom;
+        json["stop_zoom"] = r.stop_zoom;
+        json["meat_restore"] = s.meat_restore;
         json["stick_clicks"] = s.settings.stick_clicks;
         json["camera_cycle"] = s.settings.camera_cycle;
         json["slap_button"] = slap_button_name(s.settings.slap_button);
@@ -378,6 +389,7 @@ Subject local_subject() {
         result.airborne = telemetry.airborne;
         // 300s are a wipeout (Extension/Trainer/trainer.cpp).
         result.bailing = telemetry.physics_state >= 300 && telemetry.physics_state < 400;
+        result.on_foot = telemetry.physics_state == game::build::v20260929::no_bail::offboard_physics_state;
     }
     return result;
 }
@@ -529,6 +541,7 @@ void publish_view(State &s) {
     next->planted = s.rig.planted();
     next->at_edge = s.rig.at_edge();
     next->lagging = s.lagging_shown;
+    next->doing = s.doing_shown;
     next->resting = s.resting_shown;
     next->camera_fov = s.camera_fov;
     next->stationary = s.stationary_shown;
@@ -605,8 +618,15 @@ void read_clicks(State &s, std::uint16_t buttons) {
         }
     }
     if (s.held && follow && pressed(left_thumb)) {
-        s.rig.set_planted(!s.rig.planted());
-        s.last = s.rig.planted() ? "The filmer stops and films from here." : "The filmer rides with you again.";
+        if (s.rig.halt() != Rig::Halt::none) {
+            // Stopped by themselves (a drop, too far behind, a slam): one click and they are straight
+            // back in behind you.
+            s.rig.resume_behind();
+            s.last = "The filmer is back in behind you.";
+        } else {
+            s.rig.set_planted(!s.rig.planted());
+            s.last = s.rig.planted() ? "The filmer stops and films from here." : "The filmer rides with you again.";
+        }
         s.view_due = true;
     }
     s.previous_buttons = buttons;
@@ -653,6 +673,8 @@ void release_camera(State &s, std::uintptr_t base, std::uintptr_t client, bool c
 namespace {
 std::string set_mode(State &s, Mode mode, bool hud_hidden);
 }
+
+bool holds_hall_of_meat() noexcept { return meat_held.load(std::memory_order_acquire); }
 
 void tick(std::uintptr_t base, std::uintptr_t client, bool ready, bool camera_phase, int game_state) noexcept {
     try {
@@ -904,9 +926,10 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready, bool camera_ph
                     }
                     std::string where;
                     if (s.settings.mode == Mode::follow && s.rig.planted()) where = " (stopped: click the left stick to ride again)";
-                    else if (s.settings.mode == Mode::follow && s.rig.at_edge()) where = " (stopped at the drop)";
-                    else if (s.settings.mode == Mode::follow && s.rig.lagging()) where = " (too far behind: rolling to a stop)";
-                    else if (s.settings.mode == Mode::follow && s.rig.resting()) where = " (you are still: they wait behind you)";
+                    else if (s.settings.mode == Mode::follow) {
+                        const auto doing = s.rig.doing();
+                        if (doing != "riding with you") where = " (" + doing + ")";
+                    }
                     if (s.settings.mode == Mode::tripod)
                         set_status(s, s.rig.tripod_tracking() ? "Tripod: panning with " + name + "." : "Tripod: waiting for " + name + " to ride into the frame.");
                     else
@@ -960,6 +983,27 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready, bool camera_ph
             s.lagging_shown = s.rig.lagging();
             s.resting_shown = s.rig.resting();
             s.view_due = true;
+        }
+        if (s.settings.mode == Mode::follow) {
+            auto doing = s.rig.doing();
+            if (doing != s.doing_shown) {
+                s.doing_shown = std::move(doing);
+                s.view_due = true;
+            }
+        }
+        // Hall of Meat is off while the Filmer films, and back on (if it was on) when it stops.
+        if (hall_of_meat::available()) {
+            const bool filming = s.settings.mode != Mode::off;
+            if (filming && hall_of_meat::enabled()) {
+                hall_of_meat::set_enabled(false);
+                s.meat_restore = true;
+                changed(s);
+            } else if (!filming && s.meat_restore) {
+                hall_of_meat::set_enabled(true);
+                s.meat_restore = false;
+                changed(s);
+            }
+            meat_held.store(filming, std::memory_order_release);
         }
         // The look's clock runs on even when nothing changed, so the snapshot is not republished every
         // tick: only when something did, and a few times a second for the menu's distances.
@@ -1148,6 +1192,8 @@ std::string set_option(State &s, const std::string &key, const std::string &valu
     }
     if (key == "anywhere") return toggle(k.anywhere);
     if (key == "lunge") return toggle(r.lunge);
+    if (key == "slamzoom") return toggle(r.slam_zoom);
+    if (key == "stopzoom") return toggle(r.stop_zoom);
     if (key == "cruise") return toggle(r.cruise);
     if (key == "stop") {
         const auto v = lower(value);

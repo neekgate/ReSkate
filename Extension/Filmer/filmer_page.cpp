@@ -133,7 +133,9 @@ void filmer_page(SkateMenu &menu, const Model &, const CallbacksV3 &callbacks) {
         filmer_slider(menu, callbacks, "Distance variety", "Through a line the filmer drifts closer and further, slowly. 0: always the distance above; 1: about half of it either way.", "distvariety", r.distance_variety, 0.0f, 1.0f, "%.2f");
         filmer_slider(menu, callbacks, "Height variety", "Through a line the camera goes lower and higher, slowly (a filmer crouching, then standing a little). 0: always the height above; 1: a foot or so either way.", "heightvariety", r.height_variety, 0.0f, 1.0f, "%.2f");
         filmer_toggle(menu, callbacks, "Lunge", "Fisheye, flatground tricks only: as you pop, the filmer pushes in a little closer and lower, then eases back out as you land.", "lunge", r.lunge, r.lens == filmer::Lens::fisheye);
-        filmer_toggle(menu, callbacks, "Stop at drops", "The filmer only rides where you rolled: at a set or a gap you jumped they stop at the edge, film you land and ride away, then catch up.", "drops", r.stop_at_drops);
+        filmer_toggle(menu, callbacks, "Stop at drops", "Ollie (or flip) off something too high for a filmer to huck after you (a big set, a gap down) and they ease off as you near it, stop at the top and film you land and ride away; push, step off the board or click the left stick and they are back behind you. Rolling down a hill or a bank, they follow.", "drops", r.stop_at_drops);
+        filmer_toggle(menu, callbacks, "Slam zoom", "When you slam the filmer stops, still filming you; if you are small in the frame, the lens slowly zooms in until you fill it.", "slamzoom", r.slam_zoom);
+        filmer_toggle(menu, callbacks, "Zoom when they stop", "Now and then (about 4 times in 10) when the filmer stops by themselves, a slight zoom onto you.", "stopzoom", r.stop_zoom);
         field(menu, "Stop", "How the filmer stops (the left stick, or at a drop). Instant: on the spot, holding the framing. Stair: rolls to a halt short of the first step, rises a little and pans down to take in the whole set or rail.");
         int stop = static_cast<int>(r.stop_style);
         if (choice(menu, "stop", stop, {"Instant", "Stair"})) filmer_command(menu, callbacks, stop ? "set stop stair" : "set stop instant");
@@ -248,9 +250,10 @@ void filmer_page(SkateMenu &menu, const Model &, const CallbacksV3 &callbacks) {
     default: {
     begin_card(menu, "filmer-debug", "DEBUG", "For checking the camera in hand and the Filmer.");
     info(menu, "Status", v.status);
-    if (s.mode == filmer::Mode::follow)
-        info(menu, "Filmer", v.planted ? "stopped by you" : v.at_edge ? "stopped at a drop" : v.lagging ? "too far behind: rolling to a stop"
-                             : v.resting ? "waiting behind you" : std::format("riding, {:.0f} deg round you", v.auto_angle));
+    if (s.mode == filmer::Mode::follow) {
+        info(menu, "Filmer", v.planted ? std::string("stopped by you") : v.doing.empty() ? std::string("riding with you") : v.doing);
+        info(menu, "Angle", std::format("{:.0f} deg round you", v.auto_angle));
+    }
     if (primary_button(menu, v.holdtest ? "STOP THE HOLD TEST" : "HOLD TEST: SEE YOUR SKATER HOLD IT"))
         filmer_command(menu, callbacks, std::string("holdtest ") + (v.holdtest ? "off" : "on"));
     note("Hold test: with the game's own camera (or the Filmer's), your skater holds the camera out in front at arm's length so you can see it. A stand-in cone shows if the model is not built.");
