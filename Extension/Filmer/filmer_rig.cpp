@@ -1386,6 +1386,15 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
         offset = d * std::sin(angle);
         if (!operator_have_) ground = t.ground;
     }
+    // Their way along your line already goes up onto it (they are on their way up, not yet there).
+    if (!joining_ && operator_have_ && at_index && world(ground) > operator_floor_ + 0.3f && world(ground) - operator_floor_ <= join_height + 0.15f) {
+        for (std::size_t i = *at_index; i < trail_.size(); ++i)
+            if (!trail_[i].air && world(trail_[i].at[1]) > operator_floor_ + 0.3f) {
+                join_point_ = trail_[i].at;
+                joining_ = true;
+                break;
+            }
+    }
     join_ok_ = joining_ && operator_have_;
     join_to_ = world(join_point_[1]);
     // Out to the side only where the ground is the filmer's level: not over a gap or off the end of a
@@ -1819,7 +1828,15 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
             const bool settling_in = now - placed_at_ < 1.5;
             const float behind_by = std::max(0.0f, flat_length(sub(desired, before)) - 0.5f);
             const float push = 3.2f + std::max(0.0f, skater_accel_) * 1.1f + std::min(behind_by * 1.5f, 3.0f);
-            const float allowed = (faster > 0.0f ? (lunge_ > 0.1f || settling_in ? std::max(6.0f, push) : push) : 7.0f) * dt;
+            // Speed is only gained with a push: in the kick of each stride (the dip of the camera),
+            // a step faster each time, never a sudden surge. Between kicks they roll. (Down a hill
+            // the slope gives them speed too; just placed, or lunging in, they are let go.)
+            const float stride_now = std::fmod(push_phase_, 1.0f);
+            const bool kicking = stride_now > 0.0f && stride_now < 0.4f;
+            float gain = kicking ? push * 2.2f : 0.15f;
+            if (floor_rate_ < -0.3f) gain = std::max(gain, std::min(-floor_rate_ * 2.0f, 4.0f));
+            if (lunge_ > 0.1f || settling_in) gain = std::max(6.0f, push);
+            const float allowed = (faster > 0.0f ? gain : 7.0f) * dt;
             const float changed = flat_length(change);
             if (changed > allowed) v = add(velocity_before, scale(change, allowed / changed));
             const float top = std::max(7.5f, speed * 1.2f + 1.0f);
@@ -1909,7 +1926,8 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
             operator_ground_ = *g;
             return true;
         };
-        if (flat_length(sub(operator_, before)) > 0.0005f && !try_step(operator_)) {
+        const bool refused = flat_length(sub(operator_, before)) > 0.0005f && !try_step(operator_);
+        if (refused) {
             // Nosed up against something (a planter, a ledge's end, a trunk): step round it, out to the
             // side of the line they want, at a walking pace. Failing that, slide along it, or stay.
             const Vec3 moved = sub(operator_, before);
@@ -1931,6 +1949,19 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
             else { operator_ = before; operator_velocity_ = scale(operator_velocity_, 0.4f); }
         }
         operator_[1] = 0;
+        // Held up behind something (a car, a bin) while you ride off: rather than a chase to catch up,
+        // a cut back to the usual spot behind you.
+        const float made = dt > 0.0f ? flat_length(sub(operator_, before)) / dt : 0.0f;
+        const bool held_up = (refused || made < speed * 0.5f) && flat_length(sub(desired, operator_)) > 2.5f && speed > 1.5f;
+        if (held_up && !planted_ && halt_ == Halt::none && post_ == Post::none && !peeking_) {
+            if (stuck_since_ < 0.0) stuck_since_ = now;
+            else if (now - stuck_since_ > 0.8) {
+                operator_have_ = false; // placed afresh next tick, straight in behind you
+                stuck_since_ = -1.0;
+            }
+        } else {
+            stuck_since_ = -1.0;
+        }
     } else if (!cast_) {
         operator_ground_ = ground; // no world to ask: the level from the trail
     }

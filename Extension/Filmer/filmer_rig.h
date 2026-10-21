@@ -437,7 +437,7 @@ private:
     float focus_y_{};
     bool focus_have_{};
     float floor_rate_{};
-    double placed_at_{-100.0}, losing_since_{-1.0};
+    double placed_at_{-100.0}, losing_since_{-1.0}, stuck_since_{-1.0};
     // You standing still: the spot the filmer settled on, where you were then, and how long the spot
     // has been bad (in front of you, or out of sight of you).
     bool rest_have_{};
