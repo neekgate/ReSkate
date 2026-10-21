@@ -133,16 +133,16 @@ void filmer_page(SkateMenu &menu, const Model &, const CallbacksV3 &callbacks) {
         filmer_slider(menu, callbacks, "Distance variety", "Through a line the filmer drifts closer and further, slowly. 0: always the distance above; 1: about half of it either way.", "distvariety", r.distance_variety, 0.0f, 1.0f, "%.2f");
         filmer_slider(menu, callbacks, "Height variety", "Through a line the camera goes lower and higher, slowly (a filmer crouching, then standing a little). 0: always the height above; 1: a foot or so either way.", "heightvariety", r.height_variety, 0.0f, 1.0f, "%.2f");
         filmer_toggle(menu, callbacks, "Lunge", "Fisheye, flatground tricks only: as you pop, the filmer pushes in a little closer and lower, then eases back out as you land.", "lunge", r.lunge, r.lens == filmer::Lens::fisheye);
-        filmer_toggle(menu, callbacks, "Stop at drops", "Ollie (or flip) off something too high for a filmer to huck after you (a big set, a gap down) and they ease off as you near it, stop at the top and film you land and ride away; push, step off the board or click the left stick and they are back behind you. Rolling down a hill or a bank, they follow.", "drops", r.stop_at_drops);
+        filmer_toggle(menu, callbacks, "Stop at drops", "Ollie (or flip) off something too high for a filmer to huck after you (a big set, a gap down) and they ease off as you near it, stop at the top and film you land and ride away; push, step off the board or click the left stick (switching side) and they are back behind you. Rolling down a hill or a bank, they follow.", "drops", r.stop_at_drops);
         filmer_toggle(menu, callbacks, "Slam zoom", "When you slam the filmer stops, still filming you; if you are small in the frame, the lens slowly zooms in until you fill it.", "slamzoom", r.slam_zoom);
         filmer_toggle(menu, callbacks, "Zoom when they stop", "Now and then (about 4 times in 10) when the filmer stops by themselves, a slight zoom onto you.", "stopzoom", r.stop_zoom);
-        field(menu, "Stop", "How the filmer stops (the left stick, or at a drop). Instant: on the spot, holding the framing. Stair: rolls to a halt short of the first step, rises a little and pans down to take in the whole set or rail.");
+        field(menu, "Stop", "How the filmer stops at a drop. Instant: on the spot, holding the framing. Stair: rolls to a halt short of the first step, rises a little and pans down to take in the whole set or rail.");
         int stop = static_cast<int>(r.stop_style);
         if (choice(menu, "stop", stop, {"Instant", "Stair"})) filmer_command(menu, callbacks, stop ? "set stop stair" : "set stop instant");
         if (r.stop_style == filmer::StopStyle::stair)
             filmer_slider(menu, callbacks, "Stair lift", "Stair stop: how much the camera rises once stopped.", "lift", r.stop_lift, 0.0f, 1.5f, "%.2f m");
-        if (s.mode == filmer::Mode::follow && primary_button(menu, v.planted ? "RIDE AGAIN" : "STOP AND FILM FROM HERE", v.active))
-            filmer_command(menu, callbacks, "plant");
+        if (s.mode == filmer::Mode::follow && primary_button(menu, "SWITCH SIDE", v.active))
+            filmer_command(menu, callbacks, "switchside");
     }
     filmer_slider(menu, callbacks, "Tilt", "How the skater sits in the frame: 0 the board near the middle, 1 the board low with more of the skater above. The board is always kept in.", "tilt", r.tilt, 0.0f, 1.0f, "%.2f");
     filmer_slider(menu, callbacks, "Human", "0: steady as a robot. 1: a sketchy filmer: shaky, a loose frame, late corrections.", "human", r.human, 0.0f, 1.0f, "%.2f");
@@ -243,7 +243,7 @@ void filmer_page(SkateMenu &menu, const Model &, const CallbacksV3 &callbacks) {
     }
     filmer_toggle(menu, callbacks, "Side buttons (D-pad left / right)", "While the Filmer follows you: D-pad left sends them to your left, right to your right, and they keep to it, going round whatever is coming up on that side (so you choose the way round a bin or a wall). Press the same side again and they pick their own side again. The game does not get D-pad left and right while this is on.", "sidebuttons", s.side_buttons);
     if (s.side_buttons) note(r.side_hard ? (r.side == filmer::Side::left ? "Keeping to your left (D-pad left again: their choice)." : "Keeping to your right (D-pad right again: their choice).") : "Picking their own side.");
-    filmer_toggle(menu, callbacks, "Left stick click", "While the Filmer follows: click the left stick to have them stop and film from where they are (again to ride on). On the tripod: sets it down where you stand. The game does not get that click while this is on.", "clicks", s.stick_clicks);
+    filmer_toggle(menu, callbacks, "Left stick click", "While the Filmer follows: click the left stick to send them over to your other side (left, right), where they stay; if they had stopped by themselves (a drop, too far behind) they are straight back in behind you. On the tripod: sets it down where you stand. The game does not get that click while this is on.", "clicks", s.stick_clicks);
     filmer_toggle(menu, callbacks, "Take the right stick (you film)", "Keep the right stick (and its click) from the game while you film. Off: it also flicks tricks.", "stick", s.take_stick);
     note("Every Filmer action (on / off, slap, stop and film, next angle, zoom) can also go on any button in Settings > Binds.");
     end_card();

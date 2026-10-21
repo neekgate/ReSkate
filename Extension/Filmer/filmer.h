@@ -61,8 +61,8 @@ struct Settings {
     Look look;
     bool hide_hud = true;   // hide the game's interface while filming
     bool take_stick = true; // film mode: keep the right stick from the game
-    // follow mode: the stick clicks are the filmer's (left: stop and film / ride again; right: slap),
-    // kept from the game while following.
+    // follow mode: the left stick's click is the filmer's (switch side, left / right; on the tripod, set
+    // it down where you stand), kept from the game while following.
     bool stick_clicks = true;
     // follow: whom the AI films (0: you). film: whom the assist frames (0: whoever is closest ahead).
     std::uint64_t subject{}, target{};

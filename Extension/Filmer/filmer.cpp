@@ -617,6 +617,21 @@ void update_filter(State &s) {
     }
 }
 
+// The left stick's click while the filmer follows: over to your other side (left, right), and kept
+// there; stopped by themselves (a drop, too far behind, a slam), they are straight back in behind
+// you, on that side.
+std::string switch_side(State &s) {
+    auto &r = s.settings.rig;
+    const bool on_left = r.side == Side::left ? true : r.side == Side::right ? false : s.rig.angle_degrees() >= 0.0f;
+    r.side = on_left ? Side::right : Side::left;
+    r.side_hard = true;
+    if (s.rig.planted()) s.rig.set_planted(false);
+    if (s.rig.halt() != Rig::Halt::none) s.rig.resume_behind();
+    changed(s);
+    s.view_due = true;
+    return on_left ? "The filmer goes over to your right." : "The filmer goes over to your left.";
+}
+
 // The pad: the slap button slaps the lens; the left stick's click, following, stops the filmer to
 // film from where they stand, and sends them riding again (on the tripod, sets it down where you are).
 void read_clicks(State &s, std::uint16_t buttons) {
@@ -649,18 +664,7 @@ void read_clicks(State &s, std::uint16_t buttons) {
             s.view_due = true;
         }
     }
-    if (s.held && follow && pressed(left_thumb)) {
-        if (s.rig.halt() != Rig::Halt::none) {
-            // Stopped by themselves (a drop, too far behind, a slam): one click and they are straight
-            // back in behind you.
-            s.rig.resume_behind();
-            s.last = "The filmer is back in behind you.";
-        } else {
-            s.rig.set_planted(!s.rig.planted());
-            s.last = s.rig.planted() ? "The filmer stops and films from here." : "The filmer rides with you again.";
-        }
-        s.view_due = true;
-    }
+    if (s.held && follow && pressed(left_thumb)) s.last = switch_side(s);
     s.previous_buttons = buttons;
 }
 
@@ -987,8 +991,7 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready, bool camera_ph
                         s.view_due = true;
                     }
                     std::string where;
-                    if (s.settings.mode == Mode::follow && s.rig.planted()) where = " (stopped: click the left stick to ride again)";
-                    else if (s.settings.mode == Mode::follow) {
+                    if (s.settings.mode == Mode::follow) {
                         const auto doing = s.rig.doing();
                         if (doing != "riding with you") where = " (" + doing + ")";
                     }
@@ -1356,14 +1359,8 @@ std::string command(std::string_view verb, const std::vector<std::string> &argum
         s.view_due = true;
     } else if (verb == "set") {
         reply = arguments.size() >= 2 ? set_option(s, lower(arg(0)), arg(1)) : "error: filmer set <option> <value>.";
-    } else if (verb == "plant") {
-        if (s.settings.mode != Mode::follow) reply = "Only the AI filmer stops to film (filmer mode follow).";
-        else {
-            const auto wanted = lower(arg(0));
-            const bool plant = wanted == "on" || wanted == "1" ? true : wanted == "off" || wanted == "0" ? false : !s.rig.planted();
-            s.rig.set_planted(plant);
-            reply = plant ? "The filmer stops and films from here." : "The filmer rides with you again.";
-        }
+    } else if (verb == "switchside") {
+        reply = s.settings.mode == Mode::follow ? switch_side(s) : "The Filmer is not following anyone.";
     } else if (verb == "angle") {
         // The angles the AI filmer films from: one held, or several Auto moves between.
         auto &r = s.settings.rig;

@@ -101,7 +101,7 @@ inline constexpr std::array<ActionBind, 24> action_binds{{
     {"nametag_dots", "nametagdots", "Player dots", "mp nametag-dots toggle"},
     {"filmer", "filmer", "Filmer on / off", "filmer toggle"},
     {"lens_slap", "lensslap", "Filmer: slap the lens (end the clip)", "filmer slap"},
-    {"filmer_plant", "filmerplant", "Filmer: stop and film / ride again", "filmer plant"},
+    {"filmer_switch_side", "filmerswitchside", "Filmer: switch side (left / right)", "filmer switchside"},
     {"filmer_side", "filmerside", "Filmer: swap the side the AI rides", "filmer set side swap"},
     {"filmer_cruise", "filmercruise", "Filmer: cruise control on / off", "filmer cruise"},
     {"filmer_zoom_in", "filmerzoomin", "Filmer: zoom in (long lens, held still)", "filmer zoom in"},

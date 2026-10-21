@@ -22,7 +22,7 @@ void register_filmer_commands(Commands &registry) {
          "cycle|slamzoom|stopzoom|holdcam|cameras|standin|worn|crouch|twohands|still|hideboard|assist|invert|recenter|hidehud|stick|clicks|drops|lunge|cruise|mouse|track|look|anywhere|fisheye|bars|hood|grade|soft|scanlines|grain|date|viewfinder|"
          "dropouts|headswitch|tracking|smear|iris 0|1",
          true},
-        {"plant", "The Filmer stops and films from where they are, or rides again", "[on|off]", false},
+        {"switchside", "The Filmer goes over to your other side (left / right) and keeps to it", nullptr, false},
         {"slap", "Slap the lens: ends the clip", nullptr, false},
         {"clips", "The clips marked this session", nullptr, false},
         {"trace", "Record what the Filmer sees for 30 seconds (trace.csv), to send for tuning", nullptr, false},

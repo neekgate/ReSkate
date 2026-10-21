@@ -27,8 +27,7 @@ skate. filmed the way a skater with a VX1000 films a line.
   and points the camera like a person: a beat late, a loose frame, a hand that is never still, but
   it whips back before a trick leaves the frame. It keeps to whichever side you choose (Side: Auto,
   Left, Right, or a bindable swap). Film yourself, or anyone in the session
-  (`filmer subject <name>`). Click the left stick to have it stop and hold the camera on the framing
-  it has (a locked-off shot: it no longer turns to follow you; again to ride on); the slap button
+  (`filmer subject <name>`). Click the left stick to send it over to your other side (left / right), where it stays; the slap button
   (D-pad down by default, CONTROLS tab) slaps the lens.
 - **You film** (`filmer mode film`): your skater is the filmer. The left stick rides; the right
   stick points the camera (the game stops seeing it, so no flicks while you film). The aim assist
