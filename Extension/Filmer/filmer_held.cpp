@@ -192,6 +192,8 @@ void bend(std::uintptr_t component, std::uintptr_t holder, bool animated) noexce
         goal.two_hands = a.seen.two_hands;
         goal.still = a.seen.still;
         goal.pivot = a.seen.pivot;
+        goal.step = a.seen.step;
+        goal.step_phase = a.seen.step_phase;
         {
             // Pushing on the board: the knees mostly straighten while the foot is down.
             const float pushing = a.seen.on_board ? hold::pushing(pose) : 0.0f;
@@ -297,6 +299,8 @@ void on_outgoing(std::uintptr_t component, multiplayer::Pose &sent) noexcept {
         goal.two_hands = request.two_hands;
         goal.still = request.still;
         goal.pivot = request.pivot;
+        goal.step = request.step;
+        goal.step_phase = request.step_phase;
         o.push += ((request.on_board ? hold::pushing(pose) : 0.0f) - o.push) * std::clamp(dt * 8.0f, 0.0f, 1.0f);
         goal.crouch *= 1.0f - 0.65f * o.push;
         const auto joints = hold::chain(request.hand);

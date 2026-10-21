@@ -202,6 +202,33 @@ bool hunch(std::span<Bone> pose, const Vec3 &toward, float angle, float look, fl
 }
 
 namespace {
+// One foot lifted `up` metres and moved `ahead` along the way the body faces (a step), the knee
+// bending to it the way it already bends; the foot keeps its turn.
+bool step_foot(std::span<Bone> pose, std::span<const std::uint16_t> path, float up, const Vec3 &move) noexcept {
+    std::array<Placed, 6> now{};
+    if (!compose(pose, path, now)) return false;
+    const Vec3 hip = now[3].position, knee = now[4].position;
+    const Vec3 ankle = add(now[5].position, add(Vec3{0.0f, up, 0.0f}, move));
+    const float a = length(sub(knee, hip)), b = length(sub(now[5].position, knee));
+    if (!(a > 0.1f && b > 0.1f)) return true;
+    const float d = std::clamp(length(sub(ankle, hip)), std::abs(a - b) + 0.01f, (a + b) * 0.999f);
+    const Vec3 along = unit(sub(ankle, hip), {0, -1, 0});
+    Vec3 pole = sub(knee, add(hip, scaled(along, dot(sub(knee, hip), along))));
+    pole = unit(pole, Vec3{0.0f, 0.0f, 1.0f});
+    const float cos_a = std::clamp((a * a + d * d - b * b) / (2.0f * a * d), -1.0f, 1.0f);
+    const float sin_a = std::sqrt(std::max(0.0f, 1.0f - cos_a * cos_a));
+    const Vec3 new_knee = add(hip, add(scaled(along, a * cos_a), scaled(pole, a * sin_a)));
+    const Quat foot_world = now[5].rotation;
+    const Quat thigh_world = normalized(multiply(arc(sub(knee, hip), sub(new_knee, hip)), now[3].rotation));
+    pose[path[3]].rotation = local_of(now[2], thigh_world);
+    if (!compose(pose, path, now)) return false;
+    const Quat shin_world = normalized(multiply(arc(sub(now[5].position, now[4].position), sub(ankle, now[4].position)), now[4].rotation));
+    pose[path[4]].rotation = local_of(now[3], shin_world);
+    if (!compose(pose, path, now)) return false;
+    pose[path[5]].rotation = local_of(now[4], foot_world);
+    return true;
+}
+
 Held hold_one(std::span<Bone> pose, const Goal &goal) noexcept;
 }
 
@@ -241,6 +268,23 @@ Held hold_one(std::span<Bone> pose, const Goal &goal) noexcept {
         auto &bone = pose[1];
         bone.rotation = local_of(root, turned);
         bone.position = scaled(rotate(conjugate(root.rotation), sub(moved, root.position)), 1.0f / std::max(root.scale, 0.1f));
+    }
+    // Turning round on the spot: the feet step round with it, one then the other, each lifted a little
+    // and set down a little round the way the body turns.
+    if (goal.step > 0.01f && std::isfinite(goal.step_phase) && pose.size() > hips_joint) {
+        const float phase = goal.step_phase - std::floor(goal.step_phase);
+        const bool right_foot = phase < 0.5f;
+        const float half = right_foot ? phase * 2.0f : (phase - 0.5f) * 2.0f;
+        const float lift = std::sin(half * 3.14159265f) * 0.09f * std::clamp(goal.step, 0.0f, 1.0f) * body_weight;
+        std::array<Placed, 6> leg{};
+        const auto path = right_foot ? std::span<const std::uint16_t>(right_leg) : std::span<const std::uint16_t>(left_leg);
+        if (lift > 0.002f && compose(pose, path, leg)) {
+            // A little toward the hips' line under the body as it rises (the step inward), then back.
+            Vec3 in = sub(leg[2].position, leg[5].position);
+            in[1] = 0.0f;
+            const float inward = std::min(length(in), 0.06f) * std::sin(half * 3.14159265f);
+            if (!step_foot(pose, path, lift, scaled(unit(in, {0, 0, 0}), inward * 0.5f))) return {};
+        }
     }
     // Which way the camera points against the way the body faces (round the upright), for the body
     // turning to it: the hips a quarter, the back and shoulders and head the rest.
@@ -303,14 +347,32 @@ Held hold_one(std::span<Bone> pose, const Goal &goal) noexcept {
             own_side[1] = 0.0f;
             own_side = unit(own_side, ahead);
             const float toward_side = std::clamp(dot(ahead, own_side), 0.0f, 1.0f);
-            const float reach_out = min_reach_out * (1.0f - 0.35f * toward_side);
+            // Pointed well up, the camera comes up to the eye, close to the face; pointed well down,
+            // it is held in close over the stomach, the elbows bent (never at full stretch).
+            const float pointing_y = rotate(aim, {0.0f, 0.0f, -1.0f})[1];
+            const float to_eye = std::clamp((pointing_y - 0.35f) / 0.45f, 0.0f, 1.0f);
+            const float tucked = std::clamp((-pointing_y - 0.55f) / 0.35f, 0.0f, 1.0f);
+            const float reach_out = min_reach_out * (1.0f - 0.35f * toward_side) * (1.0f - 0.4f * std::max(to_eye, tucked));
             if (out < reach_out) lens = add(lens, scaled(ahead, reach_out - out));
             else if (toward_side > 0.0f && out > reach_out + 0.1f) lens = sub(lens, scaled(ahead, (out - reach_out - 0.1f) * toward_side));
             lens[1] += side_lift * toward_side;
-            // Aimed up, it comes up toward the chest (all the way at about 40 degrees up).
-            const float up = std::clamp(rotate(aim, {0.0f, 0.0f, -1.0f})[1] / 0.64f, 0.0f, 1.0f);
+            // Aimed up, it comes up toward the chest (all the way at about 40 degrees up), and further
+            // up still, to the eye.
+            const float up = std::clamp(pointing_y / 0.64f, 0.0f, 1.0f);
             lens[1] = std::max(lens[1], lens[1] + (s[1] - lift_below_shoulder - lens[1]) * up);
-            lens[1] = std::min(lens[1], s[1] - below_shoulder);
+            lens[1] = std::min(lens[1], s[1] - below_shoulder + (eye_above_shoulder + below_shoulder) * to_eye);
+            if (to_eye > 0.0f) {
+                lens[1] = std::max(lens[1], s[1] - below_shoulder + (eye_above_shoulder + below_shoulder) * to_eye);
+                // In close in front of the face.
+                const float out_now = dot(sub(lens, s), ahead);
+                if (out_now > reach_out + 0.05f) lens = sub(lens, scaled(ahead, (out_now - reach_out - 0.05f) * to_eye));
+            }
+            if (tucked > 0.0f) {
+                // Down over the stomach, close in.
+                lens[1] = std::max(lens[1], lens[1] + (s[1] - tucked_below_shoulder - lens[1]) * tucked);
+                const float out_now = dot(sub(lens, s), ahead);
+                if (out_now > reach_out + 0.05f) lens = sub(lens, scaled(ahead, (out_now - reach_out - 0.05f) * tucked));
+            }
         }
     }
     const auto &worn = grip(goal.hand);
@@ -353,7 +415,9 @@ Held hold_one(std::span<Bone> pose, const Goal &goal) noexcept {
         }
     }
     const float palm = goal.worn ? 0.0f : palm_from_wrist * scale, b_palm = b + palm;
-    const float reach = (a + b_palm) * 0.995f;
+    // A filmer never holds the camera at full stretch: the elbow keeps a bend (the camera comes in a
+    // little rather than the arm locking straight).
+    const float reach = (a + b_palm) * (goal.free_reach ? 0.995f : 0.93f);
     const float wanted = length(sub(palm_goal, s));
     const float d = std::clamp(wanted, std::abs(a - b_palm) + 0.02f, reach);
     const Vec3 direction = unit(sub(palm_goal, s), {0, -1, 0});

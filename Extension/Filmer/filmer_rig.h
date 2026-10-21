@@ -81,6 +81,9 @@ struct RigSettings {
     // follow: when the filmer stops by itself (a drop too high to huck, too far behind, nowhere clear),
     // now and then (about 4 times in 10) a slight zoom onto you.
     bool stop_zoom = true;
+    // follow: the side was chosen with the side buttons: kept to whatever (the way round something
+    // is then yours to pick), not just preferred.
+    bool side_hard = false;
 };
 
 // The highest a filmer hucks down after you (metres, from where they ride to where you landed):
@@ -189,6 +192,7 @@ public:
     std::optional<float> body_yaw_;
     bool pivot_{};
     float edge_push_{};
+    float film_up_{}, film_down_{}; // you film: how far the camera is brought up to your eye / in over your stomach (eased)
     // For the menu: where auto is riding (degrees round the skater; 0 behind, 180 ahead).
     float angle_degrees() const noexcept;
     // The camera is held still: the AI filmer stopped (the left stick, or braked at a drop), or you
@@ -317,6 +321,7 @@ private:
     float lens_ground_{};
     float lunge_{}, lunge_rate_{};  // 0..1: how far into a lunge under an air
     float side_lock_{};             // +1 the skater's left, -1 their right, 0 either
+    float side_hard_{};             // the side you told them to keep to (+1 / -1), the planner's too; 0 theirs to choose
     bool planted_{}, edge_{}, holding_{};
     bool edge_locked_{};
     // Stair stop: rolling to a halt at stop_point_ (along stop_dir_), the framing it then pans to, and

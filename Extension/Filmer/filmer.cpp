@@ -42,6 +42,7 @@ constexpr unsigned filter_slot = 1;            // DingoSDKOverlaySetGamepadFilte
 constexpr std::uint16_t left_thumb = 0x0040;   // XINPUT_GAMEPAD_LEFT_THUMB: following, stop and film / ride again
 constexpr std::uint16_t right_thumb = 0x0080;  // XINPUT_GAMEPAD_RIGHT_THUMB: the stick click (the camera cycle, or a slap)
 constexpr std::uint16_t dpad_up = 0x0001, dpad_down = 0x0002, back_button = 0x0020;
+constexpr std::uint16_t dpad_left = 0x0004, dpad_right = 0x0008;
 constexpr std::uint16_t right_shoulder = 0x0200; // XINPUT_GAMEPAD_RIGHT_SHOULDER: RB
 constexpr float stick_dead_zone = 7849.0f;     // the left stick's XInput dead zone: fine framing
 constexpr std::size_t clip_history = 20;
@@ -116,6 +117,7 @@ struct State {
     bool facing_have{};
     int turning{};
     float speed{};
+    float step_weight{}, step_phase{}; // the feet stepping round as the body turns
     std::string held_status;
     ULONGLONG next_held_status{};
 };
@@ -207,6 +209,8 @@ void load_store() {
         s.meat_restore = flag(o, "meat_restore", false);
         s.settings.stick_clicks = flag(o, "stick_clicks", d.stick_clicks);
         s.settings.camera_cycle = flag(o, "camera_cycle", d.camera_cycle);
+        s.settings.side_buttons = flag(o, "side_buttons", d.side_buttons);
+        r.side_hard = flag(o, "side_hard", d.rig.side_hard) && r.side != Side::automatic;
         {
             const auto slap = o.value("slap_button", std::string(slap_button_name(d.slap_button)));
             s.settings.slap_button = slap == "rs" ? SlapButton::right_stick : slap == "rb" ? SlapButton::right_bumper : slap == "up" ? SlapButton::dpad_up
@@ -307,6 +311,8 @@ void save_store() {
         json["meat_restore"] = s.meat_restore;
         json["stick_clicks"] = s.settings.stick_clicks;
         json["camera_cycle"] = s.settings.camera_cycle;
+        json["side_buttons"] = s.settings.side_buttons;
+        json["side_hard"] = r.side_hard;
         json["slap_button"] = slap_button_name(s.settings.slap_button);
         json["hold_camera"] = s.settings.hold_camera;
         json["camera_hand"] = s.settings.left_hand ? "left" : "right";
@@ -600,6 +606,7 @@ void update_filter(State &s) {
     std::uint16_t mask = 0;
     if (film) mask |= right_thumb;
     if (clicks) mask |= left_thumb;
+    if (s.settings.mode == Mode::follow && s.held && s.settings.side_buttons) mask |= static_cast<std::uint16_t>(dpad_left | dpad_right);
     if (s.held && s.settings.mode != Mode::off) mask |= slap_bit(s);
     take_right_stick.store(film, std::memory_order_release);
     masked_buttons.store(mask, std::memory_order_release);
@@ -617,6 +624,23 @@ void read_clicks(State &s, std::uint16_t buttons) {
     const bool follow = s.settings.mode == Mode::follow && s.settings.stick_clicks;
     const bool tripod = s.settings.mode == Mode::tripod && s.settings.stick_clicks;
     if (s.held && pressed(slap_bit(s))) s.last = slap(s);
+    // The side buttons: the filmer to your left or right (kept there); the same again, theirs to choose.
+    if (s.held && s.settings.mode == Mode::follow && s.settings.side_buttons) {
+        auto &r = s.settings.rig;
+        for (const auto &[button, side] : {std::pair{dpad_left, Side::left}, std::pair{dpad_right, Side::right}}) {
+            if (!pressed(button)) continue;
+            if (r.side == side && r.side_hard) {
+                r.side = Side::automatic;
+                r.side_hard = false;
+                s.last = "The filmer picks their own side again.";
+            } else {
+                r.side = side;
+                r.side_hard = true;
+                s.last = side == Side::left ? "The filmer keeps to your left." : "The filmer keeps to your right.";
+            }
+            changed(s);
+        }
+    }
     if (s.held && tripod && pressed(left_thumb)) {
         // The tripod: set down again where you stand, facing your way.
         if (const Subject self = local_subject(); self.valid) {
@@ -944,6 +968,12 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready, bool camera_ph
                             s.pivot += std::clamp(-s.pivot, -3.0f * dt, 3.0f * dt);
                         }
                         hold_request.pivot = s.pivot;
+                        // The feet step round with the turn, a stride about every half second.
+                        s.step_weight += ((s.turning != 0 ? 1.0f : 0.0f) - s.step_weight) * std::clamp(dt / 0.15f, 0.0f, 1.0f);
+                        if (s.step_weight > 0.01f) s.step_phase += dt * 2.0f;
+                        else s.step_phase = 0.0f;
+                        hold_request.step = s.step_weight;
+                        hold_request.step_phase = s.step_phase;
                     }
                     if (!s.held) {
                         s.held = true;
@@ -1193,6 +1223,7 @@ std::string set_option(State &s, const std::string &key, const std::string &valu
         else if (v == "right") r.side = Side::right;
         else if (v == "swap") r.side = r.side == Side::left ? Side::right : Side::left;
         else return "error: side is auto, left, right or swap.";
+        if (r.side == Side::automatic) r.side_hard = false;
         changed(s);
         return std::string("side = ") + (r.side == Side::left ? "left" : r.side == Side::right ? "right" : "auto");
     }
@@ -1215,6 +1246,7 @@ std::string set_option(State &s, const std::string &key, const std::string &valu
     if (key == "drops") return toggle(r.stop_at_drops);
     if (key == "clicks") return toggle(s.settings.stick_clicks);
     if (key == "cycle") return toggle(s.settings.camera_cycle);
+    if (key == "sidebuttons") return toggle(s.settings.side_buttons);
     if (key == "slapbutton") {
         const auto v = lower(value);
         if (v == "rs" || v == "r3" || v == "rightstick") s.settings.slap_button = SlapButton::right_stick;

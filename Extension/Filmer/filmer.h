@@ -54,6 +54,9 @@ struct Settings {
     // (when that is in the cycle, Skater settings), the Filmer, and back to high.
     bool camera_cycle = true;
     SlapButton slap_button = SlapButton::dpad_down;
+    // follow: D-pad left / right sends the filmer to that side of you (and keeps them there, round
+    // whatever is coming up); the same again hands the choice back to them. Off: the D-pad is the game's.
+    bool side_buttons = false;
     RigSettings rig;
     Look look;
     bool hide_hud = true;   // hide the game's interface while filming

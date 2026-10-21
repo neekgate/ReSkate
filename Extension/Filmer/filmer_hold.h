@@ -115,6 +115,9 @@ struct Goal {
     // The whole body turned round the upright through the hips (radians): a pivot on the spot after a
     // camera turned past the range.
     float pivot{};
+    // Turning round on the spot: the feet stepping round, one then the other (`step` 0..1 how much;
+    // `step_phase` where in the stride, a whole stride per 1).
+    float step{}, step_phase{};
 };
 // How much a pose is pushing on a board (0 to 1): one foot down on the ground well below the other.
 float pushing(std::span<const Bone> pose) noexcept;
@@ -140,6 +143,9 @@ inline constexpr float body_radius = 0.24f;
 inline constexpr float min_reach_out = 0.4f, below_shoulder = 0.05f;
 // Aimed up, the lens comes up to this far below the shoulder.
 inline constexpr float lift_below_shoulder = 0.15f;
+// Pointed up at the sky the lens comes up to the eye (this far over the shoulder); pointed down, it is
+// held over the stomach (this far under it).
+inline constexpr float eye_above_shoulder = 0.18f, tucked_below_shoulder = 0.42f;
 // Toward the holding hand's own side the camera comes up this much (all the way square to that side).
 inline constexpr float side_lift = 0.2f;
 struct Held {

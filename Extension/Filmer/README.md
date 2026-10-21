@@ -61,6 +61,10 @@ skate. filmed the way a skater with a VX1000 films a line.
   that drop is too high to huck; the board sits in the
   middle of the frame, easing back to your body after. Ollies are a soft rise and fall of the frame.
   Down a hill it stays down by the ground.
+- **Side buttons** (CONTROLS, `filmer set sidebuttons 1`): D-pad left / right sends the filmer to
+  that side of you and keeps them there (you pick the way round a bin or a wall); the same again hands
+  the choice back. Picking their own side, they look about 1.5 s ahead and keep elbow room off walls
+  and bins, moving over gradually.
 - **Hall of Meat** is switched off (and greyed out) while the Filmer films, and back on after.
 
 ## Stopping, and the tripod

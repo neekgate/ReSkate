@@ -780,16 +780,18 @@ float Rig::plan(double now, float want, float d, float height, float speed, bool
     const float quarter = std::min(std::abs(want), 22.0f * degrees) * sign;
     const float flat_speed = std::min(speed, 12.0f);
     const Vec3 way = flat_speed > 0.5f ? Vec3{t.velocity[0] / std::max(speed, 0.01f), 0.0f, t.velocity[2] / std::max(speed, 0.01f)} : heading;
-    const std::array<float, 3> ahead{0.0f, 0.6f, 1.2f};
-    const std::size_t samples = flat_speed > 0.5f ? 3 : 1;
+    // Looked at further ahead than they will be in a second and a half: a wall or a bin coming up on
+    // their side is seen in time to move over (gradually) before they get to it.
+    const std::array<float, 4> ahead{0.0f, 0.5f, 1.0f, 1.6f};
+    const std::size_t samples = flat_speed > 0.5f ? 4 : 1;
     const float level = operator_floor_;
     // Where the skater is up on something (a ledge, a rail), the spots are judged against the filmer's
     // own level; otherwise against the ground under the skater there (riding down a bank or a ramp,
     // the spots beside them are lower too, and that is no drop).
     const bool up = t.ground > level_ + 0.3f && !joining_;
-    std::array<float, 3> reference{};
-    probe_budget_ += 48;
-    ray_budget_ += 60;
+    std::array<float, 4> reference{};
+    probe_budget_ += 64;
+    ray_budget_ += 120;
     for (std::size_t i = 0; i < samples; ++i) {
         const float along = flat_speed * ahead[i];
         const float x = t.position[0] + way[0] * along, z = t.position[2] + way[2] * along;
@@ -800,11 +802,13 @@ float Rig::plan(double now, float want, float d, float height, float speed, bool
     const auto score = [&](float a, float scale_by) {
         float cost = std::abs(a - want) / degrees * 0.012f + std::abs(scale_by - 1.0f) * 0.8f;
         // The other side from the one they are on: a ride across behind you, so only for a reason.
-        if (std::abs(plan_angle_) > 5.0f * degrees && a * plan_angle_ < 0.0f) cost += 0.5f;
+        if (std::abs(plan_angle_) > 5.0f * degrees && a * plan_angle_ < 0.0f) cost += 0.3f;
+        // Told which side by you (the side buttons): never the other.
+        if (side_hard_ != 0.0f && a * side_hard_ < -1.0f * degrees) return 1e6f;
         const float dist = d * scale_by;
         Vec3 last{operator_[0], level, operator_[2]};
         for (std::size_t i = 0; i < samples; ++i) {
-            const float weight = i == 0 ? 1.0f : i == 1 ? 0.8f : 0.6f;
+            const float weight = i == 0 ? 1.0f : i == 1 ? 0.85f : i == 2 ? 0.7f : 0.55f;
             const float along = flat_speed * ahead[i];
             const Vec3 at{t.position[0] + way[0] * along, t.position[1], t.position[2] + way[2] * along};
             const Vec3 line = add(at, scale(heading, -dist * std::cos(a)));
@@ -824,6 +828,15 @@ float Rig::plan(double now, float want, float d, float height, float speed, bool
             const Vec3 eye{spot[0], ground + height + 0.1f, spot[2]};
             const Vec3 centre{at[0], (up ? world(at[1]) : reference[i]) + 0.9f, at[2]};
             if (obstructed(centre, eye, 0.25f)) cost += 2.5f * weight; // a wall between: no footy
+            // Elbow room: a wall, a bin or a post right beside the spot (within 0.7 m either side) is
+            // a spot to keep off, before they are brushing past it.
+            if (i <= 2) {
+                for (const float side_sign : {1.0f, -1.0f}) {
+                    const Vec3 from{spot[0], ground + 0.3f, spot[2]};
+                    const Vec3 to{spot[0] + side[0] * 0.7f * side_sign, ground + 0.3f, spot[2] + side[2] * 0.7f * side_sign};
+                    if (obstructed(from, to, 0.3f)) cost += 0.45f * weight;
+                }
+            }
             // The way there, a body wide (a trunk, a post, a corner): either shoulder, low (a planter, a kerb-high box).
             const Vec3 move{spot[0] - last[0], 0.0f, spot[2] - last[2]};
             const float length_moved = flat_length(move);
@@ -1054,6 +1067,7 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
     distance = std::max(distance * mix(1.0f, 0.65f, lunge_), std::min(distance, min_gap));
     // The side they keep to.
     side_lock_ = s.side == Side::left ? 1.0f : s.side == Side::right ? -1.0f : 0.0f;
+    side_hard_ = s.side_hard ? side_lock_ : 0.0f;
     // Stopped by themselves, and what ends it.
     if (operator_have_ && halt_ != Halt::none) {
         const float away = flat_length(sub(t.position, operator_));
@@ -1490,9 +1504,10 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
             }
             if (losing_since_ >= 0.0 && now - losing_since_ > 1.0) begin_halt(Halt::lag, now, 8.0f);
         }
-        // Nowhere clear to ride (wedged between walls): wait for you to come past.
-        if (halt_ == Halt::none && post_ == Post::none && trapped && !still) begin_halt(Halt::wait, now, 1.5f);
-        else if (halt_ == Halt::wait && !trapped) halt_ = Halt::none;
+        // Nowhere clear to ride beside you (an alley, between walls): in behind you on your own line,
+        // which you just rode, so is clear; they carry on filming, never stop for it.
+        if (trapped && halt_ == Halt::none && post_ == Post::none && !still) trail_follow_until_ = now + 0.5;
+        if (halt_ == Halt::wait) halt_ = Halt::none;
         // Waiting and you rode past them (or off away from them): on again, behind you.
         if (halt_ == Halt::wait && speed > 1.0f) {
             const float along = (operator_[0] - t.position[0]) * heading[0] + (operator_[2] - t.position[2]) * heading[2];
@@ -1847,8 +1862,8 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
         const float lift_target = std::max({grind_lift, ledge_lift, wall_raise_target_});
         // (Up to see you over a wall: a touch quicker, as the arms go up.)
         const bool for_wall = wall_raise_target_ > 0.0f && wall_raise_target_ >= lift_target - 1e-3f;
-        spring(lift_, lift_rate_, lift_target, 0.0f, for_wall ? 4.2f : 1.8f, 1.0f, dt);
-        lift_rate_ = std::clamp(lift_rate_, -0.8f, for_wall ? 2.4f : 0.8f);
+        spring(lift_, lift_rate_, lift_target, 0.0f, for_wall ? 6.5f : 1.8f, 1.0f, dt);
+        lift_rate_ = std::clamp(lift_rate_, -0.8f, for_wall ? 3.6f : 0.8f);
         lift_ = std::max(0.0f, lift_);
         wall_raise_ = wall_raise_target_ > 0.0f ? std::min(lift_, wall_raise_target_) : 0.0f;
         // Through an air the hands come up a touch and back: a soft rise and fall with you, not a jolt.
@@ -1926,7 +1941,7 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
         else if (unseen_since_ < 0) unseen_since_ = now;
         if (hidden && hidden_since_ < 0.0) {
             hidden_since_ = now;
-            wall_delay_ = 0.1f + 0.2f * unit(random_);
+            wall_delay_ = 0.05f + 0.1f * unit(random_);
         } else if (!hidden && wall_raise_target_ <= 0.0f && !peeking_) {
             hidden_since_ = -1.0;
         }
@@ -2248,10 +2263,24 @@ Frame Rig::film(double now, float dt, const Subject &self, const Subject *target
     spring(operator_height_, operator_height_rate_, world(me.position[1]), 0.0f, 9.0f, 0.75f, dt);
     // Held low and out at arm's length, towards where it points: never inside your own head, arms or
     // board, whichever way you turn it. A wall in the way brings it in; it never goes under the ground.
-    const float hold = std::clamp(s.hold_height, 0.05f, 1.8f);
+    // Pointed well up at the sky, the camera comes up to your eye, close to your face; pointed well
+    // down, it is held in over your stomach (a filmer does not hold it at the ground and look down at
+    // it from arm's length). Eased, so the camera rises and falls with the tilt, never jumps.
+    {
+        const float pitch_now = aim_.have ? aim_.pitch : 0.0f;
+        const float to_eye = std::clamp((pitch_now - 0.35f) / 0.45f, 0.0f, 1.0f);
+        const float tucked = std::clamp((-pitch_now - 0.6f) / 0.35f, 0.0f, 1.0f);
+        film_up_ += (to_eye - film_up_) * ease(dt, 0.2f);
+        film_down_ += (tucked - film_down_) * ease(dt, 0.2f);
+    }
+    const float hold_base = std::clamp(s.hold_height, 0.05f, 1.8f);
+    const float eye_line = 1.5f, stomach = 1.0f;
+    float hold = hold_base;
+    hold = mix(hold, std::max(hold, stomach), film_down_);
+    hold = mix(hold, std::max(hold, eye_line), film_up_);
     const Vec3 body{me.position[0], operator_height_ + hold, me.position[2]};
     const float reach_yaw = aim_.have ? aim_.yaw : heading;
-    const float reach = 0.62f;
+    const float reach = mix(0.62f, 0.3f, std::max(film_up_, film_down_));
     Vec3 eye = add(body, Vec3{std::sin(reach_yaw) * reach, 0, std::cos(reach_yaw) * reach});
     if (cast_) {
         const Vec3 chest{me.position[0], operator_height_ + std::max(hold, 0.9f), me.position[2]};

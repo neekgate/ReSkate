@@ -241,6 +241,8 @@ void filmer_page(SkateMenu &menu, const Model &, const CallbacksV3 &callbacks) {
         if (choice(menu, "slap", slap, {"Right stick click", "RB (right bumper)", "D-pad down", "D-pad up", "View / Back", "None"}))
             filmer_command(menu, callbacks, std::string("set slapbutton ") + filmer::slap_button_name(static_cast<filmer::SlapButton>(slap)));
     }
+    filmer_toggle(menu, callbacks, "Side buttons (D-pad left / right)", "While the Filmer follows you: D-pad left sends them to your left, right to your right, and they keep to it, going round whatever is coming up on that side (so you choose the way round a bin or a wall). Press the same side again and they pick their own side again. The game does not get D-pad left and right while this is on.", "sidebuttons", s.side_buttons);
+    if (s.side_buttons) note(r.side_hard ? (r.side == filmer::Side::left ? "Keeping to your left (D-pad left again: their choice)." : "Keeping to your right (D-pad right again: their choice).") : "Picking their own side.");
     filmer_toggle(menu, callbacks, "Left stick click", "While the Filmer follows: click the left stick to have them stop and film from where they are (again to ride on). On the tripod: sets it down where you stand. The game does not get that click while this is on.", "clicks", s.stick_clicks);
     filmer_toggle(menu, callbacks, "Take the right stick (you film)", "Keep the right stick (and its click) from the game while you film. Off: it also flicks tricks.", "stick", s.take_stick);
     note("Every Filmer action (on / off, slap, stop and film, next angle, zoom) can also go on any button in Settings > Binds.");
