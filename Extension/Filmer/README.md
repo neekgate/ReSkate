@@ -47,6 +47,12 @@ skate. filmed the way a skater with a VX1000 films a line.
   more room. It never gets closer than about a metre and a bit, and speeds up a push at a time. On
   foot it runs with you, close behind, quicker round corners, with the camera up a little (off its
   board too).
+- **The lens and the ground**: the lens rides the ground under itself, starting up a hump or a kerb
+  just before it gets there, eased so one lift handing over to another is never a hitch; it never
+  goes into the ground, nor far down below you (off an edge into water, a hole with no ground). Off
+  something more than about 4 m high, the camera only starts up once you have been in the air half a
+  second, then quicker the longer you fall. Placed afresh (a cut), it is put somewhere with ground at
+  your level and you in sight.
 - **Ollies after you**: something low you ollied over (a bin, a hurdle, a kerb-high box, up to knee
   high) or a gap you ollied (landing level or up onto something higher), it ollies too, near where you
   popped: a jolt, the camera up quickly over it and back down.
@@ -64,8 +70,9 @@ skate. filmed the way a skater with a VX1000 films a line.
 - **Height**: hidden behind a wall or fence you went over, after a beat the camera rises gently,
   as far as it takes to see you, up to about 7 ft. On a ledge you ollied onto it either rides round
   beside it or (a low one, now and then) waits at its foot with the camera raised over it. On a
-  grind it pushes up beside you (level, a touch back or a touch ahead, picked each grind) with the
-  camera up a little. Ollie up onto something
+  grind it pushes up beside you (level, a touch back or a touch ahead, picked each grind) on the side
+  it is on, with the camera up a little; down a hubba it rides the stairs beside you, never along the
+  ledge itself. Just up on something (ollied up after you), it keeps to its side for a few seconds. Ollie up onto something
   low and wide (a ledge, a manual pad, up to about 0.8 m) and it ollies up after you, on your line,
   camera going up with it, rides it, and comes down off the end after you, or stops at the end if
   that drop is too high to huck; the board sits in the
@@ -124,6 +131,10 @@ the palm is on the glass and overshoots as it comes off, and the clip ends. Clip
 `%LOCALAPPDATA%\ReSkate\filmer\clips.csv`, so they can be found in a recording.
 
 - While the Filmer has the camera the game's Start (pause) and View / Back (replay) buttons are off.
+- You film with keyboard and mouse: the mouse aims the camera whether you stand, walk or ride; WASD
+  moves you. The nametags over the others are off while you film (**Hide nametags**, `filmer set hidenames`).
+- DEBUG shows what the Filmer costs a frame (milliseconds and questions to the game's collision);
+  its questions are spread over frames, never asked in one burst.
 - The slap button (`filmer set slapbutton rs|rb|down|up|back|none`, CONTROLS tab; D-pad down by
   default). The right stick click is the camera cycle's while the Filmer follows with the cycle on.
 - Any time: bind **Filmer: slap the lens** in Settings > Binds, or `filmer slap`.

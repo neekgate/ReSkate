@@ -61,6 +61,7 @@ struct Settings {
     Look look;
     bool hide_hud = true;   // hide the game's interface while filming
     bool take_stick = true; // film mode: keep the right stick from the game
+    bool hide_nametags = true; // film mode: no nametags over the others while you film
     // follow mode: the left stick's click is the filmer's (switch side, left / right; on the tripod, set
     // it down where you stand), kept from the game while following.
     bool stick_clicks = true;
@@ -110,6 +111,7 @@ struct View {
     bool lagging{};           // follow: too far behind for good footy, rolling to a stop
     bool resting{};           // follow: you are still, and the filmer has settled behind you
     std::string doing;        // follow: what the filmer is up to
+    std::string cost;         // follow: what it costs a frame (DEBUG)
     bool at_edge{};           // follow: the filmer stopped where you went over a drop or a gap
     float camera_fov{};       // the game camera's own field of view (the look over another camera)
     bool stationary{};        // the camera is held still: mouse look and the long lens's zoom work

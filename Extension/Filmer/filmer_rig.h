@@ -171,6 +171,8 @@ public:
     // Straight back in behind you (the left stick while they are stopped by themselves).
     void resume_behind() noexcept;
     // follow: what the filmer is up to, for the menu.
+    // How many questions the last tick asked the world (rays and ground probes): for the DEBUG tab.
+    unsigned asked_last_tick() const noexcept { return asked_last_tick_; }
     std::string doing() const;
     // follow: you are standing still and the filmer has settled on a spot behind you.
     bool resting() const noexcept { return rest_have_; }
@@ -295,6 +297,7 @@ private:
     struct Probe { bool hit{}; float y{}; double time{}; };
     mutable std::unordered_map<std::uint64_t, Probe> probes_;
     mutable unsigned probe_budget_{}, ray_budget_{};
+    mutable unsigned asked_this_tick_{}, asked_last_tick_{};
     double now_{};
     void begin_tick(double now) noexcept;
     // The skater's position is their body's root, a little above the ground the game reports under
@@ -393,6 +396,27 @@ private:
     // you and nothing in the way of getting there. `plan_angle_` the angle chosen round you,
     // `plan_risk_` how bad the wanted angle looked (above 0: the planner turned away from it).
     float plan(double now, float want, float d, float height, float speed, bool &trapped);
+    float plan_score(float a, float scale_by);
+    // A look round in progress (its spots scored a couple a tick).
+    struct PlanOption { float angle{}, scale_by{1.0f}, cost{1e9f}; };
+    struct PlanJob {
+        int stage{};
+        float want{}, d{}, height{}, flat_speed{};
+        Vec3 way{};
+        std::size_t samples{1};
+        bool up{}, grinding{};
+        std::array<float, 4> reference{}, feet{};
+        std::array<float, 16> angles{}, scales{};
+        std::size_t count{}, next{}, side_from{99};
+        float want_cost{}, current_cost{1e9f};
+        PlanOption best, second;
+    };
+    PlanJob plan_job_;
+    bool plan_trapped_{};
+    float lens_floor_seen_{};
+    float eye_y_{}, eye_y_rate_{}, eye_y_target_{}, eye_y_target_rate_{};
+    bool eye_y_have_{};
+    double settled_until_{-1.0}; // just up on something: no crossing to the other side till then
     float plan_angle_{}, plan_risk_{}, plan_scale_{1.0f};
     double clear_since_{-1.0};
     double plan_next_{}, plan_keep_{};
@@ -466,9 +490,10 @@ private:
     Vec3 ollie_dir_{};
     bool ollie_planned_{};
     Vec3 ollie_at_{};
-    bool ollied_over(const Vec3 &at, const Vec3 &way) const; // you were in the air over `at` (within a metre and a half)
+    bool ollied_over(const Vec3 &at, const Vec3 &way, float up_to) const; // you were in the air over `at` (within a metre and a half)
     // Grinding: how far round from behind they ride beside you (a little back of or ahead of you).
     float grind_angle_{90.0f};
+    float grind_side_{};
     double drift_done_at_{-1.0};
     bool drift_over_{};
     double placed_at_{-100.0}, losing_since_{-1.0}, stuck_since_{-1.0};

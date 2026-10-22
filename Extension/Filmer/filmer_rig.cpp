@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <cmath>
 #include <numbers>
+#include <span>
 
 namespace dingosdk::filmer {
 namespace {
@@ -86,7 +87,7 @@ void Rig::reset() noexcept {
     history_.clear();
     aim_ = {};
     operator_have_ = false;
-    eye_have_ = false;
+    eye_have_ = eye_y_have_ = false;
     operator_velocity_ = {};
     operator_height_rate_ = 0;
     lean_ = 0;
@@ -157,6 +158,8 @@ void Rig::set_planted(bool planted) noexcept {
 
 void Rig::begin_tick(double now) noexcept {
     now_ = now;
+    asked_last_tick_ = asked_this_tick_;
+    asked_this_tick_ = 0;
     probe_budget_ = 12;
     ray_budget_ = 12;
     if (probes_.size() > 4096) probes_.clear();
@@ -171,9 +174,10 @@ std::optional<float> Rig::ground_at(float x, float z, float near_y, bool always)
     // somewhere else in the cell, up to a hand's height off on a bank.
     const bool fresh = !always && found != probes_.end() && now_ - found->second.time < 2.0;
     if (!fresh && (probe_budget_ > 0 || always)) {
-        if (probe_budget_ > 0) --probe_budget_;
+        if (probe_budget_ > 0 && !always) --probe_budget_;
         Vec3 hit{};
         Probe probe{false, 0.0f, now_};
+        ++asked_this_tick_;
         if (cast_(Vec3{x, near_y + 0.9f, z}, Vec3{x, near_y - 6.0f, z}, hit) && std::isfinite(hit[1])) probe = {true, hit[1], now_};
         probes_[key] = probe;
         ++ground_asked_;
@@ -188,8 +192,9 @@ std::optional<float> Rig::ground_at(float x, float z, float near_y, bool always)
 
 bool Rig::blocked(const Vec3 &from, const Vec3 &to, Vec3 *hit, bool always) const {
     if (!cast_ || (ray_budget_ == 0 && !always)) return false;
-    if (ray_budget_ > 0) --ray_budget_;
+    if (ray_budget_ > 0 && !always) --ray_budget_; // (one that must be asked does not use up the others' share)
     Vec3 found{};
+    ++asked_this_tick_;
     if (!cast_(from, to, found)) return false;
     if (hit) *hit = found;
     return true;
@@ -283,7 +288,8 @@ bool Rig::stationary() const noexcept {
 }
 
 void Rig::look(float right, float down) noexcept {
-    if (!stationary() || !std::isfinite(right) || !std::isfinite(down)) return;
+    // (You filming: the mouse aims whether you stand, walk or ride; WASD moves you as ever.)
+    if ((!stationary() && !filming_) || !std::isfinite(right) || !std::isfinite(down)) return;
     if (tripod_mode_) {
         // Turning the tripod head: its resting framing too, while it is not panning with anyone.
         if (!tracking_) {
@@ -832,148 +838,193 @@ void Rig::shake(double now, float speed, float human, float &yaw, float &pitch, 
 // clearest side and distance win, and that choice is held a few seconds once past it (a filmer
 // carving back over, not snapping back). With nowhere clear at all (wedged between walls) they wait
 // where they are for you to come past (`trapped`). Never in front of you.
-float Rig::plan(double now, float want, float d, float height, float speed, bool &trapped) {
-    trapped = false;
-    if (!cast_ || !world_answers() || !operator_have_) {
-        plan_angle_ = want;
-        plan_scale_ = 1.0f;
-        plan_risk_ = 0.0f;
-        return want;
-    }
-    if (now < plan_next_) {
-        trapped = halt_ == Halt::wait && clear_since_ < 0.0;
-        return plan_angle_;
-    }
-    plan_next_ = now + 0.15;
+// One spot round you scored (see plan): `a` the angle, `scale_by` the distance's scale.
+float Rig::plan_score(float a, float scale_by) {
     const auto &t = subject_;
+    const auto &p = plan_job_;
     const Vec3 heading{t.heading_x, 0.0f, t.heading_z};
     const Vec3 side{t.heading_z, 0.0f, -t.heading_x};
-    const float sign = want > 0.0f ? 1.0f : want < 0.0f ? -1.0f : (plan_angle_ >= 0.0f ? 1.0f : -1.0f);
-    const float quarter = std::min(std::abs(want) * 0.6f, 22.0f * degrees) * sign;
-    const float flat_speed = std::min(speed, 12.0f);
-    const Vec3 way = flat_speed > 0.5f ? Vec3{t.velocity[0] / std::max(speed, 0.01f), 0.0f, t.velocity[2] / std::max(speed, 0.01f)} : heading;
-    // Looked at further ahead than they will be in a second and a half: a wall or a bin coming up on
-    // their side is seen in time to move over (gradually) before they get to it.
-    const std::array<float, 4> ahead{0.0f, 0.5f, 1.0f, 1.6f};
-    const std::size_t samples = flat_speed > 0.5f ? 4 : 1;
+    float cost = std::abs(a - p.want) / degrees * 0.012f + std::abs(scale_by - 1.0f) * 0.8f;
+    // The other side from the one they are on: a ride across behind you, so only for a reason.
+    // (Just up on something, the camera raised with it: they stay on their side, settled.)
+    if (std::abs(plan_angle_) > 5.0f * degrees && a * plan_angle_ < 0.0f) cost += now_ < settled_until_ ? 2.5f : 0.3f;
+    // Told which side by you (the side buttons): never the other.
+    if (side_hard_ != 0.0f && a * side_hard_ < -1.0f * degrees) return 1e6f;
+    const float dist = p.d * scale_by;
     const float level = operator_floor_;
-    // Where the skater is up on something (a ledge, a rail), the spots are judged against the filmer's
-    // own level; otherwise against the ground under the skater there (riding down a bank or a ramp,
-    // the spots beside them are lower too, and that is no drop).
-    const bool up = up_beside_ > 0.3f && t.ground > level_ + 0.3f && !joining_;
-    std::array<float, 4> reference{};
-    probe_budget_ += 64;
-    ray_budget_ += 120;
-    for (std::size_t i = 0; i < samples; ++i) {
-        const float along = flat_speed * ahead[i];
-        const float x = t.position[0] + way[0] * along, z = t.position[2] + way[2] * along;
-        reference[i] = level;
-        if (!up)
-            if (const auto g = ground_at(x, z, world(t.ground) + 0.5f + std::clamp(t.velocity[1], -6.0f, 6.0f) * ahead[i])) reference[i] = *g; // (where you will be, up or down a hill)
-    }
-    const auto score = [&](float a, float scale_by) {
-        float cost = std::abs(a - want) / degrees * 0.012f + std::abs(scale_by - 1.0f) * 0.8f;
-        // The other side from the one they are on: a ride across behind you, so only for a reason.
-        if (std::abs(plan_angle_) > 5.0f * degrees && a * plan_angle_ < 0.0f) cost += 0.3f;
-        // Told which side by you (the side buttons): never the other.
-        if (side_hard_ != 0.0f && a * side_hard_ < -1.0f * degrees) return 1e6f;
-        const float dist = d * scale_by;
-        Vec3 last{operator_[0], level, operator_[2]};
-        for (std::size_t i = 0; i < samples; ++i) {
-            const float weight = i == 0 ? 1.0f : i == 1 ? 0.85f : i == 2 ? 0.7f : 0.55f;
-            const float along = flat_speed * ahead[i];
-            const Vec3 at{t.position[0] + way[0] * along, t.position[1], t.position[2] + way[2] * along};
-            const Vec3 line = add(at, scale(heading, -dist * std::cos(a)));
-            const Vec3 spot = add(line, scale(side, dist * std::sin(a)));
+    Vec3 last{operator_[0], level, operator_[2]};
+    const std::array<float, 4> ahead{0.0f, 0.5f, 1.0f, 1.6f};
+    for (std::size_t i = 0; i < p.samples; ++i) {
+        const float weight = i == 0 ? 1.0f : i == 1 ? 0.85f : i == 2 ? 0.7f : 0.55f;
+        const float along = p.flat_speed * ahead[i];
+        const Vec3 at{t.position[0] + p.way[0] * along, t.position[1], t.position[2] + p.way[2] * along};
+        const Vec3 line = add(at, scale(heading, -dist * std::cos(a)));
+        const Vec3 spot = add(line, scale(side, dist * std::sin(a)));
+        float ground = p.reference[i];
+        if (p.grinding) {
+            // Beside a rail or a ledge you grind (down a hubba, along a flat bar): any ground below
+            // you there that a filmer can stand on, down the stairs beside it too; not up on what
+            // you grind, and not off a real drop.
+            const float feet = p.feet[i];
+            const auto g = ground_at(spot[0], spot[2], feet + 1.2f);
+            if (std::abs(std::sin(a)) * dist < 0.9f) cost += 2.0f * weight;     // on your line: on what you grind
+            else if (!g) cost += 2.5f * weight;
+            else if (*g > feet + 1.0f) cost += 2.0f * weight;                // well up above you
+            else if (feet - *g > 2.6f) cost += 3.0f * weight;                // off a real drop
+            else {
+                ground = *g;
+                if (*g > feet - 0.1f) cost += 0.6f * weight;                  // up level with you: the low side is better
+            }
+        } else {
             // Judged against the ground on your line level with the spot (on a hill the spots behind
             // you are higher, and that is no ledge).
-            float ref = reference[i];
-            if (!up && std::abs(std::sin(a)) > 0.05f)
-                if (const auto gl = ground_at(line[0], line[2], reference[i] + 1.5f)) ref = *gl;
-            if (!up && std::abs(std::sin(a)) <= 0.05f) ref = ground_at(line[0], line[2], reference[i] + 1.5f).value_or(reference[i]);
+            float ref = p.reference[i];
+            if (!p.up && std::abs(std::sin(a)) > 0.05f)
+                if (const auto gl = ground_at(line[0], line[2], p.reference[i] + 1.5f)) ref = *gl;
+            if (!p.up && std::abs(std::sin(a)) <= 0.05f) ref = ground_at(line[0], line[2], p.reference[i] + 1.5f).value_or(p.reference[i]);
             const auto g = ground_at(spot[0], spot[2], ref + 0.5f);
-            float ground = ref;
+            ground = ref;
             if (!g) cost += 2.5f * weight;                    // nothing under it: off an edge, a gap
             else if (*g < ref - 0.6f) cost += 3.0f * weight;  // a drop beside the line
             else if (*g > ref + 0.3f) cost += 2.0f * weight;  // up on something (a planter, a ledge)
             else ground = *g;
-            const Vec3 eye{spot[0], ground + height + 0.1f, spot[2]};
-            const Vec3 centre{at[0], (up ? world(at[1]) : reference[i]) + 0.9f, at[2]};
-            if (obstructed(centre, eye, 0.25f)) cost += 2.5f * weight; // a wall between: no footy
-            // Elbow room: a wall, a bin or a post right beside the spot (within 0.7 m either side) is
-            // a spot to keep off, before they are brushing past it.
-            if (i <= 2) {
-                for (const float side_sign : {1.0f, -1.0f}) {
-                    const Vec3 from{spot[0], ground + 0.3f, spot[2]};
-                    const Vec3 to{spot[0] + side[0] * 0.7f * side_sign, ground + 0.3f, spot[2] + side[2] * 0.7f * side_sign};
-                    if (obstructed(from, to, 0.3f)) cost += 0.8f * weight;
-                }
-            }
-            // The way there, a body wide (a trunk, a post, a corner): either shoulder, low (a planter, a kerb-high box).
-            const Vec3 move{spot[0] - last[0], 0.0f, spot[2] - last[2]};
-            const float length_moved = flat_length(move);
-            if (length_moved > 0.05f) {
-                const Vec3 across{-move[2] / length_moved * 0.3f, 0.0f, move[0] / length_moved * 0.3f};
-                for (const float shoulder : {1.0f, -1.0f}) {
-                    const Vec3 from{last[0] + across[0] * shoulder, last[1] + 0.25f, last[2] + across[2] * shoulder};
-                    const Vec3 to{spot[0] + across[0] * shoulder, ground + 0.25f, spot[2] + across[2] * shoulder};
-                    if (obstructed(from, to, 0.25f)) cost += 0.9f * weight;
-                }
-            }
-            last = Vec3{spot[0], ground, spot[2]};
         }
-        return cost;
-    };
-    const float candidates[] = {want, quarter, 0.0f, -quarter, -want, plan_angle_};
-    struct Option { float angle{}, scale_by{1.0f}, cost{1e9f}; };
-    Option best, second;
-    float want_cost = 0.0f, current_cost = 1e9f;
-    for (std::size_t c = 0; c < std::size(candidates); ++c) {
-        const float a = candidates[c];
-        bool repeat = false;
-        for (std::size_t k = 0; k < c; ++k) if (std::abs(candidates[k] - a) < 2.0f * degrees) repeat = true;
-        if (repeat) continue;
-        const float cost = score(a, 1.0f);
-        if (c == 0) want_cost = cost;
-        if (std::abs(a - plan_angle_) < 2.0f * degrees && std::abs(plan_scale_ - 1.0f) < 0.05f) current_cost = cost;
-        if (cost < best.cost) { second = best; best = {a, 1.0f, cost}; }
-        else if (cost < second.cost) second = {a, 1.0f, cost};
-    }
-    // Nothing quite clear at the usual distance: closer in, or further out, at the best two angles.
-    if (best.cost > 0.6f) {
-        for (const auto &option : {best, second}) {
-            if (option.cost >= 1e8f) continue;
-            for (const float scale_by : {0.7f, 1.4f}) {
-                const float cost = score(option.angle, scale_by);
-                if (std::abs(option.angle - plan_angle_) < 2.0f * degrees && std::abs(plan_scale_ - scale_by) < 0.05f) current_cost = cost;
-                if (cost < best.cost) best = {option.angle, scale_by, cost};
+        const Vec3 eye{spot[0], ground + p.height + 0.1f, spot[2]};
+        const Vec3 centre{at[0], (p.up || p.grinding ? world(at[1]) : p.reference[i]) + 0.9f, at[2]};
+        if (obstructed(centre, eye, 0.25f, true)) cost += 2.5f * weight; // a wall between: no footy
+        // Elbow room: a wall, a bin or a post right beside the spot (within 0.7 m either side) is
+        // a spot to keep off, before they are brushing past it.
+        if (i <= 2) {
+            for (const float side_sign : {1.0f, -1.0f}) {
+                const Vec3 from{spot[0], ground + 0.3f, spot[2]};
+                const Vec3 to{spot[0] + side[0] * 0.7f * side_sign, ground + 0.3f, spot[2] + side[2] * 0.7f * side_sign};
+                if (obstructed(from, to, 0.3f, true)) cost += 0.8f * weight;
             }
         }
+        // The way there, a body wide (a trunk, a post, a corner): either shoulder, low (a planter, a kerb-high box).
+        const Vec3 move{spot[0] - last[0], 0.0f, spot[2] - last[2]};
+        const float length_moved = flat_length(move);
+        if (length_moved > 0.05f) {
+            const Vec3 across{-move[2] / length_moved * 0.3f, 0.0f, move[0] / length_moved * 0.3f};
+            for (const float shoulder : {1.0f, -1.0f}) {
+                const Vec3 from{last[0] + across[0] * shoulder, last[1] + 0.25f, last[2] + across[2] * shoulder};
+                const Vec3 to{spot[0] + across[0] * shoulder, ground + 0.25f, spot[2] + across[2] * shoulder};
+                if (obstructed(from, to, 0.25f, true)) cost += 0.9f * weight;
+            }
+        }
+        last = Vec3{spot[0], ground, spot[2]};
     }
-    // Nothing behind you is any good (a wall at your back, the top of a ramp): out to your side, the
-    // side with the room.
-    if (best.cost > 1.0f) {
-        for (const float a : {80.0f * degrees, -80.0f * degrees}) {
-            const float cost = score(a, 1.0f) + 0.2f;
-            if (std::abs(a - plan_angle_) < 2.0f * degrees && std::abs(plan_scale_ - 1.0f) < 0.05f) current_cost = cost;
-            if (cost < best.cost) best = {a, 1.0f, cost};
+    return cost;
+}
+
+// The way planner (see above). Its questions to the world are spread over a few ticks (one spot a
+// tick), never asked all in one: on a slow machine a burst of them in one frame is a hitch.
+float Rig::plan(double now, float want, float d, float height, float speed, bool &trapped) {
+    trapped = halt_ == Halt::wait && clear_since_ < 0.0;
+    if (!cast_ || !world_answers() || !operator_have_) {
+        plan_angle_ = want;
+        plan_scale_ = 1.0f;
+        plan_risk_ = 0.0f;
+        plan_job_.stage = 0;
+        return want;
+    }
+    auto &p = plan_job_;
+    const auto &t = subject_;
+    if (p.stage == 0) {
+        if (now < plan_next_) return plan_angle_;
+        plan_next_ = now + (grinding_ ? 0.05 : 0.15);
+        // A new look: what is wanted, and the ground where you will be over the next second and a
+        // half (a wall or a bin coming up on their side is seen in time to move over).
+        p = PlanJob{};
+        p.stage = 1;
+        p.want = want;
+        p.d = d;
+        p.height = height;
+        p.flat_speed = std::min(speed, 12.0f);
+        const Vec3 heading{t.heading_x, 0.0f, t.heading_z};
+        p.way = p.flat_speed > 0.5f ? Vec3{t.velocity[0] / std::max(speed, 0.01f), 0.0f, t.velocity[2] / std::max(speed, 0.01f)} : heading;
+        p.samples = p.flat_speed > 0.5f ? 4 : 1;
+        // Where the skater is up on something (a ledge, a rail), the spots are judged against the
+        // filmer's own level, or, grinding, against the ground below you there; otherwise against
+        // the ground under the skater (riding down a bank or a ramp, the spots beside them are lower
+        // too, and that is no drop).
+        p.grinding = grinding_;
+        p.up = !p.grinding && up_beside_ > 0.3f && t.ground > level_ + 0.3f && !joining_;
+        const std::array<float, 4> ahead{0.0f, 0.5f, 1.0f, 1.6f};
+        probe_budget_ += 8;
+        for (std::size_t i = 0; i < p.samples; ++i) {
+            const float along = p.flat_speed * ahead[i];
+            const float x = t.position[0] + p.way[0] * along, z = t.position[2] + p.way[2] * along;
+            p.reference[i] = operator_floor_;
+            p.feet[i] = world(t.ground) + t.velocity[1] * ahead[i];
+            if (!p.up && !p.grinding)
+                if (const auto g = ground_at(x, z, world(t.ground) + 0.5f + std::clamp(t.velocity[1], -6.0f, 6.0f) * ahead[i])) p.reference[i] = *g; // (where you will be, up or down a hill)
+        }
+        const float sign = want > 0.0f ? 1.0f : want < 0.0f ? -1.0f : (plan_angle_ >= 0.0f ? 1.0f : -1.0f);
+        const float quarter = std::min(std::abs(want) * 0.6f, 22.0f * degrees) * sign;
+        const float candidates[] = {want, quarter, 0.0f, -quarter, -want, plan_angle_};
+        // (Grinding: beside you, this side or that; quick to decide, there is not long.)
+        const float grind_candidates[] = {want, -want, plan_angle_, 80.0f * degrees * sign, -80.0f * degrees * sign};
+        for (const float a : p.grinding ? std::span<const float>(grind_candidates) : std::span<const float>(candidates)) {
+            bool repeat = false;
+            for (std::size_t k = 0; k < p.count; ++k) if (std::abs(p.angles[k] - a) < 2.0f * degrees) repeat = true;
+            if (!repeat) { p.angles[p.count] = a; p.scales[p.count] = 1.0f; ++p.count; }
+        }
+        p.next = 0;
+        p.want_cost = 0.0f;
+        p.current_cost = 1e9f;
+        return plan_angle_;
+    }
+    // One spot this tick.
+    probe_budget_ += 12;
+    for (int n = 0; n < 1 && p.next < p.count; ++n, ++p.next) {
+        const float a = p.angles[p.next], scale_by = p.scales[p.next];
+        const float cost = plan_score(a, scale_by) + (p.next >= p.side_from ? 0.2f : 0.0f);
+        if (p.next == 0) p.want_cost = cost;
+        if (std::abs(a - plan_angle_) < 2.0f * degrees && std::abs(plan_scale_ - scale_by) < 0.05f) p.current_cost = cost;
+        if (cost < p.best.cost) { if (scale_by == 1.0f) p.second = p.best; p.best = {a, scale_by, cost}; }
+        else if (cost < p.second.cost && scale_by == 1.0f) p.second = {a, scale_by, cost};
+    }
+    if (p.next < p.count) return plan_angle_;
+    // Then, nothing quite clear at the usual distance: closer in, or further out, at the best two
+    // angles. Then, nothing behind you any good (a wall at your back, the top of a ramp): out to
+    // your side, the side with the room.
+    if (p.stage == 1) {
+        p.stage = 2;
+        if (p.best.cost > 0.6f && !p.grinding) {
+            for (const auto &option : {p.best, p.second}) {
+                if (option.cost >= 1e8f) continue;
+                for (const float scale_by : {0.7f, 1.4f}) { p.angles[p.count] = option.angle; p.scales[p.count] = scale_by; ++p.count; }
+            }
+            if (p.next < p.count) return plan_angle_;
         }
     }
-    // Kept while it is clear (no dithering); a choice made to get round something is held a few
-    // seconds, so they carve back over after it, not snap back.
-    const bool keep = now < plan_keep_ && current_cost < 0.6f;
+    if (p.stage == 2) {
+        p.stage = 3;
+        if (p.best.cost > 1.0f && !p.grinding) {
+            p.side_from = p.count;
+            for (const float a : {80.0f * degrees, -80.0f * degrees}) { p.angles[p.count] = a; p.scales[p.count] = 1.0f; ++p.count; }
+            return plan_angle_;
+        }
+    }
+    // Decided. Kept while it is clear (no dithering); a choice made to get round something is held
+    // a few seconds, so they carve back over after it, not snap back.
+    p.stage = 0;
+    const auto best = p.best;
+    const bool keep = now < plan_keep_ && p.current_cost < 0.6f && !(p.grinding && std::abs(plan_angle_ - p.want) > 20.0f * degrees);
     if (!keep) {
-        const bool evasive = want_cost - best.cost > 0.5f;
+        const bool evasive = p.want_cost - best.cost > 0.5f;
         if (std::abs(best.angle - plan_angle_) > 1.0f * degrees || std::abs(best.scale_by - plan_scale_) > 0.05f)
             plan_keep_ = now + (evasive ? 2.5 : 0.8);
         plan_angle_ = best.angle;
         plan_scale_ = best.scale_by;
     }
-    plan_risk_ = std::max(0.0f, want_cost - std::min(best.cost, current_cost));
+    plan_risk_ = std::max(0.0f, p.want_cost - std::min(best.cost, p.current_cost));
     // Wedged: every spot is bad. Room again once something is clear for a moment.
     if (best.cost > 4.5f) clear_since_ = -1.0;
     else if (clear_since_ < 0.0 && best.cost < 1.5f) clear_since_ = now;
     trapped = best.cost > 4.5f || (halt_ == Halt::wait && (clear_since_ < 0.0 || now - clear_since_ < 0.4));
+    plan_trapped_ = best.cost > 4.5f;
     return plan_angle_;
 }
 
@@ -982,7 +1033,7 @@ float Rig::plan(double now, float want, float d, float height, float speed, bool
 // those to where the filmer is: they roll over and stop, they do not circle round you.
 // Whether you were in the air over (or right by) a spot: your trail there left the ground.
 // (Going the same way over it as they would: over it along your line, not across a ledge you grind.)
-bool Rig::ollied_over(const Vec3 &at, const Vec3 &way) const {
+bool Rig::ollied_over(const Vec3 &at, const Vec3 &way, float up_to) const {
     for (std::size_t k = 1; k < trail_.size(); ++k) {
         const auto &point = trail_[k];
         if (!point.air) continue;
@@ -990,7 +1041,15 @@ bool Rig::ollied_over(const Vec3 &at, const Vec3 &way) const {
         if (dx * dx + dz * dz >= 1.5f * 1.5f) continue;
         const Vec3 along = sub(point.at, trail_[k - 1].at);
         const float l = flat_length(along);
-        if (l > 1e-3f && (along[0] * way[0] + along[2] * way[2]) / l > 0.6f) return true;
+        if (l <= 1e-3f || (along[0] * way[0] + along[2] * way[2]) / l <= 0.6f) continue;
+        // Over it and down again about where you took off (not up onto it: a ledge you went on to grind).
+        std::size_t before = k;
+        while (before > 0 && trail_[before].air) --before;
+        std::size_t after = k;
+        while (after < trail_.size() && trail_[after].air) ++after;
+        if (after >= trail_.size()) return false; // still in the air: not yet known
+        const float rise = trail_[after].at[1] - trail_[before].at[1];
+        if (rise > -0.3f && rise < std::max(0.3f, up_to)) return true;
     }
     return false;
 }
@@ -1310,19 +1369,21 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
         const bool up_there = operator_have_ && !t.airborne && up > 0.3f && up < 3.0f && speed > 0.5f && !joining_;
         if (!up_there) grind_seen_since_ = -1.0;
         else if (grind_seen_since_ < 0.0) grind_seen_since_ = now;
-        const bool grinding = up_there && (grinding_ || now - grind_seen_since_ > 0.25);
+        const bool grinding = up_there && (grinding_ || now - grind_seen_since_ > 0.08);
         if (grinding && !grinding_) {
             grind_since_ = now;
             // Beside you through it, picked at the start: level with you, a touch back or a touch
             // ahead (no rushing off to the end of it, no hanging back out wide).
             grind_style_ = 0;
             grind_angle_ = 75.0f + unit(random_) * 30.0f;
+            // On the side of it they are on (the way across to the other side is over what you grind).
+            grind_side_ = side_hard_ != 0.0f ? side_hard_ : (angle_ >= 0.0f ? 1.0f : -1.0f);
         }
         if (grinding) grind_over_since_ = -1.0;
         else if (grinding_ && grind_over_since_ < 0.0) grind_over_since_ = now;
         grinding_ = grinding;
         const bool grind_on = grinding_ || (grind_over_since_ >= 0.0 && now - grind_over_since_ < 1.2);
-        grind_weight_ += ((grind_on ? 1.0f : 0.0f) - grind_weight_) * ease(dt, grind_on ? 0.6f : 1.5f);
+        grind_weight_ += ((grind_on ? 1.0f : 0.0f) - grind_weight_) * ease(dt, grind_on ? 0.3f : 1.5f);
         // Through a grind the board in the middle of the frame; after it (and after any trick), slowly
         // back to framing your body.
         board_weight_ += ((grinding_ ? 1.0f : 0.0f) - board_weight_) * ease(dt, grinding_ ? 0.4f : 2.0f);
@@ -1351,12 +1412,14 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
     // heading. Moving round to a new angle takes the time a filmer needs to ride there: a carve, a
     // little quicker when getting out of the way of something.
     bool trapped = false;
-    const float planned = plan(now, mix(angle_target_, sign * grind_angle_ * degrees, grind_weight_), base_d, height, speed, trapped);
+    const float grind_sign = grind_side_ != 0.0f ? grind_side_ : sign;
+    const float planned = plan(now, grind_weight_ > 0.01f ? grind_sign * mix(std::abs(angle_target_), grind_angle_ * degrees, grind_weight_) : angle_target_, base_d, height, speed, trapped);
     {
         const bool crossing = planned * angle_ < 0.0f; // over to your other side (the left stick, or round something)
         // (Into a grind: up beside you without dawdling.)
-        const float most = std::max((crossing ? 60.0f : plan_risk_ > 0.5f ? 30.0f : 15.0f), 45.0f * grind_weight_) * degrees;
-        spring(angle_, angle_rate_, planned, 0.0f, std::max(crossing ? 2.2f : plan_risk_ > 0.5f ? 1.6f : 0.8f, 2.0f * grind_weight_), 1.0f, dt);
+        const float grinding_now = grinding_ ? 1.0f : grind_weight_;
+        const float most = std::max((crossing ? 60.0f : plan_risk_ > 0.5f ? 30.0f : 15.0f), 90.0f * grinding_now) * degrees;
+        spring(angle_, angle_rate_, planned, 0.0f, std::max(crossing ? 2.2f : plan_risk_ > 0.5f ? 1.6f : 0.8f, 3.5f * grinding_now), 1.0f, dt);
         angle_rate_ = std::clamp(angle_rate_, -most, most);
     }
     plan_scale_ = std::clamp(plan_scale_, 0.7f, 1.4f);
@@ -1632,11 +1695,42 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
     // A new spot: far off the one wanted (a teleport, a respawn), or after a cut. Never while stopped.
     if (!operator_have_ || (!planted_ && !edge_ && !holding_ && halt_ == Halt::none && post_ == Post::none &&
                             flat_length(sub(operator_, desired)) > 15.0f)) {
+        // Somewhere with ground about your level under it and you in sight from it: the spot wanted, or
+        // failing that another round you (never placed down off an edge, into water or under the map).
+        float placed_ground = cast_ ? ground_at(desired[0], desired[2], ground).value_or(world(ground)) : ground;
+        if (cast_ && world_answers()) {
+            const float feet = world(t.position[1]);
+            const Vec3 you_at{t.position[0], feet + 0.9f, t.position[2]};
+            const auto good = [&](const Vec3 &spot, float &g_out) {
+                const auto g = ground_at(spot[0], spot[2], feet + 0.8f, true);
+                if (!g || *g < feet - 1.2f || *g > feet + 0.6f) return false;
+                if (blocked(Vec3{spot[0], *g + 0.6f, spot[2]}, you_at, nullptr, true)) return false;
+                g_out = *g;
+                return true;
+            };
+            float g = 0.0f;
+            if (!good(desired, g)) {
+                const Vec3 heading_now{t.heading_x, 0.0f, t.heading_z}, side_now{t.heading_z, 0.0f, -t.heading_x};
+                const float dd = std::max(min_gap, d);
+                bool found = false;
+                for (const float a : {26.0f, -26.0f, 0.0f, 60.0f, -60.0f, 90.0f, -90.0f}) {
+                    for (const float k : {1.0f, 0.6f}) {
+                        const float r = a * degrees;
+                        const Vec3 spot = add(Vec3{t.position[0], 0.0f, t.position[2]}, add(scale(heading_now, -dd * k * std::cos(r)), scale(side_now, dd * k * std::sin(r))));
+                        if (good(spot, g)) { desired = Vec3{spot[0], desired[1], spot[2]}; found = true; break; }
+                    }
+                    if (found) break;
+                }
+                // Nowhere: right by you, at your level.
+                if (!found) { desired = Vec3{t.position[0] - t.heading_x * min_gap, desired[1], t.position[2] - t.heading_z * min_gap}; g = feet; }
+            }
+            placed_ground = g;
+        }
         operator_ = desired;
         operator_velocity_ = t.velocity;
         operator_velocity_[1] = 0;
         level_ = ground;
-        operator_ground_ = cast_ ? ground_at(desired[0], desired[2], ground).value_or(world(ground)) : ground;
+        operator_ground_ = placed_ground;
         operator_floor_ = operator_ground_;
         floor_rate_ = 0.0f;
         operator_height_ = operator_ground_ + height;
@@ -1647,7 +1741,7 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
         edge_ = holding_ = false;
         unseen_since_ = -1.0;
         lens_path_.clear();
-        eye_have_ = false;
+        eye_have_ = eye_y_have_ = false;
         placed_at_ = now;
     }
     // Stopping by themselves.
@@ -1687,7 +1781,7 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
                         const float y = feet + t.velocity[1] * ahead - 4.9f * ahead * ahead;
                         const auto g = ground_at(x, z, y + 0.6f);
                         if (g && *g >= y - 0.1f) {
-                            lands_ok = *g >= takeoff - huck_;
+                            lands_ok = *g >= takeoff - 0.5f; // (level with your takeoff, or up)
                             break;
                         }
                     }
@@ -1727,7 +1821,7 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
         }
         // Nowhere clear to ride beside you (an alley, between walls): in behind you on your own line,
         // which you just rode, so is clear; they carry on filming, never stop for it.
-        if (trapped && halt_ == Halt::none && post_ == Post::none && !still) trail_follow_until_ = now + 0.5;
+        if (trapped && halt_ == Halt::none && post_ == Post::none && !still && !grinding_ && grind_weight_ < 0.3f) trail_follow_until_ = now + 0.5; // (not along what you grind)
         if (halt_ == Halt::wait) halt_ = Halt::none;
         // Waiting and you rode past them (or off away from them): on again, behind you.
         if (halt_ == Halt::wait && speed > 1.0f) {
@@ -1803,7 +1897,7 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
                     const auto g = ground_at(at[0], at[2], operator_floor_ + 1.0f);
                     if (g && std::abs(*g - operator_floor_) < 0.25f) { far_side = *g; break; }
                 }
-                if (h > 0.08f && h <= 0.75f && far_side > -98.0f && ollied_over(hit, dir) &&
+                if (h > 0.08f && h <= 0.75f && far_side > -98.0f && ollied_over(hit, dir, 0.3f) &&
                     !blocked(Vec3{from[0], operator_floor_ + h + 0.25f, from[2]}, add(Vec3{hit[0], operator_floor_ + h + 0.25f, hit[2]}, scale(dir, 0.6f)))) {
                     ollie_planned_ = true;
                     ollie_gap_ = false;
@@ -1828,7 +1922,7 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
                         if (g && *g >= operator_floor_ - 0.35f) {
                             const Vec3 edge_at = add(operator_, scale(dir, lip));
                             const Vec3 middle = add(operator_, scale(dir, (lip + along) * 0.5f));
-                            if (*g <= operator_floor_ + join_height && ollied_over(middle, dir)) {
+                            if (*g <= operator_floor_ + join_height && ollied_over(middle, dir, join_height + 0.1f)) {
                                 ollie_planned_ = true;
                                 ollie_gap_ = true;
                                 ollie_at_ = Vec3{edge_at[0], operator_floor_, edge_at[2]};
@@ -1895,7 +1989,10 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
             };
             if (now >= steer_next_) {
                 steer_next_ = now + 0.1;
-                const float look = std::clamp(1.0f + std::max(riding, speed) * 0.3f, 1.5f, 3.2f);
+                // (Far enough ahead to get round it in time at their pace, as a carve: most of a second.)
+                // (Beside what you grind, the way along it close by: a short look, not across it.)
+                const float look = grind_weight_ > 0.1f || grinding_ ? std::clamp(1.0f + std::max(riding, speed) * 0.3f, 1.5f, 3.2f)
+                                                                    : std::clamp(1.5f + std::max(riding, speed) * 0.55f, 2.0f, 6.0f);
                 probe_budget_ += 30; // the look round has its own questions
                 ray_budget_ += 24;
                 // 0 clear, 1 in the way (or no ground a board would roll on), 2 clear down the middle
@@ -1921,7 +2018,7 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
                         obstructed(Vec3{operator_[0], operator_floor_ + 1.0f, operator_[2]}, Vec3{end[0], last + 1.0f, end[2]}, 1.0f, true))
                         return 1;
                     // A body wide: either shoulder, at the knee.
-                    const Vec3 across{-heading_way[2] * 0.2f, 0.0f, heading_way[0] * 0.2f};
+                    const Vec3 across{-heading_way[2] * 0.22f, 0.0f, heading_way[0] * 0.22f};
                     for (const float shoulder : {1.0f, -1.0f})
                         if (obstructed(Vec3{operator_[0] + across[0] * shoulder, start_low, operator_[2] + across[2] * shoulder},
                                        Vec3{end[0] + across[0] * shoulder, (popping ? std::max(last, join_to_) : last) + 0.22f, end[2] + across[2] * shoulder}, 0.22f, true))
@@ -1933,7 +2030,7 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
                 const bool near_line = at_index && flat_length(sub(trail_[*at_index].at, operator_)) < 1.5f;
                 if (straight == 0) {
                     if (now >= steer_hold_) { steer_target_ = 0.0f; steer_side_ = 0.0f; }
-                } else if (straight == 2 && near_line) {
+                } else if (straight == 2 && near_line && grind_weight_ < 0.3f) {
                     // Tight, but you rode through it: through it on your line, down the middle.
                     steer_target_ = 0.0f;
                     steer_side_ = 0.0f;
@@ -1943,6 +2040,17 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
                     // round first at each angle, else the one towards their spot.
                     float first = steer_side_;
                     if (first == 0.0f) first = (way[0] * to[2] - way[2] * to[0]) >= 0.0f ? 1.0f : -1.0f;
+                    // (Riding along with you: round it on the side of you they are on, not across in
+                    // front of it towards your line.)
+                    if (steer_side_ == 0.0f && speed > 1.0f) {
+                        const Vec3 across_you{t.heading_z, 0.0f, -t.heading_x};
+                        const float out = (operator_[0] - t.position[0]) * across_you[0] + (operator_[2] - t.position[2]) * across_you[2];
+                        if (std::abs(out) > 0.3f) {
+                            const Vec3 keep = scale(across_you, out > 0.0f ? 1.0f : -1.0f);
+                            const Vec3 plus = rotated(way, 0.3f), minus = rotated(way, -0.3f);
+                            first = plus[0] * keep[0] + plus[2] * keep[2] >= minus[0] * keep[0] + minus[2] * keep[2] ? 1.0f : -1.0f;
+                        }
+                    }
                     bool found = false;
                     for (const float a : {20.0f, 35.0f, 50.0f, 70.0f, 90.0f, 120.0f}) {
                         for (const float side_sign : {first, -first}) {
@@ -1959,7 +2067,7 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
                         // No clear way round: through it on the line you rode, which is known to be clear.
                         steer_target_ = 0.0f;
                         steer_side_ = 0.0f;
-                        trail_follow_until_ = now + 0.8;
+                        if (grind_weight_ < 0.3f) trail_follow_until_ = now + 0.8;
                     }
                     steer_hold_ = now + 0.6;
                 }
@@ -1970,7 +2078,9 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
                 float went = 0.0f;
                 // (Far enough on to keep your pace, near enough to stay on the line.)
                 const float carrot = std::clamp(speed * 0.45f, 0.7f, 3.0f);
-                while (k + 1 < trail_.size() && went < carrot) { went += flat_length(sub(trail_[k + 1].at, trail_[k].at)); ++k; }
+                // (Never on up onto what you went up on, a ledge you grind: the line stops at its foot.)
+                const float highest = operator_floor_ + (joining_ ? join_height + 0.3f : 0.45f) + root_above_ground_;
+                while (k + 1 < trail_.size() && went < carrot && (trail_[k + 1].air || trail_[k + 1].at[1] <= highest)) { went += flat_length(sub(trail_[k + 1].at, trail_[k].at)); ++k; }
                 desired = Vec3{trail_[k].at[0], desired[1], trail_[k].at[2]};
             }
             // Turned into gradually, as on a board: a carve, not a snap.
@@ -2059,7 +2169,9 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
             const bool kicking = stride_now > 0.0f && stride_now < 0.4f;
             // (Already as close as they mean to be: no push, they roll and drop back to it.)
             const float gap_now = flat_length(sub(before, t.position)), gap_meant = flat_length(sub(desired, t.position));
-            float gain = kicking && gap_now > gap_meant - 0.2f ? push * 2.2f : 0.15f;
+            // (Out of place to the side, round you, they push to get there too: through a grind, up beside you.)
+            const bool want_ground = gap_now > gap_meant - 0.2f || (behind_by > 0.6f && grind_weight_ > 0.3f);
+            float gain = kicking && want_ground ? push * 2.2f : 0.15f;
             // On foot they run with you: speeding up a stride at a time, round corners at a run.
             if (on_foot_) gain = gap_now > gap_meant - 0.2f ? 4.5f : 0.5f;
             if (floor_rate_ < -0.3f) gain = std::max(gain, std::min(-floor_rate_ * 2.0f, 4.0f));
@@ -2213,6 +2325,10 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
         else operator_floor_ += (operator_ground_ - operator_floor_) * ease(dt, 0.05f);
         if (dt > 0.0f) floor_rate_ += ((operator_floor_ - previous) / dt - floor_rate_) * ease(dt, 0.1f);
     }
+    // Just up onto something (ollied up after you, hopped a step), or the camera raised to see you:
+    // settled where they are, they keep to their side for a few seconds (no swapping sides on it).
+    if (operator_floor_ - lens_floor_seen_ > 0.25f || joining_) settled_until_ = now + 3.0;
+    lens_floor_seen_ = operator_floor_;
     // Stair stop: once stopped the camera rises a little, to see over the lip and down the set.
     spring(stop_lift_, stop_lift_rate_, stair_style_ && framed_ ? std::clamp(s.stop_lift, 0.0f, 1.5f) : 0.0f, 0.0f, 4.0f, 1.0f, dt);
     // You going down off something they will not huck (in the air over it, or landed below it): the
@@ -2221,8 +2337,16 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
         const float below = operator_floor_ - world(t.position[1]);
         if (below > 0.4f && flat_length(sub(t.position, operator_)) < 25.0f) {
             const float need = std::min(raise_ceiling, height + below * 0.6f + 0.2f) - height;
+            // Raised steadily, not snapped up. Off something big (more than about 4 m to the ground
+            // under you), not until you have been in the air half a second, then quicker the longer
+            // you fall.
+            const auto under = t.airborne && cast_ && world_answers() ? ground_at(t.position[0], t.position[2], world(t.position[1]) + 0.3f) : std::optional<float>{};
+            const float drop = under ? operator_floor_ - *under : below;
+            const float airtime = t.airborne ? static_cast<float>(now - t.air_since) : 1.0f;
+            float rate = 1.5f;
+            if (drop > 4.0f && t.airborne) rate = airtime < 0.5f ? 0.0f : 0.5f + 1.6f * (airtime - 0.5f);
             if (need > wall_raise_target_) {
-                wall_raise_target_ = need;
+                wall_raise_target_ = std::min(need, wall_raise_target_ + rate * dt);
                 if (hidden_since_ < 0.0) hidden_since_ = now;
                 seen_low_since_ = -1.0;
             }
@@ -2333,9 +2457,50 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
             }
         eye[0] = at[0];
         eye[2] = at[2];
-        lens_ground_ = std::max(at[1], operator_floor_ - 0.3f);
+        // The height above the ground carried to where the lens is (a hand's length back along the
+        // path): over a hump the lens rises and falls with the ground under it, not with the ground
+        // under their feet a moment ahead (the two pulling against each other was a jolt).
+        const float above = eye[1] - operator_floor_;
+        eye[1] = at[1] + above;
+        lens_ground_ = at[1];
+        // And the ground right under the lens, asked every tick: never into a curve, a bank, a kerb.
+        if (cast_ && world_answers())
+            if (const auto g = ground_at(eye[0], eye[2], std::max(at[1], operator_floor_) + 0.6f, true); g && *g > lens_ground_ - 0.5f)
+                lens_ground_ = std::max(lens_ground_, *g);
+        // A rise just ahead of the lens steeper than a hill (the start of a hump, a bank, a kerb): the
+        // lens starts up before it gets there, so it rides up and over in one curve, never a kink as
+        // it meets it.
+        const float moving = flat_length(operator_velocity_);
+        if (cast_ && world_answers() && moving > 0.5f) {
+            const Vec3 dir = scale(Vec3{operator_velocity_[0], 0.0f, operator_velocity_[2]}, 1.0f / moving);
+            float ahead_floor = -1e9f;
+            for (const float secs : {0.1f, 0.2f, 0.32f}) {
+                const float along = std::min(moving * secs, 2.0f);
+                if (const auto g = ground_at(eye[0] + dir[0] * along, eye[2] + dir[2] * along, std::max(at[1], operator_floor_) + 0.6f); g && *g > lens_ground_ - 0.5f)
+                    ahead_floor = std::max(ahead_floor, *g - along * 0.2f);
+            }
+            if (ahead_floor > lens_ground_) eye[1] = std::max(eye[1], ahead_floor + (above > 0.0f ? std::min(above, 0.4f) : lens_clearance));
+        }
     }
-    eye[1] = std::max(eye[1], lens_ground_ + lens_clearance);
+    // Never far down below you (into water, under the map, down a hole the ground gives no answer
+    // for): no lower than a long way under where you are, closer the nearer you are.
+    if (halt_ != Halt::drop) {
+        const float near = flat_length(sub(Vec3{eye[0], 0.0f, eye[2]}, Vec3{t.position[0], 0.0f, t.position[2]}));
+        lens_ground_ = std::max(lens_ground_, world(t.position[1]) - (1.6f + near * 0.5f));
+    }
+    // The lens height, finally, eased (no hitch where one lift hands over to another), and never under
+    // the ground.
+    if (!eye_y_have_ || std::abs(eye_y_ - eye[1]) > 3.0f) { eye_y_ = eye_y_target_ = eye[1]; eye_y_rate_ = eye_y_target_rate_ = 0.0f; eye_y_have_ = true; }
+    // (Led by how fast the target itself goes up or down, a hill's slope: no lag riding down one.)
+    if (dt > 0.0f) eye_y_target_rate_ += (std::clamp((eye[1] - eye_y_target_) / dt, -15.0f, 15.0f) - eye_y_target_rate_) * ease(dt, 0.15f);
+    eye_y_target_ = eye[1];
+    // (Close over the ground and it rising under the lens: stiffer, so it never meets the ground and
+    // stops dead on it.)
+    const float margin = eye_y_ - (lens_ground_ + lens_clearance);
+    const float stiff = margin < 0.08f && eye_y_target_rate_ > 0.2f ? mix(28.0f, 14.0f, std::clamp(margin / 0.08f, 0.0f, 1.0f)) : 14.0f;
+    spring(eye_y_, eye_y_rate_, eye[1], eye_y_target_rate_, stiff, 1.0f, dt);
+    if (eye_y_ < lens_ground_ + lens_clearance) { eye_y_ = lens_ground_ + lens_clearance; eye_y_rate_ = std::max(eye_y_rate_, 0.0f); }
+    eye[1] = eye_y_;
     // Can the filmer see you? Hidden behind something not too tall (you went over a fence or a wall,
     // dropped down behind it, slammed behind it), after a beat the camera is lifted, gently, as far as
     // it takes to see you again (your body or at least your head), up to about 7 ft. If no height up to
@@ -2347,7 +2512,7 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
         const auto sees = [&](const Vec3 &from, bool always) {
             return !blocked(from, centre, nullptr, always) || !blocked(from, head, nullptr, always);
         };
-        const bool hidden = !sees(eye, false);
+        const bool hidden = !sees(eye, true);
         if (!hidden) unseen_since_ = -1.0;
         else if (unseen_since_ < 0) unseen_since_ = now;
         if (hidden && hidden_since_ < 0.0) {

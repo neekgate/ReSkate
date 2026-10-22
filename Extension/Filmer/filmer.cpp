@@ -10,6 +10,7 @@
 #include "Engine/Core/Log/logging.h"
 #include "Extension/Console/commands.h"
 #include "Extension/Multiplayer/Hud/follow_camera.h"
+#include "Extension/Multiplayer/Hud/custom_nametags.h"
 #include "Extension/Multiplayer/Hud/native_party.h"
 #include "Extension/Multiplayer/Net/protocol.h"
 #include "Extension/Profile/local_profile_runtime.h"
@@ -27,6 +28,7 @@
 #include <atomic>
 #include <cctype>
 #include <charconv>
+#include <chrono>
 #include <cmath>
 #include <ctime>
 #include <filesystem>
@@ -106,6 +108,11 @@ struct State {
     bool hud_hidden{};             // the game's interface was hidden, as the console last said (for the camera cycle)
     bool meat_restore{};           // Hall of Meat was on when filming began: back on when it stops (saved, in case)
     std::string doing_shown;
+    // DEBUG: what the Filmer costs a frame (the AI filmer's work, and how many questions it asked the
+    // game's collision), over the last second: to tell a slow machine's hitches from the rest.
+    double cost_sum_ms{}, cost_max_ms{}, cost_since{};
+    unsigned cost_frames{}, asked_max{}, asked_sum{};
+    std::string cost_shown;
     bool lagging_shown{}, resting_shown{};
     bool holdtest{};               // `filmer holdtest`: the camera held out on your skater, the game's camera
     bool holding{};                // the arm holds the camera out this tick (the camcorder goes in the hand)
@@ -245,6 +252,7 @@ void load_store() {
         }
         s.settings.hide_hud = flag(o, "hide_hud", d.hide_hud);
         s.settings.take_stick = flag(o, "take_stick", d.take_stick);
+        s.settings.hide_nametags = flag(o, "hide_nametags", d.hide_nametags);
         const auto last = o.value("last_mode", std::string("follow"));
         s.last_mode = last == "film" ? Mode::film : last == "tripod" ? Mode::tripod : Mode::follow;
         if (o.contains("look") && o.at("look").is_object()) {
@@ -332,6 +340,7 @@ void save_store() {
         json["camera_model"] = s.settings.camera_model;
         json["hide_hud"] = s.settings.hide_hud;
         json["take_stick"] = s.settings.take_stick;
+        json["hide_nametags"] = s.settings.hide_nametags;
         json["last_mode"] = mode_name(s.last_mode);
         const auto &k = s.settings.look;
         Json look = Json::object();
@@ -557,6 +566,7 @@ void publish_view(State &s) {
     next->at_edge = s.rig.at_edge();
     next->lagging = s.lagging_shown;
     next->doing = s.doing_shown;
+    next->cost = s.cost_shown;
     next->resting = s.resting_shown;
     next->camera_fov = s.camera_fov;
     next->stationary = s.stationary_shown;
@@ -799,6 +809,8 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready, bool camera_ph
             s.view_due = true;
         }
         update_filter(s);
+        // You filming: the nametags off while you have the camera (if you want them off).
+        multiplayer::nametags_held_off.store(s.settings.mode == Mode::film && s.held && s.settings.hide_nametags, std::memory_order_relaxed);
         if (s.settings.mode == Mode::off) {
             release_camera(s, base, client, camera_phase);
             set_status(s, s.held ? "Giving the camera back." : "Off.");
@@ -865,7 +877,27 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready, bool camera_ph
                     }
                 }
                 read_follow_clicks(s);
-                if (subject.valid) frame = s.rig.follow(t, dt, subject, s.settings.rig);
+                if (subject.valid) {
+                    const auto started = std::chrono::steady_clock::now();
+                    frame = s.rig.follow(t, dt, subject, s.settings.rig);
+                    const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
+                    s.cost_sum_ms += ms;
+                    s.cost_max_ms = std::max(s.cost_max_ms, ms);
+                    ++s.cost_frames;
+                    s.asked_sum += s.rig.asked_last_tick();
+                    s.asked_max = std::max(s.asked_max, s.rig.asked_last_tick());
+                    if (t - s.cost_since >= 1.0) {
+                        if (s.cost_frames) {
+                            s.cost_shown = std::format("{:.2f} ms a frame on average, {:.2f} ms at worst; {} frames a second; world questions {:.0f} a frame on average, {} at most",
+                                                       s.cost_sum_ms / s.cost_frames, s.cost_max_ms, s.cost_frames,
+                                                       static_cast<double>(s.asked_sum) / s.cost_frames, s.asked_max);
+                            s.view_due = true;
+                        }
+                        s.cost_since = t;
+                        s.cost_sum_ms = s.cost_max_ms = 0.0;
+                        s.cost_frames = s.asked_max = s.asked_sum = 0;
+                    }
+                }
                 if (s.rig.planted() != s.planted_shown || s.rig.at_edge() != s.edge_shown) {
                     s.planted_shown = s.rig.planted();
                     s.edge_shown = s.rig.at_edge();
@@ -1300,6 +1332,7 @@ std::string set_option(State &s, const std::string &key, const std::string &valu
     if (key == "recenter") return toggle(r.recenter);
     if (key == "hidehud") return toggle(s.settings.hide_hud);
     if (key == "stick") return toggle(s.settings.take_stick);
+    if (key == "hidenames") return toggle(s.settings.hide_nametags);
     if (key == "look") return toggle(k.enabled);
     if (key == "fisheye") return toggle(k.fisheye);
     if (key == "bend") return real(k.bend, 0.0f, 1.0f);

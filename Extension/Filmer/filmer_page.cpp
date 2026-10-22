@@ -148,6 +148,8 @@ void filmer_page(SkateMenu &menu, const Model &, const CallbacksV3 &callbacks) {
     filmer_slider(menu, callbacks, "Human", "0: steady as a robot. 1: a sketchy filmer: shaky, a loose frame, late corrections.", "human", r.human, 0.0f, 1.0f, "%.2f");
     filmer_slider(menu, callbacks, "Reaction", "0: snaps onto the action. 1: lazy and late (but never loses the trick).", "reaction", r.reaction, 0.0f, 1.0f, "%.2f");
     if (s.mode == filmer::Mode::film) {
+        filmer_toggle(menu, callbacks, "Hide nametags", "While you film, the nametags over the other players are off (chat bubbles still show); back when you stop.", "hidenames", s.hide_nametags);
+        note("Keyboard and mouse: the mouse aims the camera (standing, walking or riding); WASD moves you as usual.");
         filmer_toggle(menu, callbacks, "Aim assist", "Keep pointing at the skater you film; the stick shifts the framing and it settles back.", "assist", r.assist);
         filmer_slider(menu, callbacks, "Stick speed", "How fast the right stick turns the camera.", "sensitivity", r.sensitivity, 0.2f, 3.0f, "x %.2f");
         filmer_toggle(menu, callbacks, "Invert up / down", "Push up to point the camera down.", "invert", r.invert_y);
@@ -256,6 +258,7 @@ void filmer_page(SkateMenu &menu, const Model &, const CallbacksV3 &callbacks) {
     if (s.mode == filmer::Mode::follow) {
         info(menu, "Filmer", v.planted ? std::string("stopped by you") : v.doing.empty() ? std::string("riding with you") : v.doing);
         info(menu, "Angle", std::format("{:.0f} deg round you", v.auto_angle));
+        if (!v.cost.empty()) info(menu, "Cost", v.cost);
     }
     {
         // Drop = stop, for tuning: how high a drop (and how long in the air off it) before the Filmer
