@@ -2309,8 +2309,8 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
                 const float most_speed = std::sqrt(2.0f * decel * std::max(0.0f, dist - margin));
                 // (Eased into: no faster towards it than allowed, but never braking harder than firmly,
                 // about 6 m/s/s, to get under it.)
-                const float was = velocity_before[0] * dir[0] + velocity_before[2] * dir[2];
-                const float allowed_now = std::max(most_speed, was - 6.0f * dt);
+                const float towards_was = velocity_before[0] * dir[0] + velocity_before[2] * dir[2];
+                const float allowed_now = std::max(most_speed, towards_was - 6.0f * dt);
                 if (towards > allowed_now) { v[0] -= dir[0] * (towards - allowed_now); v[2] -= dir[2] * (towards - allowed_now); }
             };
             if (caution_) cap_towards(caution_point_, 0.8f, 3.5f);
