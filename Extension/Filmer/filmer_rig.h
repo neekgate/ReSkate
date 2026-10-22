@@ -49,6 +49,7 @@ struct RigSettings {
     float height = 0.15f;   // camera above the ground: down by the board, the classic fisheye angle
     float tilt = 0.5f;      // framing: 0 the board near the centre, 1 the board low in the frame (more skater)
     bool stop_at_drops = true; // the filmer stops at the top of a set or a gap you jumped, and films from there
+    bool stop_at_downrails = true; // now and then stops at the top of a long downrail over stairs (or a short grind) and films you along it
     StopStyle stop_style = StopStyle::instant;
     // The angles Auto moves between (angle_behind | angle_side | angle_ahead): one alone is held.
     std::uint8_t angles = angle_behind | angle_side;

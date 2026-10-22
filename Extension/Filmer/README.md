@@ -58,7 +58,8 @@ skate. filmed the way a skater with a VX1000 films a line.
   the outside falling back, riding your line's own curve, out from it square to it and closer the
   sharper you turn, their idea of the way you are heading keeping up with you closely. No swapping
   sides mid-turn. Knocked back by something they brush, or dropped behind, they push hard to get back.
-  They cut back in only when you are a good way off and out of sight, never with you in view.
+  They cut back in only when you are a good way off and out of sight, never with you in view. A 180
+  (even slowed right down for it): they come straight round after you, no pause.
 - **Ollies after you**: something low you ollied over (a bin, a hurdle, a kerb-high box, up to knee
   high) or a gap you ollied (landing level or up onto something higher), it ollies too, near where you
   popped: a jolt, the camera up quickly over it and back down.
@@ -83,9 +84,10 @@ skate. filmed the way a skater with a VX1000 films a line.
   It knows the moment you lock into a grind or slide (the game's own state) and sprints up beside
   you, pushing hard from the moment you lock in. The camera comes up to about the board's height on
   the rail, a touch over it. Whether it stops where the grind starts and films you along it goes by
-  how long the thing is (looked along for its end): a long downrail 6 times in 10, anything under about
-  4 m 3 times in 10, a long flat one never; and with a slope beside it on their side (a rail down a
-  bank) always down it with you. Stopped at the top of one, the zoom onto you is only now and then. Ollie up onto something
+  how long the thing is (looked along for its end) and what it goes down over (**Stop at downrails**,
+  separate from **Stop at drops**): a long downrail over stairs 6 times in 10, anything under about 4 m
+  3 times in 10, otherwise never (a rail down a bank or a ramp: always down it with you). Through a
+  grind they are square out to your side, your board across the frame. Stopped at the top of one, the zoom onto you is only now and then. Ollie up onto something
   low and wide (a ledge, a manual pad, up to about 0.8 m) and it ollies up after you, on your line,
   camera going up with it, rides it, and comes down off the end after you, or stops at the end if
   that drop is too high to huck; the board sits in the

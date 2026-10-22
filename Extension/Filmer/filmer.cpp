@@ -216,6 +216,7 @@ void load_store() {
         r.hold_height = clamped(o, "hold", d.rig.hold_height, 0.05f, 1.8f);
         r.tilt = clamped(o, "tilt", d.rig.tilt, 0.0f, 1.0f);
         r.stop_at_drops = flag(o, "stop_at_drops", d.rig.stop_at_drops);
+        r.stop_at_downrails = flag(o, "stop_at_downrails", d.rig.stop_at_downrails);
         r.cruise = flag(o, "cruise", d.rig.cruise);
         r.stop_style = o.value("stop_style", std::string("instant")) == "stair" ? StopStyle::stair : StopStyle::instant;
         r.angles = static_cast<std::uint8_t>(std::clamp(o.value("angles", 3), 1, 7) & (angle_behind | angle_side));
@@ -324,6 +325,7 @@ void save_store() {
         json["hold"] = r.hold_height;
         json["tilt"] = r.tilt;
         json["stop_at_drops"] = r.stop_at_drops;
+        json["stop_at_downrails"] = r.stop_at_downrails;
         json["cruise"] = r.cruise;
         json["stop_style"] = r.stop_style == StopStyle::stair ? "stair" : "instant";
         json["angles"] = static_cast<int>(r.angles);
@@ -1392,6 +1394,7 @@ std::string set_option(State &s, const std::string &key, const std::string &valu
     if (key == "hold") return real(r.hold_height, 0.05f, 1.8f);
     if (key == "tilt") return real(r.tilt, 0.0f, 1.0f);
     if (key == "drops") return toggle(r.stop_at_drops);
+    if (key == "downrails") return toggle(r.stop_at_downrails);
     if (key == "clicks") return toggle(s.settings.stick_clicks);
     if (key == "cycle") return toggle(s.settings.camera_cycle);
     if (key == "sidebuttons") return toggle(s.settings.side_buttons);
