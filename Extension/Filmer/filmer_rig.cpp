@@ -842,7 +842,7 @@ float Rig::plan(double now, float want, float d, float height, float speed, bool
     // Where the skater is up on something (a ledge, a rail), the spots are judged against the filmer's
     // own level; otherwise against the ground under the skater there (riding down a bank or a ramp,
     // the spots beside them are lower too, and that is no drop).
-    const bool up = t.ground > level_ + 0.3f && !joining_;
+    const bool up = up_beside_ > 0.3f && t.ground > level_ + 0.3f && !joining_;
     std::array<float, 4> reference{};
     probe_budget_ += 64;
     ray_budget_ += 120;
@@ -851,7 +851,7 @@ float Rig::plan(double now, float want, float d, float height, float speed, bool
         const float x = t.position[0] + way[0] * along, z = t.position[2] + way[2] * along;
         reference[i] = level;
         if (!up)
-            if (const auto g = ground_at(x, z, world(t.ground) + 0.5f)) reference[i] = *g;
+            if (const auto g = ground_at(x, z, world(t.ground) + 0.5f + std::clamp(t.velocity[1], -6.0f, 6.0f) * ahead[i])) reference[i] = *g; // (where you will be, up or down a hill)
     }
     const auto score = [&](float a, float scale_by) {
         float cost = std::abs(a - want) / degrees * 0.012f + std::abs(scale_by - 1.0f) * 0.8f;
@@ -1213,7 +1213,24 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
     // (to see the top of what you grind), pushes well out for the landing and the roll away, or, on a
     // slow grind with time to get there, races to the far end for a low angle as you come off it.
     {
-        const float up = t.ground - level_;
+        // How far you are up on something: above the ground beside you (either side, the lower), not
+        // above the filmer (who is lower than you all the way up a hill without you being up on
+        // anything). Without the game's answers, above the filmer's level.
+        if (cast_ && world_answers() && now >= up_next_) {
+            up_next_ = now + 0.15;
+            probe_budget_ += 2;
+            const Vec3 across{t.heading_z * 0.7f, 0.0f, -t.heading_x * 0.7f};
+            const float feet = world(t.ground);
+            float lowest = feet;
+            for (const float side_sign : {1.0f, -1.0f}) {
+                const auto g = ground_at(t.position[0] + across[0] * side_sign, t.position[2] + across[2] * side_sign, feet + 0.3f);
+                lowest = std::min(lowest, g ? *g : feet - 1.0f);
+            }
+            up_beside_ = feet - lowest;
+        } else if (!cast_ || !world_answers()) {
+            up_beside_ = t.ground - level_;
+        }
+        const float up = up_beside_;
         // (Held for a moment first: a landing's first tick can still read high.)
         const bool up_there = operator_have_ && !t.airborne && up > 0.3f && up < 3.0f && speed > 0.5f && !joining_;
         if (!up_there) grind_seen_since_ = -1.0;
@@ -1833,7 +1850,9 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
             // the slope gives them speed too; just placed, or lunging in, they are let go.)
             const float stride_now = std::fmod(push_phase_, 1.0f);
             const bool kicking = stride_now > 0.0f && stride_now < 0.4f;
-            float gain = kicking ? push * 2.2f : 0.15f;
+            // (Already as close as they mean to be: no push, they roll and drop back to it.)
+            const float gap_now = flat_length(sub(before, t.position)), gap_meant = flat_length(sub(desired, t.position));
+            float gain = kicking && gap_now > gap_meant - 0.2f ? push * 2.2f : 0.15f;
             if (floor_rate_ < -0.3f) gain = std::max(gain, std::min(-floor_rate_ * 2.0f, 4.0f));
             if (lunge_ > 0.1f || settling_in) gain = std::max(6.0f, push);
             const float allowed = (faster > 0.0f ? gain : 7.0f) * dt;
@@ -2004,12 +2023,15 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
                                 : Vec3{std::sin(aim_.yaw), 0.0f, std::cos(aim_.yaw)};
             probe_budget_ += 4;
             // (A step up: sudden, not the gentle rise of a bank or a hill, which they ride up anyway.)
-            float top = operator_floor_, last = operator_floor_;
+            // (Steeper than about 40 degrees between two looks, and more than a kerb: a step.)
+            float top = operator_floor_, last = operator_floor_, last_out = 0.0f;
             for (const float out : {0.0f, 0.35f, 0.75f, 0.75f + std::min(v, 8.0f) * 0.15f}) {
                 const auto g = ground_at(operator_[0] + way[0] * out, operator_[2] + way[2] * out, operator_floor_ + raise_ceiling - 0.9f);
                 if (!g) continue;
-                if (*g < operator_floor_ + raise_ceiling - 0.3f && *g - last > 0.18f) top = std::max(top, *g);
+                const float rise = *g - last, apart = std::max(out - last_out, 0.2f);
+                if (*g < operator_floor_ + raise_ceiling - 0.3f && rise > 0.15f && rise / apart > 0.85f) top = std::max(top, *g);
                 last = *g;
+                last_out = out;
             }
             if (top > operator_floor_ + 0.1f) guard = std::min(raise_ceiling, top - operator_floor_ + 0.3f) - height;
         }
@@ -2448,15 +2470,15 @@ Frame Rig::film(double now, float dt, const Subject &self, const Subject *target
         film_down_ += (tucked - film_down_) * ease(dt, 0.2f);
     }
     const float hold_base = std::clamp(s.hold_height, 0.05f, 1.8f);
-    // (Up: at the eye, the arm out a little in front of the face, through the viewfinder. Down: low,
-    // almost between the feet, pointing at the ground, the back bent right over it.)
-    const float eye_line = 1.5f, between_feet = 0.45f;
+    // (Up: held up above the head, its screen right in front of your eyes as you look up at it. Down:
+    // held up in front of your eyes, pointing down at the ground, looking down into it.)
+    const float eye_line = 1.5f, above_head = 1.78f;
     float hold = hold_base;
-    hold = mix(hold, between_feet, film_down_);
-    hold = mix(hold, std::max(hold, eye_line), film_up_);
+    hold = mix(hold, std::max(hold, eye_line), film_down_);
+    hold = mix(hold, std::max(hold, above_head), film_up_);
     const Vec3 body{me.position[0], operator_height_ + hold, me.position[2]};
     const float reach_yaw = aim_.have ? aim_.yaw : heading;
-    const float reach = mix(mix(0.62f, 0.42f, film_up_), 0.18f, film_down_);
+    const float reach = mix(mix(0.62f, 0.22f, film_up_), 0.32f, film_down_);
     Vec3 eye = add(body, Vec3{std::sin(reach_yaw) * reach, 0, std::cos(reach_yaw) * reach});
     if (cast_) {
         const Vec3 chest{me.position[0], operator_height_ + std::max(hold, 0.9f), me.position[2]};

@@ -411,7 +411,8 @@ private:
     // wider, 1 push well out for the landing and roll away, 2 race to the end of it for a low angle.
     bool grinding_{};
     int grind_style_{};
-    double grind_since_{}, grind_over_since_{-1.0}, grind_seen_since_{-1.0};
+    double grind_since_{}, grind_over_since_{-1.0}, grind_seen_since_{-1.0}, up_next_{};
+    float up_beside_{};             // how far you are up on something, above the ground beside you
     float grind_weight_{}, board_weight_{};
     // A spot ridden to and waited at: the end of a ledge (a low angle), or the foot of a ledge you
     // ollied onto (the camera raised over it, as if following behind on it).

@@ -331,8 +331,8 @@ Held hold_one(std::span<Bone> pose, const Goal &goal) noexcept {
         // Pointed right down at the ground: bent right over it (the shoulders come down to hold it
         // low, almost between the feet).
         const float down_t = std::clamp((-pitch - 0.6f) / 0.5f, 0.0f, 1.0f);
-        const float most = 1.0f + 0.4f * down_t;
-        const float amount = std::min(goal.hunch * std::clamp(1.0f - pitch * 1.2f, 0.3f, 1.6f) + 0.5f * down_t, most) * body_weight * (1.0f - up_t);
+        const float most = 1.0f - 0.4f * down_t; // (camera up at the eyes: a little bend, not bent over)
+        const float amount = std::min(goal.hunch * std::clamp(1.0f - pitch * 1.2f, 0.3f, 1.6f), most) * body_weight * (1.0f - up_t);
         const float look = (std::min(amount * 0.8f, 0.6f * body_weight) * (1.0f - up_t) - up_t * std::min(pitch, 1.2f) * 0.45f * body_weight);
         // Up to the eye: the shoulders turn a little, the holding arm's shoulder coming forward, so
         // the arm reaches out in front of the face to the viewfinder.
@@ -378,7 +378,7 @@ Held hold_one(std::span<Bone> pose, const Goal &goal) noexcept {
             const float tucked = std::clamp((-pointing_y - 0.55f) / 0.35f, 0.0f, 1.0f);
             // (Up, the arm still out in front of the face, bent a little; down, the camera in close
             // under the body.)
-            const float reach_out = min_reach_out * (1.0f - 0.35f * toward_side) * (1.0f - 0.6f * tucked);
+            const float reach_out = min_reach_out * (1.0f - 0.35f * toward_side) * (1.0f - 0.5f * to_eye) * (1.0f - 0.25f * tucked);
             if (out < reach_out) lens = add(lens, scaled(ahead, reach_out - out));
             else if (toward_side > 0.0f && out > reach_out + 0.1f) lens = sub(lens, scaled(ahead, (out - reach_out - 0.1f) * toward_side));
             lens[1] += side_lift * toward_side;
@@ -386,21 +386,20 @@ Held hold_one(std::span<Bone> pose, const Goal &goal) noexcept {
             // up still, to the eye.
             const float up = std::clamp(pointing_y / 0.64f, 0.0f, 1.0f);
             lens[1] = std::max(lens[1], lens[1] + (s[1] - lift_below_shoulder - lens[1]) * up);
-            lens[1] = std::min(lens[1], s[1] - below_shoulder + (eye_above_shoulder + below_shoulder) * to_eye);
+            lens[1] = std::min(lens[1], s[1] - below_shoulder + (above_head_over_shoulder + below_shoulder) * std::max(to_eye, tucked));
             if (to_eye > 0.0f) {
-                // (Eased in with the tilt: no jump as it starts.)
-                const float eye_y = s[1] + eye_above_shoulder;
+                // Above the head, its screen in front of the eyes looking up. (Eased in with the tilt:
+                // no jump as it starts.)
+                const float eye_y = s[1] + above_head_over_shoulder;
                 lens[1] = std::max(lens[1], lens[1] + (eye_y - lens[1]) * to_eye);
                 // In close in front of the face.
                 const float out_now = dot(sub(lens, s), ahead);
                 if (out_now > reach_out + 0.05f) lens = sub(lens, scaled(ahead, (out_now - reach_out - 0.05f) * to_eye));
             }
             if (tucked > 0.0f) {
-                // Down at the ground: low, almost between the feet, a little in front of the hips (the
-                // back bent right over it brings the shoulders down to reach it).
-                const Vec3 hips = w[2].position;
-                const Vec3 under{hips[0] + ahead[0] * 0.12f, hips[1] - tucked_below_hips, hips[2] + ahead[2] * 0.12f};
-                lens = add(lens, scaled(sub(under, lens), tucked));
+                // Down at the ground: held up in front of the eyes, pointing down, looked down into.
+                const Vec3 face{s[0] + ahead[0] * 0.32f, s[1] + eye_above_shoulder, s[2] + ahead[2] * 0.32f};
+                lens = add(lens, scaled(sub(face, lens), tucked));
             }
         }
     }

@@ -152,6 +152,8 @@ inline constexpr float lift_below_shoulder = 0.15f;
 inline constexpr float eye_above_shoulder = 0.18f, tucked_below_shoulder = 0.42f;
 // Pointed straight down, the lens is held this far under the hips, almost between the feet.
 inline constexpr float tucked_below_hips = 0.45f;
+// Pointed up at the sky, held this far over the shoulder: above the head, its screen in front of the eyes.
+inline constexpr float above_head_over_shoulder = 0.42f;
 // Toward the holding hand's own side the camera comes up this much (all the way square to that side).
 inline constexpr float side_lift = 0.2f;
 struct Held {
