@@ -237,6 +237,7 @@ void filmer_page(SkateMenu &menu, const Model &, const CallbacksV3 &callbacks) {
     case 4: {
     begin_card(menu, "filmer-controls", "CONTROLLER", "The Filmer's buttons. Each is taken from the game only while the Filmer has the camera.");
     note("While the Filmer has the camera the game's Start (pause) and View / Back (replay) buttons are off, so a press does not pause the game or jump into the replay mid-shot.");
+    note("Boost: B by default while the Filmer has the camera (B is not the game's foot brake then). A Forward Boost at the speed set in Skater > CHEATS. Change its button in Settings > Binds (Filmer: boost).");
     filmer_toggle(menu, callbacks, "Filmer in the camera cycle", "The game's camera height button (click the right stick) goes high, low, ReSkate's first person (when it is in the cycle: Skater settings), then the Filmer filming you, and back to high.", "cycle", s.camera_cycle);
     field(menu, "Slap the lens", "The button that slaps the lens to end a clip, while the Filmer has the camera. The right stick's click is the camera cycle's while the Filmer follows you with the cycle on, so it only slaps when you film or with the cycle off.");
     {

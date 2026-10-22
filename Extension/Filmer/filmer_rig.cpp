@@ -1384,11 +1384,30 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
             // (A new grind, not the same one picked up again after a flicker.)
             if (grind_over_since_ < 0.0 || now - grind_over_since_ > 1.5) grind_down_checked_ = grind_follow_down_ = false;
         }
-        // A downrail (a handrail, a hubba: you going down it): 6 times in 10 they stop at its top and
-        // film you down it from there; otherwise they go down beside you.
-        if (grinding && !grind_down_checked_ && now - grind_since_ > 0.12 && t.velocity[1] < -0.8f && s.stop_at_drops) {
+        // Whether they stop where it starts and film you along it from there, or go along beside you:
+        // a long downrail (a handrail, a hubba going down) 6 times in 10; anything short (under about
+        // 4 m: a short rail, a box, a bump of a ledge) 3 in 10; a long flat one, never. How long it is
+        // goes by what you are on: looked along the way you grind for where it ends (its top, going
+        // on at your slope, gives way).
+        if (grinding && !grind_down_checked_ && now - grind_since_ > 0.12 && s.stop_at_drops) {
             grind_down_checked_ = true;
-            if (unit(random_) < 0.6f) {
+            const bool downhill = t.velocity[1] < -0.8f;
+            float length = -1.0f; // not known (a thin rail the ground probes go past)
+            if (cast_ && world_answers() && speed > 0.5f) {
+                probe_budget_ += 30;
+                const Vec3 way{t.velocity[0] / speed, 0.0f, t.velocity[2] / speed};
+                const float slope = t.velocity[1] / speed, feet = world(t.position[1]);
+                float along = 0.4f;
+                for (; along <= 12.0f; along += 0.4f) {
+                    const float expected = feet + slope * along;
+                    const auto g = ground_at(t.position[0] + way[0] * along, t.position[2] + way[2] * along, expected + 0.3f);
+                    if (!g || std::abs(*g - expected) > 0.25f) break;
+                }
+                if (along > 0.8f) length = along + std::max(0.0f, speed * static_cast<float>(now - grind_since_));
+            }
+            const bool short_one = length >= 0.0f && length < 4.0f;
+            const float chance = short_one ? 0.3f : downhill ? 0.6f : 0.0f;
+            if (unit(random_) < chance) {
                 // (Rolled to a stop over a body length or two: no sudden stop.)
                 if (halt_ == Halt::none) begin_halt(Halt::drop, now, std::max(1.5f, flat_length(operator_velocity_) * flat_length(operator_velocity_) / 6.0f));
             } else {
@@ -1791,7 +1810,7 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
                 while (k > 0 && trail_[k - 1].air) --k;
                 if ((!under || takeoff - *under > huck_) && k > 0) {
                     caution_ = true;
-                    caution_air_ = true;
+                    caution_air_ = false; // (told by the next look, once you have been up long enough)
                     caution_since_ = now;
                     caution_point_ = trail_[k - 1].at;
                     caution_top_ = takeoff;
@@ -1875,14 +1894,15 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
         caution_next_ = now + 0.2;
         if (caution_) {
             const float passed = (t.position[0] - caution_point_[0]) * heading[0] + (t.position[2] - caution_point_[2]) * heading[2];
-            if (t.airborne) caution_air_ = true;
+            // (A real jump, not the moment the wheels leave a ramp's lip or a bank's top.)
+            if (t.airborne && now - t.air_since > 0.25) caution_air_ = true;
             const bool landed = !t.airborne;
             const float at_now = world(t.ground);
             // Clear: rolled down it without leaving the ground (a ramp, a bank), landed level or higher
             // after a jump (a gap cleared, an ollie on the flat), rode on past without going off it,
             // stopped, or they are stopping for it anyway. (Landed down below after a jump: kept, until
             // they have stopped at the top: it is a drop, and they ease off for it all the way.)
-            if ((landed && !caution_air_ && at_now < caution_top_ - 0.5f) ||
+            if ((!caution_air_ && at_now < caution_top_ - 0.3f && (landed || now - t.air_since < 0.25)) ||
                 (landed && caution_air_ && at_now >= caution_top_ - 0.5f) ||
                 (landed && !caution_air_ && passed > 3.0f) || speed < 0.5f || halt_ != Halt::none || now - caution_since_ > 5.0)
                 caution_ = false;
@@ -2223,8 +2243,14 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
             // (Out of place to the side, round you, they push to get there too: through a grind, up beside you.)
             const bool want_ground = gap_now > gap_meant - 0.2f || (behind_by > 0.6f && grind_weight_ > 0.3f);
             // (Racing up beside you on a grind: hard, quick pushes.)
-            sprinting_ = grind_weight_ > 0.3f && behind_by > 1.0f;
-            float gain = kicking && want_ground ? push * (sprinting_ ? 3.5f : 2.2f) : 0.15f;
+            // (On a grind or a slide: from the moment you lock in, quick hard pushes until they are up
+            // level with you, so they are beside you by the end of it.)
+            {
+                const Vec3 heading_now{t.heading_x, 0.0f, t.heading_z};
+                const float level_with = (before[0] - t.position[0]) * heading_now[0] + (before[2] - t.position[2]) * heading_now[2];
+                sprinting_ = (grinding_ || grind_weight_ > 0.3f) && halt_ == Halt::none && (behind_by > 0.4f || level_with < -0.8f);
+            }
+            float gain = kicking && (want_ground || sprinting_) ? push * (sprinting_ ? 3.5f : 2.2f) : 0.15f;
             // On foot they run with you: speeding up a stride at a time, round corners at a run.
             if (on_foot_) gain = gap_now > gap_meant - 0.2f ? 4.5f : 0.5f;
             if (floor_rate_ < -0.3f) gain = std::max(gain, std::min(-floor_rate_ * 2.0f, 4.0f));
@@ -2477,6 +2503,7 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
     pushing_ = !planted_ && halt_ == Halt::none && !edge_ && speed > 1.5f && (behind > 0.6f || operator_speed < speed - 0.6f || operator_speed > flat_length(velocity_before) + 0.5f * dt);
     if (halt_ == Halt::none && post_ != Post::none && operator_speed > 1.5f && behind > 1.0f) pushing_ = true;
     if (on_foot_ && operator_speed > 1.0f) pushing_ = true; // (running: a step every 0.4 s)
+    if (sprinting_) pushing_ = true;
     if (pushing_ || std::fmod(push_phase_, 1.0f) > 0.02f) push_phase_ += dt / (on_foot_ ? 0.4f : sprinting_ ? 0.65f : 0.95f);
     const float stride = std::fmod(push_phase_, 1.0f);
     const float dip = stride < 0.4f ? std::sin(stride / 0.4f * pi) : 0.0f;

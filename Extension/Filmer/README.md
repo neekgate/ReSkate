@@ -75,8 +75,10 @@ skate. filmed the way a skater with a VX1000 films a line.
   it is on, with the camera up a little; down a hubba it rides the stairs beside you, never along the
   ledge itself. Just up on something (ollied up after you), it keeps to its side for a few seconds.
   It knows the moment you lock into a grind or slide (the game's own state) and sprints up beside
-  you. The camera comes up to about the board's height on the rail, a touch over it. A downrail
-  (going down a handrail or hubba): 6 times in 10 it rolls to a stop at the top and films you down it. Ollie up onto something
+  you, pushing hard from the moment you lock in. The camera comes up to about the board's height on
+  the rail, a touch over it. Whether it stops where the grind starts and films you along it goes by
+  how long the thing is (looked along for its end): a long downrail 6 times in 10, anything under about
+  4 m 3 times in 10, a long flat one never. Ollie up onto something
   low and wide (a ledge, a manual pad, up to about 0.8 m) and it ollies up after you, on your line,
   camera going up with it, rides it, and comes down off the end after you, or stops at the end if
   that drop is too high to huck; the board sits in the
@@ -135,6 +137,9 @@ the palm is on the glass and overshoots as it comes off, and the clip ends. Clip
 `%LOCALAPPDATA%\ReSkate\filmer\clips.csv`, so they can be found in a recording.
 
 - While the Filmer has the camera the game's Start (pause) and View / Back (replay) buttons are off.
+- Boost while filming: B by default (**Filmer: boost** in Settings > Binds, `filmer boost`): a Forward
+  Boost at the Skater > CHEATS speed. Its button is kept from the game (the foot brake) only while the
+  Filmer has the camera.
 - You film with keyboard and mouse: the mouse aims the camera whether you stand, walk or ride; WASD
   moves you. The nametags over the others are off while you film (**Hide nametags**, `filmer set hidenames`).
 - DEBUG shows what the Filmer costs a frame (milliseconds and questions to the game's collision);

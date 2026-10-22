@@ -24,6 +24,7 @@ void register_filmer_commands(Commands &registry) {
          true},
         {"switchside", "The Filmer goes over to your other side (left / right) and keeps to it", nullptr, false},
         {"slap", "Slap the lens: ends the clip", nullptr, false},
+        {"boost", "While the Filmer has the camera: a Forward Boost (the Skater > CHEATS speed)", nullptr, false},
         {"clips", "The clips marked this session", nullptr, false},
         {"trace", "Record what the Filmer sees for 30 seconds (trace.csv), to send for tuning", nullptr, false},
         {"tripod", "Set the tripod down where the camera is (or with here, where you stand) and film from it; track turns its panning on or off", "[here|track [on|off]]", false},
