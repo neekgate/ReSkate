@@ -58,7 +58,8 @@ skate. filmed the way a skater with a VX1000 films a line.
   popped: a jolt, the camera up quickly over it and back down.
 - **Stops by itself** (still panning with you; the left stick puts it straight back behind you in
   one click): a drop too high to huck after an ollie or a flip (it eases off as you near a lip, so
-  it stops gently; rolling down a hill or bank, or over a gap onto something level or higher, it
+  it stops gently, over a second or so, and eases off the moment you pop off something with the ground
+  well below; rolling down a hill or bank, or over a gap onto something level or higher, it
   follows), too far behind, a slam (and, with **Slam zoom**, a slow zoom in if you are in the shot
   with nothing in the way and small in the frame), or wedged. How high a drop it hucks goes by
   **Drop stop** (DEBUG tab, lenient to strict, `filmer set dropstrict 0..1`; 0.6 by default: drops
@@ -72,7 +73,10 @@ skate. filmed the way a skater with a VX1000 films a line.
   beside it or (a low one, now and then) waits at its foot with the camera raised over it. On a
   grind it pushes up beside you (level, a touch back or a touch ahead, picked each grind) on the side
   it is on, with the camera up a little; down a hubba it rides the stairs beside you, never along the
-  ledge itself. Just up on something (ollied up after you), it keeps to its side for a few seconds. Ollie up onto something
+  ledge itself. Just up on something (ollied up after you), it keeps to its side for a few seconds.
+  It knows the moment you lock into a grind or slide (the game's own state) and sprints up beside
+  you. The camera comes up to about the board's height on the rail, a touch over it. A downrail
+  (going down a handrail or hubba): 6 times in 10 it rolls to a stop at the top and films you down it. Ollie up onto something
   low and wide (a ledge, a manual pad, up to about 0.8 m) and it ollies up after you, on your line,
   camera going up with it, rides it, and comes down off the end after you, or stops at the end if
   that drop is too high to huck; the board sits in the

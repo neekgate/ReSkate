@@ -418,6 +418,8 @@ Subject local_subject() {
         // 300s are a wipeout (Extension/Trainer/trainer.cpp).
         result.bailing = telemetry.physics_state >= 300 && telemetry.physics_state < 400;
         result.on_foot = telemetry.physics_state == game::build::v20260929::no_bail::offboard_physics_state;
+        // A grind or a slide (Engine/Game/Build/20260929/grind_exit.h: the 400s): known the moment you lock in.
+        result.grinding = telemetry.physics_state >= 400 && telemetry.physics_state < 500 && telemetry.physics_state != 403;
     }
     return result;
 }
@@ -770,6 +772,7 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready, bool camera_ph
                 return true;
             });
             s.world_set = true;
+            s.rig.seed(static_cast<std::uint32_t>(GetTickCount64()));
         }
         // The game camera's own field of view, for the look drawn over a camera that is not the Filmer's.
         if (!s.held)

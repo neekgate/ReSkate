@@ -116,6 +116,7 @@ struct Subject {
     std::optional<bool> airborne; // known for your own skater; worked out from height for others
     bool bailing{};
     std::optional<bool> on_foot;  // off the board (known for your own skater)
+    bool grinding{};              // the game says a grind or a slide is on (your own skater: its physics state)
 };
 
 struct StickInput {
@@ -174,6 +175,8 @@ public:
     // How many questions the last tick asked the world (rays and ground probes): for the DEBUG tab.
     unsigned asked_last_tick() const noexcept { return asked_last_tick_; }
     std::string doing() const;
+    // The filmer's own choices (angles, a grind's spot, stopping at a downrail) start from this.
+    void seed(std::uint32_t value) { random_.seed(value); }
     // follow: you are standing still and the filmer has settled on a spot behind you.
     bool resting() const noexcept { return rest_have_; }
     // What the operator is working from, for `filmer trace`.
@@ -444,6 +447,8 @@ private:
     bool pushed_{}, was_on_foot_{}, on_foot_{};
     // A drop ahead of you, seen before you get to it: the filmer eases off so they could stop at it.
     bool caution_{};
+    bool caution_air_{};         // you left the ground since the lip was seen
+    double caution_since_{};
     Vec3 caution_point_{};
     float caution_top_{};
     double caution_next_{}, drop_next_{};
@@ -494,6 +499,9 @@ private:
     // Grinding: how far round from behind they ride beside you (a little back of or ahead of you).
     float grind_angle_{90.0f};
     float grind_side_{};
+    bool grind_down_checked_{}, grind_follow_down_{}; // a downrail: stopped at its top, or down it with you
+    double side_switch_until_{-1.0};
+    bool sprinting_{}; // pushing hard to get up beside you // sent to your other side: over there quickly
     double drift_done_at_{-1.0};
     bool drift_over_{};
     double placed_at_{-100.0}, losing_since_{-1.0}, stuck_since_{-1.0};
