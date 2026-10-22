@@ -406,7 +406,7 @@ private:
     bool caution_{};
     Vec3 caution_point_{};
     float caution_top_{};
-    double caution_next_{};
+    double caution_next_{}, drop_next_{};
     // Up on something (a ledge, a rail): how, and since when. 0 raise the camera a little and ride out
     // wider, 1 push well out for the landing and roll away, 2 race to the end of it for a low angle.
     bool grinding_{};

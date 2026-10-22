@@ -1599,6 +1599,37 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
             const float to_edge = (edge_point_[0] - operator_[0]) * edge_dir_[0] + (edge_point_[2] - operator_[2]) * edge_dir_[2];
             begin_halt(Halt::drop, now, to_edge - 0.5f);
         }
+        // In the air over a drop too high to huck, told from the jump itself, not the landing: from a
+        // moment into the air (a real pop, not a bump), the ground under you is looked at as you go;
+        // once it is more than a huck below where you took off (a set, a big drop, a gap), or you have
+        // been falling well past an ollie's airtime below your takeoff, they start braking for the top
+        // at once, before they get anywhere near the first step. Over a ramp or a bank (the ground
+        // just under you), it is no drop.
+        if (t.airborne && s.stop_at_drops && halt_ == Halt::none && post_ == Post::none && cast_ && world_answers() && now >= drop_next_) {
+            drop_next_ = now + 0.08;
+            const double airtime = now - t.air_since;
+            if (airtime > 0.15) {
+                probe_budget_ += 1;
+                const float takeoff = world(takeoff_height_), feet = world(t.position[1]);
+                const auto under = ground_at(t.position[0], t.position[2], feet + 0.3f);
+                const bool over_surface = under && feet - *under < 0.6f;
+                const bool deep = !under || takeoff - *under > huck_height;
+                const bool long_fall = airtime > 0.7 && takeoff - feet > 0.6f && t.velocity[1] < -2.0f;
+                if (!over_surface && (deep || long_fall)) {
+                    // Where you took off: the last point of your line before this jump.
+                    std::size_t k = trail_.size();
+                    while (k > 0 && trail_[k - 1].air) --k;
+                    if (k > 0) {
+                        const Vec3 &lip = trail_[k - 1].at;
+                        edge_point_ = lip;
+                        edge_dir_ = heading;
+                        const float to_lip = (lip[0] - operator_[0]) * heading[0] + (lip[2] - operator_[2]) * heading[2];
+                        begin_halt(Halt::drop, now, to_lip - 0.5f);
+                        edge_ = true;
+                    }
+                }
+            }
+        }
         // You slammed: stop where they are (rolling to it), still filming you.
         if (subject.bailing && halt_ != Halt::slam) begin_halt(Halt::slam, now, 6.0f);
         // Too far behind for good footy, and not closing the gap (for a second): ease off and roll to
@@ -1971,8 +2002,8 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
         // Held up behind something (a car, a bin) while you ride off: rather than a chase to catch up,
         // a cut back to the usual spot behind you.
         const float made = dt > 0.0f ? flat_length(sub(operator_, before)) / dt : 0.0f;
-        const bool held_up = (refused || made < speed * 0.5f) && flat_length(sub(desired, operator_)) > 2.5f && speed > 1.5f;
-        if (held_up && !planted_ && halt_ == Halt::none && post_ == Post::none && !peeking_) {
+        const bool held_up = (refused || made < speed * 0.5f) && flat_length(sub(t.position, operator_)) > std::max(5.0f, distance * 2.0f) && speed > 1.5f;
+        if (held_up && !planted_ && halt_ == Halt::none && post_ == Post::none && (!peeking_ || flat_length(sub(t.position, operator_)) > 8.0f)) {
             if (stuck_since_ < 0.0) stuck_since_ = now;
             else if (now - stuck_since_ > 0.8) {
                 operator_have_ = false; // placed afresh next tick, straight in behind you

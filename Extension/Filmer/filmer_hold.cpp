@@ -457,6 +457,15 @@ Held hold_one(std::span<Bone> pose, const Goal &goal) noexcept {
     Vec3 ahead{direction[0], 0.0f, direction[2]};
     ahead = unit(ahead, cross(side, {0, 1, 0}));
     Vec3 pole = add(add(scaled(side, 0.8f), Vec3{0.0f, -0.45f, 0.0f}), scaled(ahead, -0.35f));
+    {
+        // Held up high (pointed at the sky, above the head): the elbow hangs down and a little in
+        // front, tucked by the face, not winged out to the side.
+        const float raised = std::clamp((rotate(aim, {0.0f, 0.0f, -1.0f})[1] - 0.3f) / 0.45f, 0.0f, 1.0f);
+        if (raised > 0.0f) {
+            const Vec3 tucked_pole = add(add(scaled(side, 0.25f), Vec3{0.0f, -0.9f, 0.0f}), scaled(ahead, 0.3f));
+            pole = add(scaled(pole, 1.0f - raised), scaled(tucked_pole, raised));
+        }
+    }
     pole = sub(pole, scaled(direction, dot(pole, direction)));
     pole = unit(pole, side);
     const float cos_a = std::clamp((a * a + d * d - b_palm * b_palm) / (2.0f * a * d), -1.0f, 1.0f);
