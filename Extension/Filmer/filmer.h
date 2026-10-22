@@ -44,22 +44,18 @@ struct Look {
     bool iris = true;         // the auto-iris lags the scene: blown out into the sun, murky into shade
 };
 
-// The button that slaps the lens while the Filmer has the camera (taken from the game while it does).
-// The right stick click is the camera cycle's when that is on, so the slap moved off it by default.
-enum class SlapButton : std::uint8_t { right_stick, right_bumper, left_bumper, dpad_down, dpad_up, back, none };
-
 struct Settings {
     Mode mode = Mode::off;
     // The game's camera height button (the right stick click) cycles: high, low, ReSkate's first person
     // (when that is in the cycle, Skater settings), the Filmer, and back to high.
     bool camera_cycle = true;
-    SlapButton slap_button = SlapButton::left_bumper;
     // follow: D-pad left / right sends the filmer to that side of you (and keeps them there, round
     // whatever is coming up); the same again hands the choice back to them. Off: the D-pad is the game's.
     bool side_buttons = false;
     RigSettings rig;
     Look look;
     bool hide_hud = true;   // hide the game's interface while filming
+    bool show_debug = false; // the menu's DEBUG tab (for tuning and testing)
     bool take_stick = true; // film mode: keep the right stick from the game
     bool hide_nametags = true; // film mode: no nametags over the others while you film
     // follow mode: the left stick's click is the filmer's (switch side, left / right), kept from the
@@ -70,14 +66,12 @@ struct Settings {
     // The camera in your hand (filmer_held.h). You film: your arm holds it out where the lens is, and
     // the others see it there (they need this build).
     bool left_hand = false;   // which hand holds it
-    bool show_cameras = true; // the cameras in other filmers' hands
     std::string camera_item;  // that cosmetic, put in your hand while you film (filmer_outfit.h); empty: the default
     std::string camera_slot;  // the outfit slot that carries it ("hand", "eyewear"); empty: hand
     // You film: the camcorder is always worn in the hand and held in both, the skater crouched and
     // hunched over it (on foot: the upper body still, the board out of sight).
     float crouch_depth = 0.22f; // how far the hips go down (metres)
     float hunch_degrees = 60.0f; // how far the back curls over toward the camera
-    std::string camera_model; // the camera model's blueprint; empty: reskate/filmer/vx1000
 };
 
 struct PlayerRow {
@@ -114,8 +108,7 @@ struct View {
     bool stationary{};        // the camera is held still: mouse look and the long lens's zoom work
     float zoom{1.0f};         // the long lens's zoom
     bool cruising{};          // cruise control is holding your speed
-    bool holdtest{};          // `filmer holdtest`: your skater holds the camera out with the game's camera
-    std::string held_status;  // the camera in hand: the arm and the models
+    std::string held_status;  // the camera in hand: the arm and the camcorder
     std::string cruise_note;  // why cruise control is not, when it is switched on
     // The overlay's clock (now()): when the camera started rolling this clip and when the lens was
     // last slapped.
@@ -148,9 +141,15 @@ std::string command(std::string_view verb, const std::vector<std::string> &argum
 // and comes back on when it stops, and its switch can not be used meanwhile.
 bool holds_hall_of_meat() noexcept;
 
+// The EFFECTS presets: Clean (no look), VX1000 (the look as it comes) and Worn tape (an old,
+// dubbed-to-death tape). `look_preset` says which one a look is (-1: none of them, Custom);
+// `apply_look_preset` sets one (Over any camera stays as it was).
+enum class LookPreset : int { custom = -1, clean = 0, vx = 1, worn = 2 };
+LookPreset look_preset(const Look &look) noexcept;
+void apply_look_preset(Look &look, LookPreset preset) noexcept;
+
 // Names, for the command line and the menu.
 const char *mode_name(Mode) noexcept;
 const char *style_name(Style) noexcept;
 const char *lens_name(Lens) noexcept;
-const char *slap_button_name(SlapButton) noexcept;
 } // namespace dingosdk::filmer

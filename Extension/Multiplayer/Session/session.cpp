@@ -1,7 +1,6 @@
 #include "session_internal.h"
 #include "Engine/Core/Hooks/hooks.h"
 #include "Extension/Skater/drone_beacon.h"
-#include "Extension/Filmer/filmer_held.h"
 #include "Engine/Core/Debug/trace.h"
 #include "Extension/Multiplayer/Hud/native_player_ui.h"
 #include "Extension/Multiplayer/Hud/native_indicators.h"
@@ -644,8 +643,6 @@ void render(Session &s, std::uintptr_t client, const NativeFrame &local, std::ui
                 p.next_far_sample = now + p.far_interval;
                 // The native work a far player's skater may skip (puppet_cost.cpp).
                 if (p.visible) note_remote_distance(distance);
-                // The Filmer's camera in their hand, when they film (Extension/Filmer/filmer_held.h).
-                if (p.visible && !hidden) filmer::held::note_remote_pose(p.member.id, p.render_pose);
                 // Solid for the local skater within reach, when both have party collision on.
                 // Local Echo shows your own skater: never solid.
                 const auto &at = p.render_pose.root.position, &me = local.pose.root.position;

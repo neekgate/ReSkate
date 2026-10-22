@@ -60,14 +60,13 @@ struct RigSettings {
     float sensitivity = 1.0f;
     bool invert_y = false;
     bool recenter = false;  // without assist, the aim drifts back ahead when the stick is let go
-    float hold_height = 0.2f;  // camera above the ground under you: held low by the board, out at arm's length
+    // You film: your shoulder's height above your feet as you are crouched and hunched over the camera
+    // (filmer.cpp, from the knee bend and the hunch); the camera is held from there, with the aim.
+    float hold_shoulder = 1.1f;
     // Cruise control (film mode, framing a friend): you ride at the speed that holds you `cruise_gap`
     // metres behind them; you steer and aim. Your own push and brake still work.
     bool cruise = false;
     float cruise_gap = 3.0f;
-    // The mouse turns the camera while it is held still (the AI filmer stopped, or you standing still
-    // filming); the wheel zooms the long lens then.
-    bool mouse_look = true;
     float mouse_sensitivity = 1.0f;
     // follow: when you slam, the filmer stops (still panning with you) and, if you are small in the
     // frame, zooms in slowly until you fit it.
@@ -196,7 +195,7 @@ public:
     std::optional<float> body_yaw_;
     bool pivot_{};
     float edge_push_{};
-    float film_up_{}, film_down_{}; // you film: how far the camera is brought up to your eye / in over your stomach (eased)
+    float film_up_{}, film_down_{}; // you film: how far the camera points up / down (eased), for where it is held
     // For the menu: where auto is riding (degrees round the skater; 0 behind, 180 ahead).
     float angle_degrees() const noexcept;
     // The camera is held still: the AI filmer stopped (the left stick, or braked at a drop), or you

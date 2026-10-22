@@ -18,8 +18,8 @@ void register_filmer_commands(Commands &registry) {
         {"subject", "Whom the Filmer follows", "me|<player>", false},
         {"target", "Whom the assist frames while you film", "auto|<player>", false},
         {"set", "Change a Filmer option",
-         "style auto|behind|side|ahead, side auto|left|right|swap, cammodel <blueprint>|default, camitem <cosmetic>|default, camslot hand|eyewear|default, lens fisheye|long, slapbutton rs|rb|down|up|back|none, distance|height|tilt|human|reaction|sensitivity|hold|bend|age|gap|mousesens|lift|crouchdepth|hunch|distvariety|heightvariety <number>, "
-         "cycle|slamzoom|stopzoom|cameras|assist|invert|recenter|hidehud|stick|clicks|drops|lunge|cruise|mouse|look|anywhere|fisheye|bars|hood|grade|soft|scanlines|grain|date|viewfinder|"
+         "style auto|behind|side|ahead, side auto|left|right|swap, camitem <cosmetic>|default, camslot hand|eyewear|default, lens fisheye|long, distance|height|tilt|human|reaction|sensitivity|hold|bend|age|gap|mousesens|lift|crouchdepth|hunch|distvariety|heightvariety <number>, "
+         "cycle|slamzoom|stopzoom|debug|assist|invert|recenter|hidehud|stick|clicks|drops|lunge|cruise|look|anywhere|fisheye|bars|hood|grade|soft|scanlines|grain|date|viewfinder|"
          "dropouts|headswitch|tracking|smear|iris 0|1",
          true},
         {"switchside", "The Filmer goes over to your other side (left / right) and keeps to it", nullptr, false},
@@ -30,7 +30,7 @@ void register_filmer_commands(Commands &registry) {
         {"angle", "The Filmer's angles: one held, or several Auto moves between", "next|auto|behind|side|ahead|toggle behind|side|ahead", false},
         {"cruise", "Film mode: ride at the speed that holds you behind the skater you frame", "[on|off]", false},
         {"zoom", "Long lens, while the camera is held still: zoom in, out or back to its widest", "in|out|reset", false},
-        {"holdtest", "Your skater holds the Filmer's camera out with the game's own camera, to see how it looks", "[on|off]", false},
+        {"preset", "The EFFECTS preset: clean (no look), vx (the VX1000 look) or worn (an old tape)", "clean|vx|worn", false},
         {"reset", "Put every Filmer option back to its default", nullptr, false},
     };
     for (const auto &verb : verbs) {

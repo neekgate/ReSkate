@@ -126,10 +126,9 @@ struct State {
     unsigned cost_frames{}, asked_max{}, asked_sum{};
     std::string cost_shown;
     // The Filmer: boost bind (its buttons are kept from the game while filming), looked up now and then.
-    std::uint32_t boost_combo{default_filmer_boost_binding};
+    std::uint32_t boost_combo{default_filmer_boost_binding}, slap_combo{default_lens_slap_binding};
     std::uint64_t boost_combo_at{};
     bool lagging_shown{}, resting_shown{};
-    bool holdtest{};               // `filmer holdtest`: the camera held out on your skater, the game's camera
     bool holding{};                // the arm holds the camera out this tick (the camcorder goes in the hand)
     bool on_foot{};                // the skater is on foot (this tick)
     float pivot{};                 // on foot: how far the body is turned on the spot after the camera
@@ -209,7 +208,6 @@ void load_store() {
         r.sensitivity = clamped(o, "sensitivity", d.rig.sensitivity, 0.2f, 3.0f);
         r.invert_y = flag(o, "invert", d.rig.invert_y);
         r.recenter = flag(o, "recenter", d.rig.recenter);
-        r.hold_height = clamped(o, "hold", d.rig.hold_height, 0.05f, 1.8f);
         r.tilt = clamped(o, "tilt", d.rig.tilt, 0.0f, 1.0f);
         r.stop_at_drops = flag(o, "stop_at_drops", d.rig.stop_at_drops);
         r.stop_at_downrails = flag(o, "stop_at_downrails", d.rig.stop_at_downrails);
@@ -221,7 +219,6 @@ void load_store() {
         r.height_variety = clamped(o, "height_variety", d.rig.height_variety, 0.0f, 1.0f);
         r.stop_lift = clamped(o, "stop_lift", d.rig.stop_lift, 0.0f, 1.5f);
         r.cruise_gap = clamped(o, "cruise_gap", d.rig.cruise_gap, 1.0f, 12.0f);
-        r.mouse_look = flag(o, "mouse_look", d.rig.mouse_look);
         r.mouse_sensitivity = clamped(o, "mouse_sensitivity", d.rig.mouse_sensitivity, 0.1f, 5.0f);
         r.lunge = flag(o, "lunge", d.rig.lunge);
         r.slam_zoom = flag(o, "slam_zoom", d.rig.slam_zoom);
@@ -232,33 +229,20 @@ void load_store() {
         s.settings.camera_cycle = flag(o, "camera_cycle", d.camera_cycle);
         s.settings.side_buttons = flag(o, "side_buttons", d.side_buttons);
         r.side_hard = flag(o, "side_hard", d.rig.side_hard) && r.side != Side::automatic;
-        {
-            const auto slap = o.value("slap_button", std::string(slap_button_name(d.slap_button)));
-            s.settings.slap_button = slap == "rs" ? SlapButton::right_stick : slap == "rb" ? SlapButton::right_bumper : slap == "up" ? SlapButton::dpad_up
-                : slap == "back" ? SlapButton::back : slap == "none" ? SlapButton::none : slap == "down" ? SlapButton::dpad_down : SlapButton::left_bumper;
-            // The default moved from D-pad down to LB: a "down" saved before then was only the old default.
-            if (!o.contains("slap_lb") && s.settings.slap_button == SlapButton::dpad_down) s.settings.slap_button = SlapButton::left_bumper;
-        }
         s.settings.left_hand = false; // the left hand never held it properly: always the right
-        s.settings.show_cameras = flag(o, "show_cameras", d.show_cameras);
         s.settings.crouch_depth = clamped(o, "crouch_depth3", d.crouch_depth, 0.0f, 0.5f);
         s.settings.hunch_degrees = clamped(o, "hunch_degrees3", d.hunch_degrees, 0.0f, 60.0f);
         s.settings.camera_item = o.value("camera_item", std::string());
         if (s.settings.camera_item.size() > 200) s.settings.camera_item.clear();
         s.settings.camera_slot = o.value("camera_slot", std::string());
         if (s.settings.camera_slot.size() > 40) s.settings.camera_slot.clear();
-        s.settings.camera_model = o.value("camera_model", std::string());
-        if (s.settings.camera_model.size() > 200) s.settings.camera_model.clear();
-        // Saved before only world and ReSkate props were allowed (a phone crashed the game): the default.
-        if (const auto model = lower(s.settings.camera_model); !model.empty() && !model.starts_with("world/") && !model.starts_with("reskate/"))
-            s.settings.camera_model.clear();
         // Settings saved before the camera could go this low keep their old height: start them low.
         // (Schema 3: lower again, and the hold height now measured from the ground, not the hips.)
         if (o.value("schema", 1) < 3) {
             r.height = d.rig.height;
-            r.hold_height = d.rig.hold_height;
         }
         s.settings.hide_hud = flag(o, "hide_hud", d.hide_hud);
+        s.settings.show_debug = flag(o, "show_debug", d.show_debug);
         s.settings.take_stick = flag(o, "take_stick", d.take_stick);
         s.settings.hide_nametags = flag(o, "hide_nametags", d.hide_nametags);
         const auto last = o.value("last_mode", std::string("follow"));
@@ -308,7 +292,6 @@ void save_store() {
         json["sensitivity"] = r.sensitivity;
         json["invert"] = r.invert_y;
         json["recenter"] = r.recenter;
-        json["hold"] = r.hold_height;
         json["tilt"] = r.tilt;
         json["stop_at_drops"] = r.stop_at_drops;
         json["stop_at_downrails"] = r.stop_at_downrails;
@@ -318,7 +301,6 @@ void save_store() {
         json["height_variety"] = r.height_variety;
         json["stop_lift"] = r.stop_lift;
         json["cruise_gap"] = r.cruise_gap;
-        json["mouse_look"] = r.mouse_look;
         json["mouse_sensitivity"] = r.mouse_sensitivity;
         json["lunge"] = r.lunge;
         json["slam_zoom"] = r.slam_zoom;
@@ -329,16 +311,13 @@ void save_store() {
         json["camera_cycle"] = s.settings.camera_cycle;
         json["side_buttons"] = s.settings.side_buttons;
         json["side_hard"] = r.side_hard;
-        json["slap_button"] = slap_button_name(s.settings.slap_button);
-        json["slap_lb"] = true;
         json["camera_hand"] = s.settings.left_hand ? "left" : "right";
-        json["show_cameras"] = s.settings.show_cameras;
         json["crouch_depth3"] = s.settings.crouch_depth;
         json["hunch_degrees3"] = s.settings.hunch_degrees;
         json["camera_item"] = s.settings.camera_item;
         json["camera_slot"] = s.settings.camera_slot;
-        json["camera_model"] = s.settings.camera_model;
         json["hide_hud"] = s.settings.hide_hud;
+        json["show_debug"] = s.settings.show_debug;
         json["take_stick"] = s.settings.take_stick;
         json["hide_nametags"] = s.settings.hide_nametags;
         json["last_mode"] = mode_name(s.last_mode);
@@ -535,6 +514,7 @@ void log_clip(const Clip &clip, std::string_view mode, std::string_view subject)
 
 std::string slap(State &s) {
     if (s.settings.mode == Mode::off) return "The Filmer is off: nothing is rolling.";
+    if (!s.held || s.radial_open || s.menu_paused) return {}; // (the button is the game's then)
     const double t = now();
     // A second slap straight after the first is the same mark.
     if (t - s.slap_at < 0.8) return "Already slapped.";
@@ -575,7 +555,6 @@ void publish_view(State &s) {
     next->zoom = s.zoom_shown;
     next->cruising = s.cruising_shown;
     next->cruise_note = s.cruise_note;
-    next->holdtest = s.holdtest;
     next->held_status = s.held_status;
     next->look_held = s.radial_open;
     next->menu_note = s.menu_bytes_note;
@@ -593,24 +572,6 @@ void set_status(State &s, std::string text) {
     s.view_due = true;
     // In the log too: what the Filmer is doing, or why it is not filming.
     say(logging::Level::info, "Filmer: " + s.status);
-}
-
-// The pad bit of the slap button, while it is the slap's: the right stick click is the camera cycle's
-// while following with the cycle on, so it does not slap then.
-std::uint16_t slap_bit(const State &s) {
-    switch (s.settings.slap_button) {
-    case SlapButton::right_stick:
-        if (s.settings.mode == Mode::film) return right_thumb;
-        if (s.settings.mode == Mode::follow && s.settings.camera_cycle) return 0;
-        return s.settings.stick_clicks ? right_thumb : std::uint16_t{0};
-    case SlapButton::right_bumper: return right_shoulder;
-    case SlapButton::left_bumper: return left_shoulder;
-    case SlapButton::dpad_down: return dpad_down;
-    case SlapButton::dpad_up: return dpad_up;
-    case SlapButton::back: return back_button;
-    case SlapButton::none: break;
-    }
-    return 0;
 }
 
 // The right stick and its click are the camera's while you film; following, the left stick's click is
@@ -676,7 +637,8 @@ void update_filter(State &s) {
     if (film) mask |= right_thumb;
     if (clicks) mask |= left_thumb;
     if (s.settings.mode == Mode::follow && s.held && s.settings.side_buttons) mask |= static_cast<std::uint16_t>(dpad_left | dpad_right);
-    if (s.held && s.settings.mode != Mode::off) mask |= slap_bit(s);
+    // The slap's button (LB unless bound otherwise, Settings > Binds), the slap's while filming.
+    if (s.held && s.settings.mode != Mode::off && valid_controller_combo(s.slap_combo)) mask |= static_cast<std::uint16_t>(s.slap_combo & 0xffffu);
     // The game's pause (Start / Menu) and replay (Back / View) are off while filming: a press there
     // would pause the game or jump into the replay mid-shot. (The ReSkate menu still opens.)
     if (s.held && s.settings.mode != Mode::off) mask |= static_cast<std::uint16_t>(start_button | back_button);
@@ -722,7 +684,6 @@ void read_clicks(State &s, std::uint16_t buttons) {
     }
     const auto pressed = [&](std::uint16_t button) { return button && (buttons & button) != 0 && (s.previous_buttons & button) == 0; };
     const bool follow = s.settings.mode == Mode::follow && s.settings.stick_clicks;
-    if (s.held && pressed(slap_bit(s))) s.last = slap(s);
     // The side buttons: the filmer to your left or right (kept there); the same again, theirs to choose.
     if (s.held && s.settings.mode == Mode::follow && s.settings.side_buttons) {
         auto &r = s.settings.rig;
@@ -858,6 +819,8 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready, bool camera_ph
             hold_request.on_board = telemetry.skater && !on_foot;
         }
         hold_request.hunch = s.settings.hunch_degrees * 3.14159265f / 180.0f;
+        // Where the camera is held from (the rig): the shoulder, as low as the knee bend and the hunch put it.
+        s.settings.rig.hold_shoulder = 1.42f - s.settings.crouch_depth - 0.12f * std::clamp(s.settings.hunch_degrees / 60.0f, 0.0f, 1.0f);
         // Where everyone is this frame (the session places them every frame).
         s.others = multiplayer::filmable_players();
         if (ticks >= s.players_at) {
@@ -877,6 +840,7 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready, bool camera_ph
             if (binds.available)
                 for (std::size_t i = 0; i < action_binds.size(); ++i)
                     if (action_binds[i].key == "filmer_boost") s.boost_combo = binds.action_combos[i];
+                    else if (action_binds[i].key == "lens_slap") s.slap_combo = binds.action_combos[i];
         }
         watch_game_menus(s, base, ticks);
         update_filter(s);
@@ -902,7 +866,7 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready, bool camera_ph
             // long lens (the rig ignores both otherwise). Read every tick so nothing piles up.
             {
                 overlay::MouseLook mouse;
-                if (DingoSDKOverlayReadMouseLook(&mouse) && s.settings.rig.mouse_look && s.held) {
+                if (DingoSDKOverlayReadMouseLook(&mouse) && s.held) {
                     // About a third of a degree a count at 1x, slower zoomed in (the same feel on screen).
                     const float per_count = 0.0022f * s.settings.rig.mouse_sensitivity / s.rig.zoom();
                     if (mouse.x || mouse.y)
@@ -1096,16 +1060,6 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready, bool camera_ph
                 }
             }
         }
-        // `filmer holdtest`: with the game's own camera, your skater holds the camera out in front at arm's length,
-        // as a fisheye filmer does, and you see it in your hand.
-        if (s.holdtest && !hold_request.hold && ready && self.valid) {
-            hold_request.hold = true;
-            hold_request.relative = true;
-            hold_request.lens = {0.8f, -0.3f, 0.0f};
-            hold_request.facing = self.facing;
-            hold_request.aim = hold::from_yaw_pitch(std::atan2(self.facing[0], self.facing[2]), -0.3f);
-            hold_request.show_own = true;
-        }
         if (!hold_request.hold) {
             s.pivot = 0.0f;
             s.facing_have = false;
@@ -1164,22 +1118,11 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready, bool camera_ph
     } catch (...) {}
 }
 
-namespace {
-// A model the camera may be made of: a world prop (as the traffic cone is) or ReSkate's own. Character
-// props (a phone) are made to hang on a skater's skeleton; spawned on their own they crash the game.
-bool spawnable_model(std::string_view name) {
-    return name.starts_with("world/") || name.starts_with("reskate/");
-}
-} // namespace
-
 void tick_held(std::uintptr_t base, std::uintptr_t client, bool in_level) noexcept {
     try {
         auto &s = state();
         if (!s.loaded) return;
-        held::Options options;
-        options.show_others = s.settings.show_cameras;
-        options.blueprint = spawnable_model(lower(s.settings.camera_model)) ? s.settings.camera_model : std::string();
-        held::tick(base, client, in_level, options);
+        held::tick(base, client, in_level);
         // The camcorder worn as hand wear goes in your hand while the arm holds it out.
         outfit::tick(in_level && s.holding, s.settings.camera_item, s.settings.camera_slot);
         if (const auto ticks = GetTickCount64(); ticks >= s.next_held_status) {
@@ -1261,7 +1204,6 @@ std::string set_option(State &s, const std::string &key, const std::string &valu
         changed(s);
         return std::string("style = ") + style_name(r.style);
     }
-    if (key == "cameras") return toggle(s.settings.show_cameras);
     if (key == "crouchdepth") return real(s.settings.crouch_depth, 0.0f, 0.5f);
     if (key == "hunch") return real(s.settings.hunch_degrees, 0.0f, 60.0f);
     if (key == "camitem") {
@@ -1279,15 +1221,6 @@ std::string set_option(State &s, const std::string &key, const std::string &valu
         return "The camcorder goes in the " + (v.empty() ? std::string("hand") : v) + " slot while you film.";
     }
 
-    if (key == "cammodel") {
-        const auto v = value == "default" ? std::string() : value;
-        if (v.size() > 200 || v.find_first_of(" \t\r\n") != std::string::npos) return "error: cammodel is a blueprint name (or default).";
-        if (!v.empty() && !spawnable_model(lower(v)))
-            return "error: the camera can only be a world prop (world/...) or ReSkate's own (reskate/...): character props such as the phone crash the game when spawned on their own.";
-        s.settings.camera_model = v;
-        changed(s);
-        return "Camera model: " + (v.empty() ? std::string(multiplayer::held_camera_blueprint) : v) + ".";
-    }
     if (key == "distvariety") return real(r.distance_variety, 0.0f, 1.0f);
     if (key == "heightvariety") return real(r.height_variety, 0.0f, 1.0f);
     if (key == "side") {
@@ -1315,27 +1248,14 @@ std::string set_option(State &s, const std::string &key, const std::string &valu
     if (key == "human") return real(r.human, 0.0f, 1.0f);
     if (key == "reaction") return real(r.reaction, 0.0f, 1.0f);
     if (key == "sensitivity") return real(r.sensitivity, 0.2f, 3.0f);
-    if (key == "hold") return real(r.hold_height, 0.05f, 1.8f);
     if (key == "tilt") return real(r.tilt, 0.0f, 1.0f);
     if (key == "drops") return toggle(r.stop_at_drops);
     if (key == "downrails") return toggle(r.stop_at_downrails);
     if (key == "clicks") return toggle(s.settings.stick_clicks);
     if (key == "cycle") return toggle(s.settings.camera_cycle);
     if (key == "sidebuttons") return toggle(s.settings.side_buttons);
-    if (key == "slapbutton") {
-        const auto v = lower(value);
-        if (v == "rs" || v == "r3" || v == "rightstick") s.settings.slap_button = SlapButton::right_stick;
-        else if (v == "rb" || v == "r1" || v == "bumper" || v == "rightbumper") s.settings.slap_button = SlapButton::right_bumper;
-        else if (v == "lb" || v == "l1" || v == "leftbumper") s.settings.slap_button = SlapButton::left_bumper;
-        else if (v == "down" || v == "dpaddown") s.settings.slap_button = SlapButton::dpad_down;
-        else if (v == "up" || v == "dpadup") s.settings.slap_button = SlapButton::dpad_up;
-        else if (v == "back" || v == "view" || v == "select") s.settings.slap_button = SlapButton::back;
-        else if (v == "none" || v == "off") s.settings.slap_button = SlapButton::none;
-        else return "error: slapbutton is lb, rb, rs, down, up, back or none.";
-        changed(s);
-        return std::string("slap button = ") + slap_button_name(s.settings.slap_button);
-    }
     if (key == "anywhere") return toggle(k.anywhere);
+    if (key == "debug") return toggle(s.settings.show_debug);
     if (key == "lunge") return toggle(r.lunge);
     if (key == "slamzoom") return toggle(r.slam_zoom);
     if (key == "stopzoom") return toggle(r.stop_zoom);
@@ -1349,7 +1269,6 @@ std::string set_option(State &s, const std::string &key, const std::string &valu
     if (key == "cruise") return toggle(r.cruise);
     if (key == "lift") return real(r.stop_lift, 0.0f, 1.5f);
     if (key == "gap") return real(r.cruise_gap, 1.0f, 12.0f);
-    if (key == "mouse") return toggle(r.mouse_look);
     if (key == "mousesens") return real(r.mouse_sensitivity, 0.1f, 5.0f);
     if (key == "age") return real(k.age, 0.0f, 1.0f);
     if (key == "dropouts") return toggle(k.dropouts);
@@ -1503,13 +1422,6 @@ std::string command(std::string_view verb, const std::vector<std::string> &argum
         } catch (...) {
             reply = "error: could not write trace.csv.";
         }
-    } else if (verb == "holdtest") {
-        // Your skater holds the camera out with the game's own camera, to see the arm and the model.
-        const auto wanted = lower(arg(0));
-        s.holdtest = wanted == "on" || wanted == "1" ? true : wanted == "off" || wanted == "0" ? false : !s.holdtest;
-        reply = !s.holdtest ? "Hold test off."
-              : s.settings.mode == Mode::film ? "Hold test on: switch the Filmer off (or to another mode) to see your skater hold the camera."
-                                              : "Hold test on: your skater holds the camera out in front at arm's length. Others in the session see it too.";
     } else if (verb == "slap") {
         reply = slap(s);
     } else if (verb == "clips") {
@@ -1519,13 +1431,26 @@ std::string command(std::string_view verb, const std::vector<std::string> &argum
             for (const auto &clip : s.clips) reply += std::format("\n  #{} {:.1f} s, ended {}", clip.number, clip.seconds, clip.ended_at);
             reply += "\nThe full list is in %LOCALAPPDATA%\\ReSkate\\filmer\\clips.csv.";
         }
+    } else if (verb == "preset") {
+        const auto wanted = lower(arg(0));
+        const auto preset = wanted == "clean" ? LookPreset::clean : wanted == "vx" || wanted == "vx1000" ? LookPreset::vx
+                          : wanted == "worn" ? LookPreset::worn : LookPreset::custom;
+        if (preset == LookPreset::custom) {
+            reply = "error: filmer preset clean|vx|worn.";
+        } else {
+            apply_look_preset(s.settings.look, preset);
+            changed(s);
+            reply = preset == LookPreset::clean ? "Effects: clean (no VX look)." : preset == LookPreset::vx ? "Effects: VX1000." : "Effects: worn tape.";
+        }
     } else if (verb == "reset") {
         const auto mode = s.settings.mode;
+        const bool debug = s.settings.show_debug;
         const auto subject = s.settings.subject, target = s.settings.target;
         s.settings = {};
         s.settings.mode = mode;
         s.settings.subject = subject;
         s.settings.target = target;
+        s.settings.show_debug = debug;
         s.rig.reset();
         changed(s);
         reply = "Filmer settings back to their defaults.";

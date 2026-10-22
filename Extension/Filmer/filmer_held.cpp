@@ -1,9 +1,7 @@
 #include "filmer_held.h"
-#include "filmer_beacon.h"
 #include "Engine/Core/Log/logging.h"
 #include "Extension/Multiplayer/Net/protocol.h"
 #include "Extension/Multiplayer/Remote/native_pose_layout.h"
-#include "Extension/Multiplayer/Remote/native_prop.h"
 #include "Extension/Multiplayer/Remote/native_skater.h"
 #include <Windows.h>
 #include <algorithm>
@@ -45,8 +43,6 @@ struct Arm {
     std::mutex mutex;
     Request request;              // under the mutex
     ULONGLONG requested{};        // when, under the mutex
-    hold::Held palm;              // where your camera is, under the mutex
-    ULONGLONG palm_at{};
     std::atomic<std::uintptr_t> component{}, base{};
     std::atomic<bool> hooked{};
     bool hook_tried{};            // game thread
@@ -56,7 +52,7 @@ struct Arm {
     ULONGLONG seen_at{};
     float weight{};
     ULONGLONG last_update{};
-    std::atomic<std::uint32_t> bent{}, unreadable{}, own_from_pose{};
+    std::atomic<std::uint32_t> bent{}, unreadable{};
     // What the game had in each joint written here, and what was written: the game does not set every
     // joint afresh each frame, so a joint still holding what was written is taken back to the game's
     // own value before it is worked out again (else the crouch and the hunch pile up frame on frame),
@@ -230,11 +226,6 @@ void bend(std::uintptr_t component, std::uintptr_t holder, bool animated) noexce
         }
         if (hiding) return;
         a.bent.fetch_add(1, std::memory_order_relaxed);
-        std::unique_lock lock(a.mutex, std::try_to_lock);
-        if (lock) {
-            a.palm = held;
-            a.palm_at = now;
-        }
     } catch (...) {
         a.unreadable.fetch_add(1, std::memory_order_relaxed);
     }
@@ -367,22 +358,6 @@ void on_animation(std::uintptr_t component) noexcept {
     SetLastError(error);
 }
 
-// ---- Other players' hands (the client thread).
-struct RemoteHand {
-    std::uint64_t id{};
-    hold::Placed palm;
-    ULONGLONG at{};
-    bool worn{}; // they wear the camcorder: the game draws it, no model is placed
-};
-struct Remotes {
-    std::mutex mutex;
-    std::vector<RemoteHand> list;
-};
-Remotes &remotes() {
-    static auto *value = new Remotes;
-    return *value;
-}
-bool shown{}; // client thread: models were placed last tick
 } // namespace
 
 void set_local(const Request &request) noexcept {
@@ -392,41 +367,11 @@ void set_local(const Request &request) noexcept {
     a.requested = GetTickCount64();
 }
 
-void note_remote_pose(std::uint64_t id, const multiplayer::Pose &pose) noexcept {
-    try {
-        const auto filming = beacon::filming(id);
-        if (!filming || pose.skater.size() < hold::left_chain.back() + 1u) return;
-        thread_local std::vector<hold::Bone> bones;
-        bones.resize(pose.skater.size());
-        for (std::size_t i = 0; i < bones.size(); ++i) {
-            const auto &t = pose.skater[i];
-            bones[i] = {t.scale, t.rotation, t.position};
-        }
-        const auto hand = (filming->flags & beacon::flag_left_hand) ? hold::Hand::left : hold::Hand::right;
-        const bool worn = (filming->flags & beacon::flag_worn) != 0;
-        const auto held = hold::held_in(bones, hand, filming->aim);
-        if (!held.valid) return;
-        auto &r = remotes();
-        std::lock_guard lock(r.mutex);
-        const auto now = GetTickCount64();
-        for (auto &entry : r.list)
-            if (entry.id == id) {
-                entry.palm = held.palm;
-                entry.at = now;
-                entry.worn = worn;
-                return;
-            }
-        if (r.list.size() < 32) r.list.push_back({id, held.palm, now, worn});
-    } catch (...) {}
-}
-
-void tick(std::uintptr_t base, std::uintptr_t client, bool in_level, const Options &options) noexcept {
+void tick(std::uintptr_t base, std::uintptr_t client, bool in_level) noexcept {
     auto &a = arm();
     try {
         if (!in_level) {
             a.component.store(0, std::memory_order_release);
-            if (shown) multiplayer::tick_held_camera_models(base, client, {}, multiplayer::held_camera_blueprint, false);
-            shown = false;
             return;
         }
         a.base.store(base, std::memory_order_release);
@@ -461,46 +406,6 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool in_level, const Optio
                 logging::log(logging::Level::warning, logging::Channel::skater, "Filmer: {}", a.issue);
             }
         }
-        const auto now = GetTickCount64();
-        std::vector<multiplayer::HeldCameraModel> cameras;
-        if (options.show_others) {
-            auto &r = remotes();
-            std::lock_guard lock(r.mutex);
-            std::erase_if(r.list, [&](const RemoteHand &h) { return now - h.at > 2000; });
-            for (const auto &h : r.list)
-                if (now - h.at < fresh_ms && !h.worn) cameras.push_back({h.id, h.palm.position, h.palm.rotation});
-        }
-        if (request.show_own && !request.worn) {
-            bool placed = false;
-            {
-                std::lock_guard lock(a.mutex);
-                if (a.palm.valid && now - a.palm_at < fresh_ms) {
-                    cameras.push_back({0, a.palm.palm.position, a.palm.palm.rotation});
-                    placed = true;
-                }
-            }
-            // The arm is not being bent (no animation callback yet, or it failed): the camera still goes in
-            // the hand as the animation has it, from your pose.
-            if (!placed) {
-                const auto frame = multiplayer::capture_local(base, client, true);
-                if (frame.ready && frame.pose.skater.size() >= hold::pose_joints) {
-                    std::vector<hold::Bone> bones(frame.pose.skater.size());
-                    for (std::size_t i = 0; i < bones.size(); ++i) {
-                        const auto &t = frame.pose.skater[i];
-                        bones[i] = {t.scale, t.rotation, t.position};
-                    }
-                    if (const auto held = hold::held_in(bones, request.hand, request.aim); held.valid)
-                        cameras.push_back({0, held.palm.position, held.palm.rotation});
-                }
-                a.own_from_pose.store(placed ? 0u : 1u, std::memory_order_relaxed);
-            } else {
-                a.own_from_pose.store(0, std::memory_order_relaxed);
-            }
-        }
-        if (!cameras.empty() || shown)
-            multiplayer::tick_held_camera_models(base, client, cameras, options.blueprint.empty() ? multiplayer::held_camera_blueprint : options.blueprint,
-                                                 false);
-        shown = !cameras.empty();
     } catch (...) {}
 }
 
@@ -517,8 +422,7 @@ std::string status() {
                            : a.hooked.load() ? std::format("arm bent {} times", a.bent.load(std::memory_order_relaxed))
                                              : "arm not needed yet";
     if (const auto unreadable = a.unreadable.load(std::memory_order_relaxed)) arm_text += std::format(" ({} unreadable poses)", unreadable);
-    if (a.own_from_pose.load(std::memory_order_relaxed)) arm_text += " (your camera placed from your pose: the arm is not bending)";
     arm_text += std::format(", sent bent {} of {}", outgoing().bent.load(std::memory_order_relaxed), outgoing().sent.load(std::memory_order_relaxed));
-    return "Held camera: " + arm_text + "; " + multiplayer::held_camera_models_status();
+    return "Held camera: " + arm_text;
 }
 } // namespace dingosdk::filmer::held

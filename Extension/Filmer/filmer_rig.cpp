@@ -3080,28 +3080,20 @@ Frame Rig::film(double now, float dt, const Subject &self, const Subject *target
         operator_have_ = true;
     }
     spring(operator_height_, operator_height_rate_, world(me.position[1]), 0.0f, 9.0f, 0.75f, dt);
-    // Held low and out at arm's length, towards where it points: never inside your own head, arms or
-    // board, whichever way you turn it. A wall in the way brings it in; it never goes under the ground.
-    // Pointed well up at the sky, the camera comes up to your eye, close to your face; pointed well
-    // down, it is held in over your stomach (a filmer does not hold it at the ground and look down at
-    // it from arm's length). Eased, so the camera rises and falls with the tilt, never jumps.
+    // Where your hands hold it (filmer_hold.cpp shapes the arm the same way, so the picture is taken
+    // from the camera you are seen holding): level, out in front at the chest under the eyes; aimed
+    // down, lower and a little closer, down to the stomach pointed at the ground; aimed up, up past
+    // the face and over the head at the sky. One smooth sweep with the tilt, eased, never a jump.
     {
-        const float pitch_now = aim_.have ? aim_.pitch : 0.0f;
-        const float to_eye = std::clamp((pitch_now - 0.35f) / 0.45f, 0.0f, 1.0f);
-        const float tucked = std::clamp((-pitch_now - 0.6f) / 0.35f, 0.0f, 1.0f);
-        film_up_ += (to_eye - film_up_) * ease(dt, 0.2f);
-        film_down_ += (tucked - film_down_) * ease(dt, 0.2f);
+        const float pointing_y = std::sin(aim_.have ? aim_.pitch : 0.0f);
+        film_up_ += (std::max(pointing_y, 0.0f) - film_up_) * ease(dt, 0.12f);
+        film_down_ += (std::max(-pointing_y, 0.0f) - film_down_) * ease(dt, 0.12f);
     }
-    const float hold_base = std::clamp(s.hold_height, 0.05f, 1.8f);
-    // (Up: held up above the head, its screen right in front of your eyes as you look up at it. Down:
-    // held up in front of your eyes, pointing down at the ground, looking down into it.)
-    const float eye_line = 1.5f, above_head = 1.78f;
-    float hold = hold_base;
-    hold = mix(hold, std::max(hold, eye_line), film_down_);
-    hold = mix(hold, std::max(hold, above_head), film_up_);
+    const float shoulder = std::clamp(s.hold_shoulder, 0.6f, 1.6f);
+    const float hold = shoulder - 0.18f * (1.0f - film_up_) + 0.55f * film_up_ - 0.45f * film_down_;
     const Vec3 body{me.position[0], operator_height_ + hold, me.position[2]};
     const float reach_yaw = aim_.have ? aim_.yaw : heading;
-    const float reach = mix(mix(0.62f, 0.22f, film_up_), 0.32f, film_down_);
+    const float reach = 0.48f * (1.0f - 0.45f * film_up_) * (1.0f - 0.15f * film_down_);
     Vec3 eye = add(body, Vec3{std::sin(reach_yaw) * reach, 0, std::cos(reach_yaw) * reach});
     if (cast_) {
         const Vec3 chest{me.position[0], operator_height_ + std::max(hold, 0.9f), me.position[2]};

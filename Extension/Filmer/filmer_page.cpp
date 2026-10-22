@@ -71,7 +71,10 @@ void filmer_page(SkateMenu &menu, const Model &, const CallbacksV3 &callbacks) {
     const auto &v = *snapshot;
     const auto &s = v.settings;
     const auto &r = s.rig;
-    category_tabs(menu, menu.filmer_tab, {"FILMER", "IN HAND", "EFFECTS", "CLIPS", "CONTROLS", "DEBUG"}, "filmer-tabs");
+    // DEBUG only when asked for (CONTROLS > Show the DEBUG tab, or filmer set debug 1).
+    if (!s.show_debug && menu.filmer_tab > 4) menu.filmer_tab = 0;
+    if (s.show_debug) category_tabs(menu, menu.filmer_tab, {"FILMER", "IN HAND", "EFFECTS", "CLIPS", "CONTROLS", "DEBUG"}, "filmer-tabs");
+    else category_tabs(menu, menu.filmer_tab, {"FILMER", "IN HAND", "EFFECTS", "CLIPS", "CONTROLS"}, "filmer-tabs");
     ImGui::PushID(menu.filmer_tab);
     ImGui::BeginChild("filmer-page", ImVec2(0, page_body_height(menu)), ImGuiChildFlags_NavFlattened);
     switch (menu.filmer_tab) {
@@ -115,10 +118,6 @@ void filmer_page(SkateMenu &menu, const Model &, const CallbacksV3 &callbacks) {
         };
         angle_row("Behind", "A little off to one side, behind you: the classic follow.", "behind", filmer::angle_behind);
         angle_row("Side", "Out wide, alongside you.", "side", filmer::angle_side);
-        field(menu, "Side", "Which side of you the Filmer keeps to when it is clear (they take the other side, or straight behind, to get round what is in the way). Auto: wherever they happen to be.");
-        int side = static_cast<int>(r.side);
-        if (choice(menu, "side", side, {"Auto", "Left", "Right"}))
-            filmer_command(menu, callbacks, std::string("set side ") + (side == 1 ? "left" : side == 2 ? "right" : "auto"));
         filmer_slider(menu, callbacks, "Distance", "How close they ride (metres; the long lens rides about 3x further).", "distance", r.distance, 0.6f, 6.0f, "%.1f m");
         filmer_slider(menu, callbacks, "Camera height", "Above the ground. Down by the board (0.15 m) is the classic fisheye angle; about a foot (0.3 m) sees more of the spot.", "height", r.height, 0.08f, 2.5f, "%.2f m");
         filmer_slider(menu, callbacks, "Distance variety", "Through a line the filmer drifts closer and further, slowly. 0: always the distance above; 1: about half of it either way.", "distvariety", r.distance_variety, 0.0f, 1.0f, "%.2f");
@@ -142,13 +141,11 @@ void filmer_page(SkateMenu &menu, const Model &, const CallbacksV3 &callbacks) {
         filmer_slider(menu, callbacks, "Stick speed", "How fast the right stick turns the camera.", "sensitivity", r.sensitivity, 0.2f, 3.0f, "x %.2f");
         filmer_toggle(menu, callbacks, "Invert up / down", "Push up to point the camera down.", "invert", r.invert_y);
         filmer_toggle(menu, callbacks, "Recenter", "Without the assist: let go and the camera drifts back to where you ride.", "recenter", r.recenter, !r.assist);
-        filmer_slider(menu, callbacks, "Hold height", "Where you hold the camera above the ground: low by the board and out at arm's length, clear of your body.", "hold", r.hold_height, 0.05f, 1.8f, "%.2f m");
         filmer_toggle(menu, callbacks, "Cruise control", "Filming a friend, you ride at the speed that keeps you the gap behind them: you steer and aim, your push and brake still work. Off in a session whose host has turned boosts off. Bindable.", "cruise", r.cruise);
         filmer_slider(menu, callbacks, "Cruise gap", "How far behind the skater cruise control holds you.", "gap", r.cruise_gap, 1.0f, 12.0f, "%.1f m");
         if (r.cruise && !v.cruise_note.empty()) note(v.cruise_note.c_str());
     }
-    filmer_toggle(menu, callbacks, "Mouse look", "While the camera is held still (the Filmer stopped, or you standing still filming), the mouse turns it, and with the long lens the wheel zooms.", "mouse", r.mouse_look);
-    filmer_slider(menu, callbacks, "Mouse speed", "How fast the mouse turns the camera.", "mousesens", r.mouse_sensitivity, 0.1f, 5.0f, "x %.2f");
+    filmer_slider(menu, callbacks, "Mouse speed", "How fast the mouse turns the camera (you filming; the Filmer while the camera is held still). With the long lens the wheel zooms.", "mousesens", r.mouse_sensitivity, 0.1f, 5.0f, "x %.2f");
     if (r.lens == filmer::Lens::long_lens) {
         field(menu, "Zoom", "Long lens, while the camera is held still: the wheel, or the zoom binds. Riding again, it eases back out.");
         const bool can = v.active && v.stationary;
@@ -162,43 +159,48 @@ void filmer_page(SkateMenu &menu, const Model &, const CallbacksV3 &callbacks) {
     }
     case 1: {
     begin_card(menu, "filmer-hand", "CAMERA IN HAND", "The VX in your hand, as the others in the session see you filming.");
-    note("While you film your skater wears the camcorder and holds it in both hands, crouched over it. On foot the upper body holds still and the board is out of sight.");
+    note("While you film your skater wears the camcorder and holds it in both hands, crouched over it; where they hold it follows your aim (and the picture is taken from there). On foot the upper body holds still and the board is out of sight.");
     filmer_slider(menu, callbacks, "Knee bend", "How far your hips go down.", "crouchdepth", s.crouch_depth, 0.0f, 0.5f, "%.2f m");
     filmer_slider(menu, callbacks, "Hunch", "How far your back curls over toward the camera.", "hunch", s.hunch_degrees, 0.0f, 60.0f, "%.0f deg");
-    filmer_toggle(menu, callbacks, "Show other filmers' cameras", "A camera in the hand of anyone in the session who is filming.", "cameras", s.show_cameras);
     note("Camera model: Camcorder Video Camera by James.Hasegawa (CC BY 4.0), rescaled for the game.");
     end_card();
 
         break;
     }
     case 2: {
-    begin_card(menu, "filmer-look", "VX1000 LOOK", "What the tape looks like. Each part can be switched off.");
-    filmer_toggle(menu, callbacks, "VX look", "The whole look, drawn over the game while the Filmer films.", "look", s.look.enabled);
-    const bool look = s.look.enabled;
-    filmer_toggle(menu, callbacks, "Fisheye bend", "The MK1's curve. Only with the fisheye lens.", "fisheye", s.look.fisheye, look && r.lens == filmer::Lens::fisheye);
-    if (look && s.look.fisheye && r.lens == filmer::Lens::fisheye)
-        filmer_slider(menu, callbacks, "Bend", "How much of the curve.", "bend", s.look.bend, 0.0f, 1.0f, "%.2f");
-    filmer_toggle(menu, callbacks, "4:3", "Black at the sides, like a TV in 1996.", "bars", s.look.bars, look);
-    filmer_toggle(menu, callbacks, "Hood edge", "The fisheye's dark round edge in the corners.", "hood", s.look.hood, look);
-    filmer_toggle(menu, callbacks, "VX colour", "Punchy, warm, a little crushed.", "grade", s.look.grade, look);
-    filmer_toggle(menu, callbacks, "Standard definition", "Soft, with the camcorder's sharpening halo and colour bleed.", "soft", s.look.soft, look);
-    filmer_toggle(menu, callbacks, "Interlacing", "Every other line a touch darker.", "scanlines", s.look.scanlines, look);
-    filmer_toggle(menu, callbacks, "Tape grain", "Fine noise.", "grain", s.look.grain, look);
-    filmer_toggle(menu, callbacks, "Date stamp", "The date and time in the corner.", "date", s.look.date, look);
-    filmer_toggle(menu, callbacks, "Viewfinder", "REC, the tape counter and the battery, as through the viewfinder.", "viewfinder", s.look.viewfinder, look);
-    filmer_toggle(menu, callbacks, "Auto-iris", "The camera's iris lags the light: into the sun the picture blows out for a moment, into shade it goes murky, then each settles.", "iris", s.look.iris, look);
-    filmer_toggle(menu, callbacks, "Over any camera", "Draw the look even when the Filmer is not filming: over the replay editor's cameras, Freecam, the game's own camera. (Clips the replay editor exports are made without it: record the screen.)", "anywhere", s.look.anywhere, look);
+    begin_card(menu, "filmer-look", "EFFECTS", "What the tape looks like.");
+    {
+        int preset = static_cast<int>(filmer::look_preset(s.look));
+        field(menu, "Preset", "Clean: the game's picture, no look. VX1000: the camcorder's look, as it comes. Worn tape: an old tape that has been dubbed and played to death, with the date stamp.");
+        if (choice(menu, "preset", preset, {"Clean", "VX1000", "Worn tape"}) && preset >= 0)
+            filmer_command(menu, callbacks, std::string("preset ") + (preset == 0 ? "clean" : preset == 1 ? "vx" : "worn"));
+        if (preset < 0) note("Custom (changed under Advanced).");
+    }
     filmer_toggle(menu, callbacks, "Hide the game's HUD", "While the Filmer films (shown again when it stops, if it hid it).", "hidehud", s.hide_hud);
-    note("HDR displays get the bend, 4:3, hood and interlacing; the colour and grain are for SDR.");
-    end_card();
-
-    begin_card(menu, "filmer-tape", "TAPE", "How worn the tape is. Each flaw can be switched off.");
-    const bool tape = s.look.enabled;
-    filmer_slider(menu, callbacks, "Tape age", "0: a fresh tape. 1: one that has been dubbed and played to death: more dropouts and a worse bottom edge.", "age", s.look.age, 0.0f, 1.0f, "%.2f");
-    filmer_toggle(menu, callbacks, "Dropouts", "Now and then a short white streak where the tape lost its coating (more, the older it is).", "dropouts", s.look.dropouts, tape);
-    filmer_toggle(menu, callbacks, "Head switching", "The torn, noisy lines along the very bottom of the picture.", "headswitch", s.look.head_switching, tape);
-    filmer_toggle(menu, callbacks, "Tracking at each clip", "As a clip starts recording (the camera rolling, or after a slap), a band of tearing rolls up the picture.", "tracking", s.look.tracking, tape);
-    filmer_toggle(menu, callbacks, "Red smear", "Reds trail to the right, as on a composite tape.", "smear", s.look.smear, tape);
+    filmer_toggle(menu, callbacks, "Over any camera", "Draw the look even when the Filmer is not filming: over the replay editor's cameras, Freecam, the game's own camera. (Clips the replay editor exports are made without it: record the screen.)", "anywhere", s.look.anywhere, s.look.enabled);
+    if (ImGui::TreeNode("Advanced")) {
+        filmer_toggle(menu, callbacks, "VX look", "The whole look, drawn over the game while the Filmer films.", "look", s.look.enabled);
+        const bool look = s.look.enabled;
+        filmer_toggle(menu, callbacks, "Fisheye bend", "The MK1's curve. Only with the fisheye lens.", "fisheye", s.look.fisheye, look && r.lens == filmer::Lens::fisheye);
+        if (look && s.look.fisheye && r.lens == filmer::Lens::fisheye)
+            filmer_slider(menu, callbacks, "Bend", "How much of the curve.", "bend", s.look.bend, 0.0f, 1.0f, "%.2f");
+        filmer_toggle(menu, callbacks, "4:3", "Black at the sides, like a TV in 1996.", "bars", s.look.bars, look);
+        filmer_toggle(menu, callbacks, "Hood edge", "The fisheye's dark round edge in the corners.", "hood", s.look.hood, look);
+        filmer_toggle(menu, callbacks, "VX colour", "Punchy, warm, a little crushed.", "grade", s.look.grade, look);
+        filmer_toggle(menu, callbacks, "Standard definition", "Soft, with the camcorder's sharpening halo and colour bleed.", "soft", s.look.soft, look);
+        filmer_toggle(menu, callbacks, "Interlacing", "Every other line a touch darker.", "scanlines", s.look.scanlines, look);
+        filmer_toggle(menu, callbacks, "Tape grain", "Fine noise.", "grain", s.look.grain, look);
+        filmer_toggle(menu, callbacks, "Date stamp", "The date and time in the corner.", "date", s.look.date, look);
+        filmer_toggle(menu, callbacks, "Viewfinder", "REC, the tape counter and the battery, as through the viewfinder.", "viewfinder", s.look.viewfinder, look);
+        filmer_toggle(menu, callbacks, "Auto-iris", "The camera's iris lags the light: into the sun the picture blows out for a moment, into shade it goes murky, then each settles.", "iris", s.look.iris, look);
+        filmer_slider(menu, callbacks, "Tape age", "0: a fresh tape. 1: one that has been dubbed and played to death: more dropouts and a worse bottom edge.", "age", s.look.age, 0.0f, 1.0f, "%.2f");
+        filmer_toggle(menu, callbacks, "Dropouts", "Now and then a short white streak where the tape lost its coating (more, the older it is).", "dropouts", s.look.dropouts, look);
+        filmer_toggle(menu, callbacks, "Head switching", "The torn, noisy lines along the very bottom of the picture.", "headswitch", s.look.head_switching, look);
+        filmer_toggle(menu, callbacks, "Tracking at each clip", "As a clip starts recording (the camera rolling, or after a slap), a band of tearing rolls up the picture.", "tracking", s.look.tracking, look);
+        filmer_toggle(menu, callbacks, "Red smear", "Reds trail to the right, as on a composite tape.", "smear", s.look.smear, look);
+        note("HDR displays get the bend, 4:3, hood and interlacing; the colour and grain are for SDR.");
+        ImGui::TreePop();
+    }
     end_card();
 
         break;
@@ -207,8 +209,7 @@ void filmer_page(SkateMenu &menu, const Model &, const CallbacksV3 &callbacks) {
     begin_card(menu, "filmer-clips", "CLIPS", "Slap the lens to end a clip.");
     info(menu, "Rolling", std::format("Clip {}", v.clip));
     if (primary_button(menu, "SLAP THE LENS", s.mode != filmer::Mode::off)) filmer_command(menu, callbacks, "slap");
-    note(s.slap_button == filmer::SlapButton::none ? "Put \"Filmer: slap the lens\" on a button in Settings > Binds, or choose a slap button in CONTROLS."
-                                                   : "The slap button (CONTROLS), or put \"Filmer: slap the lens\" on a button in Settings > Binds.");
+    note("LB while the Filmer has the camera. Change it in Settings > Binds (Filmer: slap the lens).");
     for (auto it = v.clips.rbegin(); it != v.clips.rend() && it - v.clips.rbegin() < 6; ++it)
         info(menu, std::format("Clip {}", it->number).c_str(), std::format("{:.1f} s, ended {}", it->seconds, it->ended_at));
     if (!v.clips.empty()) note("Every clip is listed with its time in %LOCALAPPDATA%\\ReSkate\\filmer\\clips.csv, for finding them in a recording.");
@@ -221,22 +222,22 @@ void filmer_page(SkateMenu &menu, const Model &, const CallbacksV3 &callbacks) {
     note("While the Filmer has the camera the game's Start (pause) and View / Back (replay) buttons are off, so a press does not pause the game or jump into the replay mid-shot.");
     note("Boost: B by default while the Filmer has the camera (B is not the game's foot brake then). A Forward Boost at the speed set in Skater > CHEATS. Change its button in Settings > Binds (Filmer: boost).");
     filmer_toggle(menu, callbacks, "Filmer in the camera cycle", "The game's camera height button (click the right stick) goes high, low, ReSkate's first person (when it is in the cycle: Skater settings), then the Filmer filming you, and back to high.", "cycle", s.camera_cycle);
-    field(menu, "Slap the lens", "The button that slaps the lens to end a clip, while the Filmer has the camera. The right stick's click is the camera cycle's while the Filmer follows you with the cycle on, so it only slaps when you film or with the cycle off.");
-    {
-        int slap = static_cast<int>(s.slap_button);
-        if (choice(menu, "slap", slap, {"Right stick click", "RB (right bumper)", "LB (left bumper)", "D-pad down", "D-pad up", "View / Back", "None"}))
-            filmer_command(menu, callbacks, std::string("set slapbutton ") + filmer::slap_button_name(static_cast<filmer::SlapButton>(slap)));
-    }
+    note("Slap the lens: LB by default while the Filmer has the camera (LB is not the game's then). Change its button in Settings > Binds (Filmer: slap the lens).");
     filmer_toggle(menu, callbacks, "Side buttons (D-pad left / right)", "While the Filmer follows you: D-pad left sends them to your left, right to your right, and they keep to it, going round whatever is coming up on that side (so you choose the way round a bin or a wall). Press the same side again and they pick their own side again. The game does not get D-pad left and right while this is on.", "sidebuttons", s.side_buttons);
     if (s.side_buttons) note(r.side_hard ? (r.side == filmer::Side::left ? "Keeping to your left (D-pad left again: their choice)." : "Keeping to your right (D-pad right again: their choice).") : "Picking their own side.");
     filmer_toggle(menu, callbacks, "Left stick click", "While the Filmer follows: click the left stick to send them over to your other side (left, right), where they stay; if they had stopped by themselves (a drop, too far behind) they are straight back in behind you. The game does not get that click while this is on.", "clicks", s.stick_clicks);
     filmer_toggle(menu, callbacks, "Take the right stick (you film)", "Keep the right stick (and its click) from the game while you film. Off: it also flicks tricks.", "stick", s.take_stick);
-    note("Every Filmer action (on / off, slap, stop and film, next angle, zoom) can also go on any button in Settings > Binds.");
+    note("Every Filmer action (on / off, slap, boost, switch side, next angle, zoom) can also go on any button in Settings > Binds.");
+    end_card();
+
+    begin_card(menu, "filmer-defaults", "START OVER", "Every Filmer setting back to how it comes.");
+    if (primary_button(menu, "RESET THE FILMER TO DEFAULTS")) filmer_command(menu, callbacks, "reset");
+    filmer_toggle(menu, callbacks, "Show the DEBUG tab", "For tuning and testing: the Filmer's state, the drop stop strictness, a trace to send.", "debug", s.show_debug);
     end_card();
         break;
     }
     default: {
-    begin_card(menu, "filmer-debug", "DEBUG", "For checking the camera in hand and the Filmer.");
+    begin_card(menu, "filmer-debug", "DEBUG", "For tuning and testing the Filmer.");
     info(menu, "Status", v.status);
     if (s.mode == filmer::Mode::follow) {
         info(menu, "Filmer", v.planted ? std::string("stopped by you") : v.doing.empty() ? std::string("riding with you") : v.doing);
@@ -253,9 +254,6 @@ void filmer_page(SkateMenu &menu, const Model &, const CallbacksV3 &callbacks) {
         note(std::format("{:.2f}: stops at drops over {:.2f} m, once you have been in the air {:.2f} s off one (fallen below where you took off).",
                          r.drop_strictness, filmer::drop_height_for(r.drop_strictness), filmer::drop_airtime_for(r.drop_strictness)).c_str());
     }
-    if (primary_button(menu, v.holdtest ? "STOP THE HOLD TEST" : "HOLD TEST: SEE YOUR SKATER HOLD IT"))
-        filmer_command(menu, callbacks, std::string("holdtest ") + (v.holdtest ? "off" : "on"));
-    note("Hold test: with the game's own camera (or the Filmer's), your skater holds the camera out in front at arm's length so you can see it.");
     if (!v.held_status.empty()) note(v.held_status.c_str());
     if (primary_button(menu, "TRACE 30 SECONDS", s.mode != filmer::Mode::off)) filmer_command(menu, callbacks, "trace");
     note("Writes what the Filmer sees each tick to %LOCALAPPDATA%\\ReSkate\\filmer\\trace.csv, to send for tuning.");

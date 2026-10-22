@@ -1,5 +1,6 @@
 #include "filmer.h"
 #include <chrono>
+#include <cmath>
 #include <mutex>
 
 // The snapshot the menu page and the look read. Kept apart from filmer.cpp so the overlay library
@@ -55,16 +56,33 @@ const char *style_name(Style style) noexcept {
 
 const char *lens_name(Lens lens) noexcept { return lens == Lens::long_lens ? "long" : "fisheye"; }
 
-const char *slap_button_name(SlapButton button) noexcept {
-    switch (button) {
-    case SlapButton::right_stick: return "rs";
-    case SlapButton::right_bumper: return "rb";
-    case SlapButton::left_bumper: return "lb";
-    case SlapButton::dpad_down: return "down";
-    case SlapButton::dpad_up: return "up";
-    case SlapButton::back: return "back";
-    case SlapButton::none: break;
+void apply_look_preset(Look &look, LookPreset preset) noexcept {
+    const bool anywhere = look.anywhere;
+    look = {};
+    look.anywhere = anywhere;
+    switch (preset) {
+    case LookPreset::clean: look.enabled = false; break;
+    case LookPreset::worn:
+        look.age = 0.8f;
+        look.date = true;
+        break;
+    case LookPreset::vx:
+    case LookPreset::custom: break;
     }
-    return "none";
+}
+
+LookPreset look_preset(const Look &look) noexcept {
+    if (!look.enabled) return LookPreset::clean;
+    for (const auto preset : {LookPreset::vx, LookPreset::worn}) {
+        Look want;
+        apply_look_preset(want, preset);
+        if (look.fisheye == want.fisheye && std::abs(look.bend - want.bend) < 0.005f && look.bars == want.bars && look.hood == want.hood &&
+            look.grade == want.grade && look.soft == want.soft && look.scanlines == want.scanlines && look.grain == want.grain &&
+            look.date == want.date && look.viewfinder == want.viewfinder && std::abs(look.age - want.age) < 0.005f &&
+            look.dropouts == want.dropouts && look.head_switching == want.head_switching && look.tracking == want.tracking &&
+            look.smear == want.smear && look.iris == want.iris)
+            return preset;
+    }
+    return LookPreset::custom;
 }
 } // namespace dingosdk::filmer

@@ -96,7 +96,7 @@ static std::uint32_t vote_binding(const Snapshot& s, const char* key, std::uint3
     return static_cast<std::uint32_t>(mask);
 }
 std::uint32_t action_binding(const Snapshot& s, std::string_view key) {
-    return vote_binding(s, std::string(key).c_str(), key == "filmer_boost" ? default_filmer_boost_binding : 0);
+    return vote_binding(s, std::string(key).c_str(), key == "filmer_boost" ? default_filmer_boost_binding : key == "lens_slap" ? default_lens_slap_binding : 0);
 }
 std::uint32_t vote_yes_binding(const Snapshot& s) { return vote_binding(s, "vote_yes", default_vote_yes_binding); }
 std::uint32_t vote_no_binding(const Snapshot& s) { return vote_binding(s, "vote_no", default_vote_no_binding); }

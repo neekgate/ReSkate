@@ -25,8 +25,8 @@ skate. filmed the way a skater with a VX1000 films a line.
   the edge, films you land and ride away, and cuts back in behind you once you are 25 m off. This
   goes by your trail, so it works even where the game's collision gives no answer. It pushes to keep up, picks angles through a line (Auto), keeps your board in frame (Tilt),
   and points the camera like a person: a beat late, a loose frame, a hand that is never still, but
-  it whips back before a trick leaves the frame. It keeps to whichever side you choose (Side: Auto,
-  Left, Right, or a bindable swap). Film yourself, or anyone in the session
+  it whips back before a trick leaves the frame. It picks its own side, or keeps to the one you send it
+  to (D-pad left / right, the left stick click, or the switch side bind). Film yourself, or anyone in the session
   (`filmer subject <name>`). Click the left stick to send it over to your other side (left / right), where it stays; the slap button
   (LB by default, CONTROLS tab) slaps the lens.
 - **You film** (`filmer mode film`): your skater is the filmer. The left stick rides; the right
@@ -34,8 +34,10 @@ skate. filmed the way a skater with a VX1000 films a line.
   keeps a friend in frame (the closest one ahead, or `filmer target <name>`) and the stick shifts
   the framing. The slap button slaps the lens. Your skater always wears the camcorder and holds it
   in both hands, crouched (Knee bend, 0.22 m) and hunched (Hunch, 60 deg) over it; on foot the upper
-  body holds still and the board is out of sight. The menu's tabs: FILMER, IN HAND, EFFECTS (the
-  look and the tape), CLIPS, CONTROLS, DEBUG.
+  body holds still and the board is out of sight. Where it is held follows the aim, and the picture
+  is taken from there: out in front at the chest aimed level, down at the stomach aimed at the
+  ground, up over the head aimed at the sky. The menu's tabs: FILMER, IN HAND, EFFECTS, CLIPS,
+  CONTROLS (with a reset to defaults, and the switch that shows DEBUG).
 
 ## How the Filmer rides
 
@@ -124,12 +126,16 @@ skate. filmed the way a skater with a VX1000 films a line.
   push and brake still work, and riding up on them it eases you off. It moves your speed the way the
   trainer's auto push does, so push once to get rolling. A speed boost: off in a session whose host
   has turned boosts off.
-- **Mouse look**: while the camera is held still (the Filmer stopped with the left stick or at a
-  drop, or you standing still filming), the mouse turns it (`filmer set mouse`, `mousesens`).
+- **Mouse look** (always on): you filming, the mouse aims; the Filmer stopped (at a drop, or
+  stopped by you), the mouse turns its camera (`filmer set mousesens`).
 - **Zoom**: with the long lens, while the camera is held still, the mouse wheel zooms (up to 4x), as
   do `filmer zoom in|out|reset` and their binds. Riding again, it eases back out.
 
-## The look
+## The look (EFFECTS)
+
+Three presets (`filmer preset clean|vx|worn`): **Clean** (no look), **VX1000** (the look as it comes)
+and **Worn tape** (an old, dubbed-to-death tape, with the date stamp). Each part can still be
+switched under Advanced (shown as Custom then).
 
 Drawn over the game's frame by the overlay while the Filmer has the camera, one switch each:
 the Century MK1's fisheye bend and its dark hood edge, 4:3, the VX's colour, standard-definition
@@ -156,9 +162,8 @@ the palm is on the glass and overshoots as it comes off, and the clip ends. Clip
   moves you. The nametags over the others are off while you film (**Hide nametags**, `filmer set hidenames`).
 - DEBUG shows what the Filmer costs a frame (milliseconds and questions to the game's collision);
   its questions are spread over frames, never asked in one burst.
-- The slap button (`filmer set slapbutton lb|rb|rs|down|up|back|none`, CONTROLS tab; LB by
-  default). The right stick click is the camera cycle's while the Filmer follows with the cycle on.
-- Any time: bind **Filmer: slap the lens** in Settings > Binds, or `filmer slap`.
+- The slap: LB by default (**Filmer: slap the lens** in Settings > Binds, `filmer slap`). Its button
+  is kept from the game only while the Filmer has the camera.
 
 **Filmer on / off** and **Filmer: stop and film / ride again** can be bound too.
 
@@ -182,9 +187,10 @@ Filmer's own camera does not run in replays yet.
 | `filmer mode off\|follow\|film` | |
 | `filmer subject me\|<player>` | Whom the Filmer films |
 | `filmer target auto\|<player>` | Whom the assist frames while you film |
-| `filmer set <option> <value>` | `style auto\|behind\|side`, `lens fisheye\|long`, `slapbutton lb\|rb\|rs\|down\|up\|back\|none`, `distance`, `height`, `tilt`, `human`, `reaction`, `sensitivity`, `hold`, `bend`, `age`, `dropstrict`; switches `cycle`, `assist`, `invert`, `recenter`, `hidehud`, `stick`, `clicks`, `drops`, `lunge`, `look`, `anywhere`, `dropouts`, `headswitch`, `tracking`, `smear`, `iris`, `fisheye`, `bars`, `hood`, `grade`, `soft`, `scanlines`, `grain`, `date`, `viewfinder` |
+| `filmer set <option> <value>` | `style auto\|behind\|side`, `lens fisheye\|long`, `distance`, `height`, `tilt`, `human`, `reaction`, `sensitivity`, `mousesens`, `crouchdepth`, `hunch`, `bend`, `age`, `dropstrict`; switches `debug`, `cycle`, `assist`, `invert`, `recenter`, `hidehud`, `stick`, `clicks`, `drops`, `lunge`, `look`, `anywhere`, `dropouts`, `headswitch`, `tracking`, `smear`, `iris`, `fisheye`, `bars`, `hood`, `grade`, `soft`, `scanlines`, `grain`, `date`, `viewfinder` |
 | `filmer plant [on\|off]` | The Filmer stops and films from where it is, or rides again |
 | `filmer slap` | End the clip |
+| `filmer preset clean\|vx\|worn` | The EFFECTS preset |
 | `filmer clips` | This session's clips |
 | `filmer trace` | Records what the filmer sees for 30 seconds to `%LOCALAPPDATA%\ReSkate\filmer\trace.csv` (for tuning) |
 | `filmer status`, `filmer reset` | |
