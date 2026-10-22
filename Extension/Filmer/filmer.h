@@ -46,14 +46,14 @@ struct Look {
 
 // The button that slaps the lens while the Filmer has the camera (taken from the game while it does).
 // The right stick click is the camera cycle's when that is on, so the slap moved off it by default.
-enum class SlapButton : std::uint8_t { right_stick, right_bumper, dpad_down, dpad_up, back, none };
+enum class SlapButton : std::uint8_t { right_stick, right_bumper, left_bumper, dpad_down, dpad_up, back, none };
 
 struct Settings {
     Mode mode = Mode::off;
     // The game's camera height button (the right stick click) cycles: high, low, ReSkate's first person
     // (when that is in the cycle, Skater settings), the Filmer, and back to high.
     bool camera_cycle = true;
-    SlapButton slap_button = SlapButton::dpad_down;
+    SlapButton slap_button = SlapButton::left_bumper;
     // follow: D-pad left / right sends the filmer to that side of you (and keeps them there, round
     // whatever is coming up); the same again hands the choice back to them. Off: the D-pad is the game's.
     bool side_buttons = false;

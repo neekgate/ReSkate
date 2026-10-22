@@ -241,7 +241,7 @@ void filmer_page(SkateMenu &menu, const Model &, const CallbacksV3 &callbacks) {
     field(menu, "Slap the lens", "The button that slaps the lens to end a clip, while the Filmer has the camera. The right stick's click is the camera cycle's while the Filmer follows you with the cycle on, so it only slaps when you film or with the cycle off.");
     {
         int slap = static_cast<int>(s.slap_button);
-        if (choice(menu, "slap", slap, {"Right stick click", "RB (right bumper)", "D-pad down", "D-pad up", "View / Back", "None"}))
+        if (choice(menu, "slap", slap, {"Right stick click", "RB (right bumper)", "LB (left bumper)", "D-pad down", "D-pad up", "View / Back", "None"}))
             filmer_command(menu, callbacks, std::string("set slapbutton ") + filmer::slap_button_name(static_cast<filmer::SlapButton>(slap)));
     }
     filmer_toggle(menu, callbacks, "Side buttons (D-pad left / right)", "While the Filmer follows you: D-pad left sends them to your left, right to your right, and they keep to it, going round whatever is coming up on that side (so you choose the way round a bin or a wall). Press the same side again and they pick their own side again. The game does not get D-pad left and right while this is on.", "sidebuttons", s.side_buttons);

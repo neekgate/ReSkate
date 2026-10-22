@@ -60,6 +60,7 @@ const char *slap_button_name(SlapButton button) noexcept {
     switch (button) {
     case SlapButton::right_stick: return "rs";
     case SlapButton::right_bumper: return "rb";
+    case SlapButton::left_bumper: return "lb";
     case SlapButton::dpad_down: return "down";
     case SlapButton::dpad_up: return "up";
     case SlapButton::back: return "back";

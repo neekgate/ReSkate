@@ -46,6 +46,7 @@ constexpr std::uint16_t right_thumb = 0x0080;  // XINPUT_GAMEPAD_RIGHT_THUMB: th
 constexpr std::uint16_t dpad_up = 0x0001, dpad_down = 0x0002, start_button = 0x0010, back_button = 0x0020;
 constexpr std::uint16_t dpad_left = 0x0004, dpad_right = 0x0008;
 constexpr std::uint16_t right_shoulder = 0x0200; // XINPUT_GAMEPAD_RIGHT_SHOULDER: RB
+constexpr std::uint16_t left_shoulder = 0x0100;  // XINPUT_GAMEPAD_LEFT_SHOULDER: LB
 constexpr float stick_dead_zone = 7849.0f;     // the left stick's XInput dead zone: fine framing
 constexpr std::size_t clip_history = 20;
 
@@ -222,7 +223,9 @@ void load_store() {
         {
             const auto slap = o.value("slap_button", std::string(slap_button_name(d.slap_button)));
             s.settings.slap_button = slap == "rs" ? SlapButton::right_stick : slap == "rb" ? SlapButton::right_bumper : slap == "up" ? SlapButton::dpad_up
-                : slap == "back" ? SlapButton::back : slap == "none" ? SlapButton::none : SlapButton::dpad_down;
+                : slap == "back" ? SlapButton::back : slap == "none" ? SlapButton::none : slap == "down" ? SlapButton::dpad_down : SlapButton::left_bumper;
+            // The default moved from D-pad down to LB: a "down" saved before then was only the old default.
+            if (!o.contains("slap_lb") && s.settings.slap_button == SlapButton::dpad_down) s.settings.slap_button = SlapButton::left_bumper;
         }
         s.settings.hold_camera = flag(o, "hold_camera", d.hold_camera);
         s.settings.left_hand = false; // the left hand never held it properly: always the right
@@ -324,6 +327,7 @@ void save_store() {
         json["side_buttons"] = s.settings.side_buttons;
         json["side_hard"] = r.side_hard;
         json["slap_button"] = slap_button_name(s.settings.slap_button);
+        json["slap_lb"] = true;
         json["hold_camera"] = s.settings.hold_camera;
         json["camera_hand"] = s.settings.left_hand ? "left" : "right";
         json["show_cameras"] = s.settings.show_cameras;
@@ -600,6 +604,7 @@ std::uint16_t slap_bit(const State &s) {
         if (s.settings.mode == Mode::follow && s.settings.camera_cycle) return 0;
         return s.settings.stick_clicks ? right_thumb : std::uint16_t{0};
     case SlapButton::right_bumper: return right_shoulder;
+    case SlapButton::left_bumper: return left_shoulder;
     case SlapButton::dpad_down: return dpad_down;
     case SlapButton::dpad_up: return dpad_up;
     case SlapButton::back: return back_button;
@@ -1294,11 +1299,12 @@ std::string set_option(State &s, const std::string &key, const std::string &valu
         const auto v = lower(value);
         if (v == "rs" || v == "r3" || v == "rightstick") s.settings.slap_button = SlapButton::right_stick;
         else if (v == "rb" || v == "r1" || v == "bumper" || v == "rightbumper") s.settings.slap_button = SlapButton::right_bumper;
+        else if (v == "lb" || v == "l1" || v == "leftbumper") s.settings.slap_button = SlapButton::left_bumper;
         else if (v == "down" || v == "dpaddown") s.settings.slap_button = SlapButton::dpad_down;
         else if (v == "up" || v == "dpadup") s.settings.slap_button = SlapButton::dpad_up;
         else if (v == "back" || v == "view" || v == "select") s.settings.slap_button = SlapButton::back;
         else if (v == "none" || v == "off") s.settings.slap_button = SlapButton::none;
-        else return "error: slapbutton is rs, rb, down, up, back or none.";
+        else return "error: slapbutton is lb, rb, rs, down, up, back or none.";
         changed(s);
         return std::string("slap button = ") + slap_button_name(s.settings.slap_button);
     }

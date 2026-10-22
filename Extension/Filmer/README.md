@@ -28,7 +28,7 @@ skate. filmed the way a skater with a VX1000 films a line.
   it whips back before a trick leaves the frame. It keeps to whichever side you choose (Side: Auto,
   Left, Right, or a bindable swap). Film yourself, or anyone in the session
   (`filmer subject <name>`). Click the left stick to send it over to your other side (left / right), where it stays; the slap button
-  (D-pad down by default, CONTROLS tab) slaps the lens.
+  (LB by default, CONTROLS tab) slaps the lens.
 - **You film** (`filmer mode film`): your skater is the filmer. The left stick rides; the right
   stick points the camera (the game stops seeing it, so no flicks while you film). The aim assist
   keeps a friend in frame (the closest one ahead, or `filmer target <name>`) and the stick shifts
@@ -135,7 +135,7 @@ the palm is on the glass and overshoots as it comes off, and the clip ends. Clip
   moves you. The nametags over the others are off while you film (**Hide nametags**, `filmer set hidenames`).
 - DEBUG shows what the Filmer costs a frame (milliseconds and questions to the game's collision);
   its questions are spread over frames, never asked in one burst.
-- The slap button (`filmer set slapbutton rs|rb|down|up|back|none`, CONTROLS tab; D-pad down by
+- The slap button (`filmer set slapbutton lb|rb|rs|down|up|back|none`, CONTROLS tab; LB by
   default). The right stick click is the camera cycle's while the Filmer follows with the cycle on.
 - Any time: bind **Filmer: slap the lens** in Settings > Binds, or `filmer slap`.
 
@@ -161,7 +161,7 @@ Filmer's own camera does not run in replays yet.
 | `filmer mode off\|follow\|film` | |
 | `filmer subject me\|<player>` | Whom the Filmer films |
 | `filmer target auto\|<player>` | Whom the assist frames while you film |
-| `filmer set <option> <value>` | `style auto\|behind\|side`, `lens fisheye\|long`, `slapbutton rs\|rb\|down\|up\|back\|none`, `distance`, `height`, `tilt`, `human`, `reaction`, `sensitivity`, `hold`, `bend`, `age`, `dropstrict`; switches `cycle`, `assist`, `invert`, `recenter`, `hidehud`, `stick`, `clicks`, `drops`, `lunge`, `look`, `anywhere`, `dropouts`, `headswitch`, `tracking`, `smear`, `iris`, `fisheye`, `bars`, `hood`, `grade`, `soft`, `scanlines`, `grain`, `date`, `viewfinder` |
+| `filmer set <option> <value>` | `style auto\|behind\|side`, `lens fisheye\|long`, `slapbutton lb\|rb\|rs\|down\|up\|back\|none`, `distance`, `height`, `tilt`, `human`, `reaction`, `sensitivity`, `hold`, `bend`, `age`, `dropstrict`; switches `cycle`, `assist`, `invert`, `recenter`, `hidehud`, `stick`, `clicks`, `drops`, `lunge`, `look`, `anywhere`, `dropouts`, `headswitch`, `tracking`, `smear`, `iris`, `fisheye`, `bars`, `hood`, `grade`, `soft`, `scanlines`, `grain`, `date`, `viewfinder` |
 | `filmer plant [on\|off]` | The Filmer stops and films from where it is, or rides again |
 | `filmer slap` | End the clip |
 | `filmer clips` | This session's clips |
