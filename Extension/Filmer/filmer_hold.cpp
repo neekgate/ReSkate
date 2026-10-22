@@ -454,16 +454,23 @@ Held hold_one(std::span<Bone> pose, const Goal &goal) noexcept {
     Vec3 side = sub(s, w[chest].position);
     side[1] = 0.0f;
     side = unit(side, {goal.hand == Hand::left ? -1.0f : 1.0f, 0, 0});
+    // (Forward for the elbow: the way the arm reaches, level; reaching nearly straight up it has
+    // almost none, and would flip about, so it leans on the way the camera points then.)
+    const Vec3 front = level_heading(goal.aim);
     Vec3 ahead{direction[0], 0.0f, direction[2]};
-    ahead = unit(ahead, cross(side, {0, 1, 0}));
+    const float reach_level = length(ahead);
+    ahead = add(ahead, scaled(front, std::max(0.0f, 0.6f - reach_level)));
+    ahead = unit(ahead, front);
     Vec3 pole = add(add(scaled(side, 0.8f), Vec3{0.0f, -0.45f, 0.0f}), scaled(ahead, -0.35f));
     {
-        // Held up high (pointed at the sky, above the head): the elbow hangs down and a little in
-        // front, tucked by the face, not winged out to the side.
-        const float raised = std::clamp((rotate(aim, {0.0f, 0.0f, -1.0f})[1] - 0.3f) / 0.45f, 0.0f, 1.0f);
-        if (raised > 0.0f) {
-            const Vec3 tucked_pole = add(add(scaled(side, 0.25f), Vec3{0.0f, -0.9f, 0.0f}), scaled(ahead, 0.3f));
-            pole = add(scaled(pole, 1.0f - raised), scaled(tucked_pole, raised));
+        // Raised (up to the eye, up over the head at the sky): the elbow comes round to the front and
+        // a little out, as an arm does lifting something up in front of the face, gradually with the
+        // aim; never back behind the shoulder, never winged straight out.
+        const float lifted = std::clamp((rotate(aim, {0.0f, 0.0f, -1.0f})[1] - 0.1f) / 0.8f, 0.0f, 1.0f);
+        const float ease_in = lifted * lifted * (3.0f - 2.0f * lifted);
+        if (ease_in > 0.0f) {
+            const Vec3 lifted_pole = add(add(scaled(side, 0.55f), Vec3{0.0f, -0.2f, 0.0f}), scaled(front, 0.8f));
+            pole = add(scaled(pole, 1.0f - ease_in), scaled(lifted_pole, ease_in));
         }
     }
     pole = sub(pole, scaled(direction, dot(pole, direction)));
