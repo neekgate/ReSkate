@@ -499,11 +499,15 @@ private:
     // Grinding: how far round from behind they ride beside you (a little back of or ahead of you).
     float grind_angle_{90.0f};
     float grind_side_{};
+    bool grind_side_due_{};
     bool grind_down_checked_{}, grind_follow_down_{}; // a downrail: stopped at its top, or down it with you
     double side_switch_until_{-1.0};
     bool sprinting_{}; // pushing hard to get up beside you
     float turn_rate_{}, last_heading_yaw_{};
-    double turning_since_{-1.0}; // how sharply you are turning (radians a second) // sent to your other side: over there quickly
+    double turning_since_{-1.0};
+    float recent_speed_{}; // your pace lately (easing down slowly)
+    float zoom_rate_{};    // the zoom rocker's pace now (log of the zoom a second)
+    bool halt_for_grind_{}, halt_grind_zoom_rolled_{}; // stopped at the top of a rail you grind down // how sharply you are turning (radians a second) // sent to your other side: over there quickly
     double drift_done_at_{-1.0};
     bool drift_over_{};
     double placed_at_{-100.0}, losing_since_{-1.0}, stuck_since_{-1.0};

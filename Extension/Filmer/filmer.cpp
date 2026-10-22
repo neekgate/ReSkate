@@ -88,6 +88,8 @@ struct State {
     // Which byte of the game's screen data says a menu is full screen (-1: not known yet, so every
     // menu keeps the Filmer filming). `filmer set menuflag <byte>` for testing.
     int menu_fullscreen_offset{-1};
+    std::uint64_t marker_until{};    // D-pad up (back to the marker): its menu flag is no menu till then
+    std::uint16_t menu_previous_buttons{};
     std::array<std::uint8_t, 128> menu_bytes{};
     bool menu_bytes_have{};
     std::uint64_t menu_bytes_at{};
@@ -648,8 +650,17 @@ void watch_game_menus(State &s, std::uintptr_t base, std::uint64_t ticks) {
         s.radial_open = s.menu_paused = false;
     } else {
         const auto ui = multiplayer::sample_game_ui_state(base);
-        s.radial_open = ui.in_menu;
-        s.menu_paused = ui.in_menu && s.menu_fullscreen_offset >= 0 && ui.raw_valid &&
+        // D-pad up (back to your marker) puts nothing full screen up, though the game's menu flag
+        // comes on for it: for a few seconds after it, the flag is not a menu.
+        {
+            std::uint16_t buttons = 0;
+            if (overlay::GamepadValues pad; DingoSDKOverlayReadGamepad(&pad)) buttons = pad.buttons;
+            if ((buttons & dpad_up) && !(s.menu_previous_buttons & dpad_up)) s.marker_until = ticks + 3000;
+            s.menu_previous_buttons = buttons;
+        }
+        const bool in_menu = ui.in_menu && ticks >= s.marker_until;
+        s.radial_open = in_menu;
+        s.menu_paused = in_menu && s.menu_fullscreen_offset >= 0 && ui.raw_valid &&
                         ui.raw[static_cast<std::size_t>(s.menu_fullscreen_offset)] != 0;
         if (s.menu_paused) s.radial_open = false;
         // (Research, DEBUG: the menu data's bytes that changed while a menu was up, so the flag that
@@ -660,7 +671,7 @@ void watch_game_menus(State &s, std::uintptr_t base, std::uint64_t ticks) {
                 std::string changed;
                 for (std::size_t i = 0; i < ui.raw.size(); ++i)
                     if (ui.raw[i] != s.menu_bytes[i]) changed += std::format("{}{}:{}>{}", changed.empty() ? "" : " ", i, s.menu_bytes[i], ui.raw[i]);
-                s.menu_bytes_note = std::format("menu {}: {}", ui.in_menu ? "up" : "down", changed);
+                s.menu_bytes_note = std::format("menu {}{}: {}", ui.in_menu ? "up" : "down", ticks < s.marker_until ? " (marker)" : "", changed);
                 say(logging::Level::info, "Filmer: game menu data changed (" + s.menu_bytes_note + ")");
                 s.view_due = true;
             }

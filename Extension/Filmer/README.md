@@ -56,7 +56,9 @@ skate. filmed the way a skater with a VX1000 films a line.
 - **Turns**: they carve with you, as hard as a skater can, without having to push to turn (only to
   go faster), and through a held carve they keep to the inside of it, close to you, rather than round
   the outside falling back, riding your line's own curve, out from it square to it and closer the
-  sharper you turn. No swapping sides mid-turn.
+  sharper you turn, their idea of the way you are heading keeping up with you closely. No swapping
+  sides mid-turn. Knocked back by something they brush, or dropped behind, they push hard to get back.
+  They cut back in only when you are a good way off and out of sight, never with you in view.
 - **Ollies after you**: something low you ollied over (a bin, a hurdle, a kerb-high box, up to knee
   high) or a gap you ollied (landing level or up onto something higher), it ollies too, near where you
   popped: a jolt, the camera up quickly over it and back down.
@@ -82,7 +84,8 @@ skate. filmed the way a skater with a VX1000 films a line.
   you, pushing hard from the moment you lock in. The camera comes up to about the board's height on
   the rail, a touch over it. Whether it stops where the grind starts and films you along it goes by
   how long the thing is (looked along for its end): a long downrail 6 times in 10, anything under about
-  4 m 3 times in 10, a long flat one never. Ollie up onto something
+  4 m 3 times in 10, a long flat one never; and with a slope beside it on their side (a rail down a
+  bank) always down it with you. Stopped at the top of one, the zoom onto you is only now and then. Ollie up onto something
   low and wide (a ledge, a manual pad, up to about 0.8 m) and it ollies up after you, on your line,
   camera going up with it, rides it, and comes down off the end after you, or stops at the end if
   that drop is too high to huck; the board sits in the
@@ -143,7 +146,7 @@ the palm is on the glass and overshoots as it comes off, and the clip ends. Clip
 - While the Filmer has the camera the game's Start (pause) and View / Back (replay) buttons are off.
 - A game menu up (the phone's radial menu and the rest, told from the game's own menu flag, not from
   buttons): the Filmer keeps filming, the game's interface shows over the picture without the VX look
-  drawn over it, and the pad is the game's until it closes. Full-screen menus are to give the camera
+  drawn over it, and the pad is the game's until it closes. (D-pad up, back to your marker, is no menu.) Full-screen menus are to give the camera
   back until they close once the game's flag for them is pinned down (DEBUG shows the menu data that
   changes; `filmer set menuflag <byte>` to try one).
 - Boost while filming: B by default (**Filmer: boost** in Settings > Binds, `filmer boost`): a Forward
