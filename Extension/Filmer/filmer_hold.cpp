@@ -335,8 +335,8 @@ Held hold_one(std::span<Bone> pose, const Goal &goal) noexcept {
         // The back over the camera as it goes down with the aim, a little at level, more aimed down;
         // the head down to its screen the same way, a touch at level (not buried in it), more as it
         // goes down; aimed up, the head back to look up at it.
-        const float amount = goal.hunch * std::clamp(0.45f - pitch * 0.7f, 0.2f, 1.2f) * body_weight * (1.0f - up_t);
-        const float look = (std::clamp(0.2f - pitch * 0.45f, 0.1f, 0.65f) * body_weight * (1.0f - up_t) - up_t * std::min(pitch, 1.2f) * 0.45f * body_weight);
+        const float amount = goal.hunch * std::clamp(0.45f - pitch * (pitch < 0.0f ? 0.55f : 0.7f), 0.2f, 1.2f) * body_weight * (1.0f - up_t);
+        const float look = (std::clamp(0.2f - pitch * (pitch < 0.0f ? 0.18f : 0.45f), 0.1f, 0.65f) * body_weight * (1.0f - up_t) - up_t * std::min(pitch, 1.2f) * 0.45f * body_weight);
         // Up to the eye: the shoulders turn a little, the holding arm's shoulder coming forward, so
         // the arm reaches out in front of the face to the viewfinder.
         float shoulders = 0.0f;
@@ -383,7 +383,7 @@ Held hold_one(std::span<Bone> pose, const Goal &goal) noexcept {
             // turns.)
             const float pointing_y = std::clamp(rotate(aim, {0.0f, 0.0f, -1.0f})[1], -1.0f, 1.0f);
             const float up_part = std::max(pointing_y, 0.0f), down_part = std::max(-pointing_y, 0.0f);
-            const float height = -below_shoulder - 0.13f * (1.0f - up_part) + 0.55f * up_part - 0.3f * down_part;
+            const float height = -below_shoulder - 0.13f * (1.0f - up_part) + 0.55f * up_part - 0.45f * down_part;
             const float reach_out = (min_reach_out + 0.08f * (1.0f - up_part)) * (1.0f - 0.35f * toward_side) * (1.0f - 0.55f * up_part) * (1.0f - 0.15f * down_part);
             const Vec3 across = cross({0.0f, 1.0f, 0.0f}, ahead);
             const float lateral = std::clamp(dot(sub(lens, s), across), -0.3f, 0.3f);
