@@ -50,7 +50,6 @@ void note_remote_pose(std::uint64_t id, const multiplayer::Pose &pose) noexcept;
 
 struct Options {
     bool show_others = true;  // the cameras in other filmers' hands
-    bool stand_in = false;    // a stand-in prop when the camera's model is not loaded
     std::string blueprint;    // the camera's model; empty: the default
 };
 // Client thread, every frame while in a level (`in_level`) and after the Filmer's tick: hooks the

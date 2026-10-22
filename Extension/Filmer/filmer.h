@@ -62,26 +62,21 @@ struct Settings {
     bool hide_hud = true;   // hide the game's interface while filming
     bool take_stick = true; // film mode: keep the right stick from the game
     bool hide_nametags = true; // film mode: no nametags over the others while you film
-    // follow mode: the left stick's click is the filmer's (switch side, left / right; on the tripod, set
-    // it down where you stand), kept from the game while following.
+    // follow mode: the left stick's click is the filmer's (switch side, left / right), kept from the
+    // game while following.
     bool stick_clicks = true;
     // follow: whom the AI films (0: you). film: whom the assist frames (0: whoever is closest ahead).
     std::uint64_t subject{}, target{};
     // The camera in your hand (filmer_held.h). You film: your arm holds it out where the lens is, and
     // the others see it there (they need this build).
-    bool hold_camera = true;
     bool left_hand = false;   // which hand holds it
     bool show_cameras = true; // the cameras in other filmers' hands
-    bool stand_in = false;    // a traffic cone when the camera's model is not built
-    bool camera_worn = false; // you wear the camcorder cosmetic (hand wear): the hand turns to aim it, no model is placed
     std::string camera_item;  // that cosmetic, put in your hand while you film (filmer_outfit.h); empty: the default
     std::string camera_slot;  // the outfit slot that carries it ("hand", "eyewear"); empty: hand
-    bool crouch = true;       // you film: your skater crouches, on the board and off it
-    float crouch_depth = 0.12f; // how far the hips go down (metres)
-    float hunch_degrees = 40.0f;
-    bool two_hands = true;    // the other hand holds the camera too, from the side and underneath
-    bool still_body = true;   // on foot: the back, neck and head held still (the game's idle fidgets do not show)
-    bool hide_board = true;   // on foot: the board out of sight while you film // how far the back curls over toward the camera, the head looking down at it
+    // You film: the camcorder is always worn in the hand and held in both, the skater crouched and
+    // hunched over it (on foot: the upper body still, the board out of sight).
+    float crouch_depth = 0.22f; // how far the hips go down (metres)
+    float hunch_degrees = 60.0f; // how far the back curls over toward the camera
     std::string camera_model; // the camera model's blueprint; empty: reskate/filmer/vx1000
 };
 

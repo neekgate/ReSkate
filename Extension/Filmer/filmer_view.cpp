@@ -38,7 +38,6 @@ const char *mode_name(Mode mode) noexcept {
     switch (mode) {
     case Mode::follow: return "follow";
     case Mode::film: return "film";
-    case Mode::tripod: return "tripod";
     case Mode::off: break;
     }
     return "off";

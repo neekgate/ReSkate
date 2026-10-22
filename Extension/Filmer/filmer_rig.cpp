@@ -138,8 +138,6 @@ void Rig::reset() noexcept {
     rest_next_check_ = 0.0;
     rolling_stop_ = stop_due_ = framed_ = pan_active_ = false;
     stop_lift_ = stop_lift_rate_ = 0.0f;
-    tracking_ = false; // (the tripod stays where it was set down)
-    lost_since_ = -1.0;
 }
 
 void Rig::set_planted(bool planted) noexcept {
@@ -151,7 +149,7 @@ void Rig::set_planted(bool planted) noexcept {
     planted_ = planted;
     edge_ = false;
     // Stair stop: still rolling, they brake to a halt (short of a drop ahead) instead of stopping dead.
-    rolling_stop_ = planted && stair_style_ && operator_have_ && flat_length(operator_velocity_) > 0.3f;
+    rolling_stop_ = planted && operator_have_ && flat_length(operator_velocity_) > 0.3f;
     stop_due_ = rolling_stop_;
     if (!planted) framed_ = pan_active_ = composing_ = false;
 }
@@ -290,7 +288,6 @@ void Rig::ease_zoom(float dt, const RigSettings &s) noexcept {
 }
 
 bool Rig::stationary() const noexcept {
-    if (tripod_mode_) return tripod_have_;
     if (filming_) return self_.have && flat_length(self_.velocity) < 0.5f;
     return operator_have_ && ((planted_ && !rolling_stop_) || (halt_ != Halt::none && halt_stopped_));
 }
@@ -298,16 +295,7 @@ bool Rig::stationary() const noexcept {
 void Rig::look(float right, float down) noexcept {
     // (You filming: the mouse aims whether you stand, walk or ride; WASD moves you as ever.)
     if ((!stationary() && !filming_) || !std::isfinite(right) || !std::isfinite(down)) return;
-    if (tripod_mode_) {
-        // Turning the tripod head: its resting framing too, while it is not panning with anyone.
-        if (!tracking_) {
-            rest_yaw_ = wrap_angle(rest_yaw_ - right);
-            rest_pitch_ = std::clamp(rest_pitch_ - down, -1.35f, 1.35f);
-        }
-        aim_.yaw = wrap_angle(aim_.yaw - right);
-        aim_.pitch = std::clamp(aim_.pitch - down, -1.35f, 1.35f);
-        aim_.yaw_rate = aim_.pitch_rate = 0.0f;
-    } else if (filming_) {
+    if (filming_) {
         // As the right stick does: the framing's offset (the assist keeps framing them past it).
         offset_yaw_ = wrap_angle(offset_yaw_ - right);
         offset_pitch_ = std::clamp(offset_pitch_ - down, -1.2f, 1.2f);
@@ -1243,8 +1231,6 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
     dt = std::clamp(dt, 0.0f, 0.1f);
     begin_tick(now);
     filming_ = framing_ = false;
-    tripod_mode_ = false;
-    stair_style_ = s.stop_style == StopStyle::stair;
     slam_zoom_ = s.slam_zoom;
     stop_zoom_ = s.stop_zoom;
     huck_ = drop_height_for(s.drop_strictness);
@@ -2601,7 +2587,7 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
     if (operator_floor_ - lens_floor_seen_ > 0.25f || joining_) settled_until_ = now + 3.0;
     lens_floor_seen_ = operator_floor_;
     // Stair stop: once stopped the camera rises a little, to see over the lip and down the set.
-    spring(stop_lift_, stop_lift_rate_, stair_style_ && framed_ ? std::clamp(s.stop_lift, 0.0f, 1.5f) : 0.0f, 0.0f, 4.0f, 1.0f, dt);
+    spring(stop_lift_, stop_lift_rate_, framed_ ? std::clamp(s.stop_lift, 0.0f, 1.5f) : 0.0f, 0.0f, 4.0f, 1.0f, dt);
     // You going down off something they will not huck (in the air over it, or landed below it): the
     // camera rises as you fall, the further below the more, so you never drop out of the frame.
     if ((halt_ == Halt::drop || holding_ || edge_) && operator_have_) {
@@ -2942,14 +2928,14 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
     edge_locked_ = false;
     const bool frozen = planted_ && !rolling_stop_;
     // Stair stop: from the moment you stop them (still braking), they stop following you and frame the set.
-    const bool framing_set = stair_style_ && planted_;
+    const bool framing_set = planted_;
     if (!frozen && !framing_set) {
         framed_ = pan_active_ = composing_ = false;
     } else if (!framed_ && aim_.have) {
         // Just stopped. Stair stop: the shot is framed on the set (the way they were riding), tilted
         // down over it from where the camera will have risen to, and held.
         framed_ = true;
-        if (stair_style_) {
+        {
             set_yaw_ = rolling_stop_ ? yaw_of(stop_dir_[0], stop_dir_[2]) : aim_.yaw;
             const Vec3 from = rolling_stop_ ? Vec3{stop_point_[0], eye[1], stop_point_[2]} : eye;
             pan_pitch_ = stair_pan_pitch(Vec3{from[0], from[1] + std::clamp(s.stop_lift, 0.0f, 1.5f), from[2]}, set_yaw_, aim_.pitch, operator_floor_);
@@ -3060,102 +3046,12 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
     return frame;
 }
 
-void Rig::place_tripod(const Vec3 &eye, float yaw, float pitch) noexcept {
-    if (!finite(eye) || !std::isfinite(yaw) || !std::isfinite(pitch)) return;
-    tripod_eye_ = eye;
-    rest_yaw_ = wrap_angle(yaw);
-    rest_pitch_ = std::clamp(pitch, -1.35f, 1.35f);
-    aim_ = {rest_yaw_, rest_pitch_, 0, 0, true};
-    tripod_have_ = true;
-    tracking_ = false;
-    lost_since_ = -1.0;
-    history_.clear();
-}
-
-void Rig::place_tripod_here(const Subject &self, const RigSettings &settings) noexcept {
-    if (!self.valid || !finite(self.position)) return;
-    const Vec3 &p = self.position;
-    float ground = root_known_ ? p[1] - root_above_ground_ : p[1];
-    if (cast_ && world_answers()) {
-        probe_budget_ += 2;
-        if (const auto g = ground_at(p[0], p[2], p[1]); g && *g <= p[1] + 0.2f && *g > p[1] - 2.0f) ground = *g;
-    }
-    const float fl = std::sqrt(self.facing[0] * self.facing[0] + self.facing[2] * self.facing[2]);
-    const float yaw = fl > 0.01f ? yaw_of(self.facing[0], self.facing[2]) : aim_.yaw;
-    place_tripod(Vec3{p[0], ground + std::clamp(settings.tripod_height, 0.1f, 2.5f), p[2]}, yaw, -0.06f);
-}
-
-// Tripod: the camera stays where it was set down. It holds its framing until the skater rides into
-// it, then pans and tilts with them as a filmer on a tripod head does (smooth, a beat late, no
-// handheld shake), and once it has lost them (out of sight, out of range) for a couple of seconds it
-// settles back to the framing it was set to.
-Frame Rig::tripod(double now, float dt, const Subject &subject, const RigSettings &s) {
-    dt = std::clamp(dt, 0.0f, 0.1f);
-    begin_tick(now);
-    filming_ = framing_ = false;
-    tripod_mode_ = true;
-    stair_style_ = false;
-    ff_have_ = false;
-    const bool have_subject = subject.valid && finite(subject.position);
-    if (have_subject) track(now, dt, subject, subject_, false, true);
-    ease_zoom(dt, s);
-    if (!tripod_have_) return {};
-    const Vec3 eye = tripod_eye_;
-    const float view = half_view(s);
-    const float across = std::atan(std::tan(view) * (4.0f / 3.0f)); // the 4:3 frame's half width
-    const float reaction = std::clamp(s.reaction, 0.0f, 1.0f);
-    if (have_subject && subject_.have) {
-        const Vec3 centre{subject_.position[0], world(subject_.position[1]) + 0.9f, subject_.position[2]};
-        const Vec3 to = sub(centre, eye);
-        const float distance = length(to);
-        const bool visible = distance < 60.0f && !(cast_ && blocked(eye, centre));
-        const float bearing = yaw_of(to[0], to[2]), rise = std::atan2(to[1], std::max(flat_length(to), 0.3f));
-        const bool in_frame = visible && std::abs(wrap_angle(bearing - aim_.yaw)) < across * 0.9f && std::abs(rise - aim_.pitch) < view * 0.95f;
-        if (!tracking_ && in_frame && s.tripod_track) {
-            tracking_ = true;
-            lost_since_ = -1.0;
-            history_.clear();
-        }
-        if (tracking_) {
-            if (visible) lost_since_ = -1.0;
-            else if (lost_since_ < 0) lost_since_ = now;
-            if (lost_since_ >= 0 && now - lost_since_ > 2.0) tracking_ = false;
-        }
-    } else {
-        tracking_ = false;
-    }
-    if (!s.tripod_track) tracking_ = false; // a locked-off shot
-    if (tracking_) {
-        const Vec3 now_point = aim_point(subject_, s);
-        history_.push_back({now, now_point});
-        while (!history_.empty() && now - history_.front().time > 0.6) history_.pop_front();
-        const Vec3 late = delayed_point(now, 0.05f + 0.15f * reaction);
-        const Vec3 to = sub(late, eye);
-        steer_aim(dt, yaw_of(to[0], to[2]), frame_pitch(eye, late, subject_.airborne, 0.0f, s), mix(8.0f, 4.0f, reaction), 1.0f);
-        // Never let them out of the frame sideways.
-        const Vec3 to_now = sub(now_point, eye);
-        const float dy = wrap_angle(yaw_of(to_now[0], to_now[2]) - aim_.yaw), limit = across * 0.85f;
-        if (std::abs(dy) > limit) aim_.yaw = wrap_angle(yaw_of(to_now[0], to_now[2]) - std::copysign(limit, dy));
-    } else {
-        steer_aim(dt, rest_yaw_, rest_pitch_, 2.5f, 1.0f); // back to its own framing, unhurried
-    }
-    float yaw = aim_.yaw, pitch = aim_.pitch, roll = 0.0f;
-    Vec3 lens = eye;
-    shake(now, 0.0f, std::clamp(s.human, 0.0f, 1.0f) * 0.12f, yaw, pitch, roll, lens);
-    Frame frame;
-    frame.camera = build(lens, yaw, std::clamp(pitch, -1.45f, 1.45f), roll);
-    frame.fov = render_fov(s.lens) / zoom_;
-    frame.valid = valid_camera(frame.camera);
-    return frame;
-}
-
 Frame Rig::film(double now, float dt, const Subject &self, const Subject *target, const StickInput &stick,
                 const RigSettings &s) {
     if (!self.valid || !finite(self.position)) return {};
     dt = std::clamp(dt, 0.0f, 0.1f);
     begin_tick(now);
     filming_ = true;
-    tripod_mode_ = false;
     track(now, dt, self, self_, false, true);
     const bool aiming_at = target && target->valid && finite(target->position);
     if (aiming_at) track(now, dt, *target, subject_, true, false);

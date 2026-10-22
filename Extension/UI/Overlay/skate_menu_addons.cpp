@@ -59,7 +59,7 @@ void all_addons(SkateMenu& menu, const Model& model) {
     addon_tile(menu, "addon-drone", "DRONE", "Fly an FPV drone from the free camera, or let it follow you and film your line.", nullptr, 0,
                addon_drone);
     if (console_style()) ImGui::SameLine(0, px(12));
-    addon_tile(menu, "addon-filmer", "FILMER", "Skate videos the VX1000 way: an AI filmer rides with you, you film a friend, or a tripod waits for you.",
+    addon_tile(menu, "addon-filmer", "FILMER", "Skate videos the VX1000 way: an AI filmer rides with you, or you film a friend.",
                nullptr, 0, addon_filmer);
     const auto& bb = model.board_break;
     addon_tile(menu, "addon-board-break", "BOARD BREAK", "Slams snap your board, boards wear out, and every crack has its sound.",

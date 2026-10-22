@@ -32,7 +32,10 @@ skate. filmed the way a skater with a VX1000 films a line.
 - **You film** (`filmer mode film`): your skater is the filmer. The left stick rides; the right
   stick points the camera (the game stops seeing it, so no flicks while you film). The aim assist
   keeps a friend in frame (the closest one ahead, or `filmer target <name>`) and the stick shifts
-  the framing. The slap button slaps the lens.
+  the framing. The slap button slaps the lens. Your skater always wears the camcorder and holds it
+  in both hands, crouched (Knee bend, 0.22 m) and hunched (Hunch, 60 deg) over it; on foot the upper
+  body holds still and the board is out of sight. The menu's tabs: FILMER, IN HAND, EFFECTS (the
+  look and the tape), CLIPS, CONTROLS, DEBUG.
 
 ## How the Filmer rides
 
@@ -102,10 +105,9 @@ skate. filmed the way a skater with a VX1000 films a line.
   and bins, moving over gradually.
 - **Hall of Meat** is switched off (and greyed out) while the Filmer films, and back on after.
 
-## Stopping, and the tripod
+## Stopping
 
-- **Stop style** (`filmer set stop instant|stair`): how the Filmer stops, with the left stick or at
-  a drop. Instant stops on the spot and holds the framing. Stair rolls to a halt short of the first
+- **Stopping** (the left stick, or at a drop): the Filmer rolls to a halt short of the first
   step (it looks along its line for the drop), rises a little (`filmer set lift`, 0.3 m) and pans
   down over the set or rail, still panning with you (never letting the set out of frame) until the
   framing settles, then holds it. Turn it after with the mouse.
@@ -114,13 +116,6 @@ skate. filmed the way a skater with a VX1000 films a line.
   (Ahead is gone: the Filmer never rides in front of you. Saved as ahead, it is out to the side.)
 - **Variety** (`filmer set distvariety|heightvariety 0..1`): the filmer drifts closer and further,
   lower and higher, slowly through a line.
-- **Tripod** (`filmer mode tripod`; `filmer tripod`, bindable): a camera set down where the Filmer's
-  camera is (stop the Filmer where you like first), or with `filmer tripod here` (or a left stick
-  click) where you stand, `tripodheight` above the ground, facing your way. It holds its framing until
-  the skater rides into it, pans with them like a tripod head while it can see them, and settles back
-  a couple of seconds after it loses them. Tracking can be switched off for a locked-off shot
-  (`filmer tripod track`, bindable). The mouse turns it while nobody is in frame; with the long
-  lens the wheel zooms.
 
 ## Cruise control, mouse look and zoom
 

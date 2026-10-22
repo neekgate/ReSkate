@@ -13,13 +13,13 @@ void register_filmer_commands(Commands &registry) {
     };
     const Verb verbs[]{
         {"status", "What the Filmer is doing", nullptr, false},
-        {"toggle", "Turn the Filmer on (as last used, or the mode given) or off", "[follow|film|tripod]", false},
-        {"mode", "off; follow: the Filmer (another skater) rides with a skater and films them; film: you film (right stick aims); tripod: a camera set down that pans with them in frame", "off|follow|film|tripod", false},
+        {"toggle", "Turn the Filmer on (as last used, or the mode given) or off", "[follow|film]", false},
+        {"mode", "off; follow: the Filmer (another skater) rides with a skater and films them; film: you film (right stick aims)", "off|follow|film", false},
         {"subject", "Whom the Filmer follows", "me|<player>", false},
         {"target", "Whom the assist frames while you film", "auto|<player>", false},
         {"set", "Change a Filmer option",
-         "style auto|behind|side|ahead, side auto|left|right|swap, cammodel <blueprint>|default, camitem <cosmetic>|default, camslot hand|eyewear|default, lens fisheye|long, stop instant|stair, slapbutton rs|rb|down|up|back|none, distance|height|tilt|human|reaction|sensitivity|hold|bend|age|gap|mousesens|lift|tripodheight|crouchdepth|hunch|distvariety|heightvariety <number>, "
-         "cycle|slamzoom|stopzoom|holdcam|cameras|standin|worn|crouch|twohands|still|hideboard|assist|invert|recenter|hidehud|stick|clicks|drops|lunge|cruise|mouse|track|look|anywhere|fisheye|bars|hood|grade|soft|scanlines|grain|date|viewfinder|"
+         "style auto|behind|side|ahead, side auto|left|right|swap, cammodel <blueprint>|default, camitem <cosmetic>|default, camslot hand|eyewear|default, lens fisheye|long, slapbutton rs|rb|down|up|back|none, distance|height|tilt|human|reaction|sensitivity|hold|bend|age|gap|mousesens|lift|crouchdepth|hunch|distvariety|heightvariety <number>, "
+         "cycle|slamzoom|stopzoom|cameras|assist|invert|recenter|hidehud|stick|clicks|drops|lunge|cruise|mouse|look|anywhere|fisheye|bars|hood|grade|soft|scanlines|grain|date|viewfinder|"
          "dropouts|headswitch|tracking|smear|iris 0|1",
          true},
         {"switchside", "The Filmer goes over to your other side (left / right) and keeps to it", nullptr, false},
@@ -27,7 +27,6 @@ void register_filmer_commands(Commands &registry) {
         {"boost", "While the Filmer has the camera: a Forward Boost (the Skater > CHEATS speed)", nullptr, false},
         {"clips", "The clips marked this session", nullptr, false},
         {"trace", "Record what the Filmer sees for 30 seconds (trace.csv), to send for tuning", nullptr, false},
-        {"tripod", "Set the tripod down where the camera is (or with here, where you stand) and film from it; track turns its panning on or off", "[here|track [on|off]]", false},
         {"angle", "The Filmer's angles: one held, or several Auto moves between", "next|auto|behind|side|ahead|toggle behind|side|ahead", false},
         {"cruise", "Film mode: ride at the speed that holds you behind the skater you frame", "[on|off]", false},
         {"zoom", "Long lens, while the camera is held still: zoom in, out or back to its widest", "in|out|reset", false},

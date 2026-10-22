@@ -499,7 +499,7 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool in_level, const Optio
         }
         if (!cameras.empty() || shown)
             multiplayer::tick_held_camera_models(base, client, cameras, options.blueprint.empty() ? multiplayer::held_camera_blueprint : options.blueprint,
-                                                 options.stand_in);
+                                                 false);
         shown = !cameras.empty();
     } catch (...) {}
 }
