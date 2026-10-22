@@ -15,9 +15,6 @@ inline constexpr std::uint32_t keyboard_binding_tag = 0x80000000u;
 inline constexpr std::uint32_t keyboard_chord_tag = 0x40000000u;
 // Yes and No in a server's vote until the player binds them otherwise: F1 and F2.
 inline constexpr std::uint32_t default_vote_yes_binding = keyboard_binding_tag | 0x70u, default_vote_no_binding = keyboard_binding_tag | 0x71u;
-// The Filmer's boost until the player binds it otherwise: B on the controller (taken from the game
-// only while the Filmer has the camera).
-inline constexpr std::uint32_t default_filmer_boost_binding = 0x2000u;
 // The Filmer's lens slap until the player binds it otherwise: LB (taken from the game only while the
 // Filmer has the camera).
 inline constexpr std::uint32_t default_lens_slap_binding = 0x0100u;
@@ -95,7 +92,7 @@ struct ControllerInput {
 struct ActionBind {
     std::string_view key, name, label, command;
 };
-inline constexpr std::array<ActionBind, 20> action_binds{{
+inline constexpr std::array<ActionBind, 19> action_binds{{
     {"reskate_menu", "reskatemenu", "Open the ReSkate menu", "menu"},
     {"first_person", "firstperson", "First person", "firstperson toggle"},
     {"hide_hud", "hidehud", "Hide HUD", "hideui toggle"},
@@ -108,7 +105,6 @@ inline constexpr std::array<ActionBind, 20> action_binds{{
     {"filmer", "filmer", "Filmer on / off", "filmer toggle"},
     {"lens_slap", "lensslap", "Filmer: slap the lens (end the clip)", "filmer slap"},
     {"filmer_switch_side", "filmerswitchside", "Filmer: switch side (left / right)", "filmer switchside"},
-    {"filmer_boost", "filmerboost", "Filmer: boost (while filming)", "filmer boost"},
     {"filmer_cruise", "filmercruise", "Filmer: cruise control on / off", "filmer cruise"},
     {"filmer_zoom_in", "filmerzoomin", "Filmer: zoom in (long lens, held still)", "filmer zoom in"},
     {"filmer_zoom_out", "filmerzoomout", "Filmer: zoom out (long lens, held still)", "filmer zoom out"},

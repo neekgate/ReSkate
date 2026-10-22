@@ -220,14 +220,13 @@ void filmer_page(SkateMenu &menu, const Model &, const CallbacksV3 &callbacks) {
     case 4: {
     begin_card(menu, "filmer-controls", "CONTROLLER", "The Filmer's buttons. Each is taken from the game only while the Filmer has the camera.");
     note("While the Filmer has the camera the game's Start (pause) and View / Back (replay) buttons are off, so a press does not pause the game or jump into the replay mid-shot.");
-    note("Boost: B by default while the Filmer has the camera (B is not the game's foot brake then). A Forward Boost at the speed set in Skater > CHEATS. Change its button in Settings > Binds (Filmer: boost).");
     filmer_toggle(menu, callbacks, "Filmer in the camera cycle", "The game's camera height button (click the right stick) goes high, low, ReSkate's first person (when it is in the cycle: Skater settings), then the Filmer filming you, and back to high.", "cycle", s.camera_cycle);
     note("Slap the lens: LB by default while the Filmer has the camera (LB is not the game's then). Change its button in Settings > Binds (Filmer: slap the lens).");
     filmer_toggle(menu, callbacks, "Side buttons (D-pad left / right)", "While the Filmer follows you: D-pad left sends them to your left, right to your right, and they keep to it, going round whatever is coming up on that side (so you choose the way round a bin or a wall). Press the same side again and they pick their own side again. The game does not get D-pad left and right while this is on.", "sidebuttons", s.side_buttons);
     if (s.side_buttons) note(r.side_hard ? (r.side == filmer::Side::left ? "Keeping to your left (D-pad left again: their choice)." : "Keeping to your right (D-pad right again: their choice).") : "Picking their own side.");
     filmer_toggle(menu, callbacks, "Left stick click", "While the Filmer follows: click the left stick to send them over to your other side (left, right), where they stay; if they had stopped by themselves (a drop, too far behind) they are straight back in behind you. The game does not get that click while this is on.", "clicks", s.stick_clicks);
     filmer_toggle(menu, callbacks, "Take the right stick (you film)", "Keep the right stick (and its click) from the game while you film. Off: it also flicks tricks.", "stick", s.take_stick);
-    note("Every Filmer action (on / off, slap, boost, switch side, next angle, zoom) can also go on any button in Settings > Binds.");
+    note("Every Filmer action (on / off, slap, switch side, next angle, zoom) can also go on any button in Settings > Binds.");
     end_card();
 
     begin_card(menu, "filmer-defaults", "START OVER", "Every Filmer setting back to how it comes.");

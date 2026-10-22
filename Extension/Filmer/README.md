@@ -155,9 +155,6 @@ the palm is on the glass and overshoots as it comes off, and the clip ends. Clip
   drawn over it, and the pad is the game's until it closes. (D-pad up, back to your marker, is no menu.) Full-screen menus are to give the camera
   back until they close once the game's flag for them is pinned down (DEBUG shows the menu data that
   changes; `filmer set menuflag <byte>` to try one).
-- Boost while filming: B by default (**Filmer: boost** in Settings > Binds, `filmer boost`): a Forward
-  Boost at the Skater > CHEATS speed. Its button is kept from the game (the foot brake) only while the
-  Filmer has the camera.
 - You film with keyboard and mouse: the mouse aims the camera whether you stand, walk or ride; WASD
   moves you. The nametags over the others are off while you film (**Hide nametags**, `filmer set hidenames`).
 - DEBUG shows what the Filmer costs a frame (milliseconds and questions to the game's collision);

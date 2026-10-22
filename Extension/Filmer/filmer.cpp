@@ -125,9 +125,9 @@ struct State {
     double cost_sum_ms{}, cost_max_ms{}, cost_since{};
     unsigned cost_frames{}, asked_max{}, asked_sum{};
     std::string cost_shown;
-    // The Filmer: boost bind (its buttons are kept from the game while filming), looked up now and then.
-    std::uint32_t boost_combo{default_filmer_boost_binding}, slap_combo{default_lens_slap_binding};
-    std::uint64_t boost_combo_at{};
+    // The Filmer: slap the lens bind (its button is kept from the game while filming), looked up now and then.
+    std::uint32_t slap_combo{default_lens_slap_binding};
+    std::uint64_t slap_combo_at{};
     bool lagging_shown{}, resting_shown{};
     bool holding{};                // the arm holds the camera out this tick (the camcorder goes in the hand)
     bool on_foot{};                // the skater is on foot (this tick)
@@ -642,9 +642,6 @@ void update_filter(State &s) {
     // The game's pause (Start / Menu) and replay (Back / View) are off while filming: a press there
     // would pause the game or jump into the replay mid-shot. (The ReSkate menu still opens.)
     if (s.held && s.settings.mode != Mode::off) mask |= static_cast<std::uint16_t>(start_button | back_button);
-    // The boost's button (B unless bound otherwise, Settings > Binds): the boost's while filming, so
-    // not the game's (foot brake) then; a keyboard key is left alone.
-    if (s.held && s.settings.mode != Mode::off && valid_controller_combo(s.boost_combo)) mask |= static_cast<std::uint16_t>(s.boost_combo & 0xffffu);
     // The phone out: the pad is the game's (to pick in it and put it away), all but Start and Back.
     if (s.radial_open) {
         mask &= static_cast<std::uint16_t>(start_button | back_button);
@@ -834,13 +831,12 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready, bool camera_ph
             s.chosen_target = 0;
             s.view_due = true;
         }
-        if (ticks >= s.boost_combo_at) {
-            s.boost_combo_at = ticks + 1000;
+        if (ticks >= s.slap_combo_at) {
+            s.slap_combo_at = ticks + 1000;
             const auto binds = dingosdk::local_profile_controller_bindings();
             if (binds.available)
                 for (std::size_t i = 0; i < action_binds.size(); ++i)
-                    if (action_binds[i].key == "filmer_boost") s.boost_combo = binds.action_combos[i];
-                    else if (action_binds[i].key == "lens_slap") s.slap_combo = binds.action_combos[i];
+                    if (action_binds[i].key == "lens_slap") s.slap_combo = binds.action_combos[i];
         }
         watch_game_menus(s, base, ticks);
         update_filter(s);
@@ -1348,14 +1344,6 @@ std::string command(std::string_view verb, const std::vector<std::string> &argum
         s.view_due = true;
     } else if (verb == "set") {
         reply = arguments.size() >= 2 ? set_option(s, lower(arg(0)), arg(1)) : "error: filmer set <option> <value>.";
-    } else if (verb == "boost") {
-        // Only while filming (its button is the game's otherwise): the cheats' Forward Boost.
-        if (s.settings.mode != Mode::off && s.held && !s.radial_open) {
-            console::request_debug(overlay::DebugAction::add_forward_velocity);
-            reply = "Boost.";
-        } else {
-            reply = ""; // (B is the game's then: nothing to say)
-        }
     } else if (verb == "switchside") {
         reply = s.settings.mode == Mode::follow ? switch_side(s) : "The Filmer is not following anyone.";
     } else if (verb == "angle") {
