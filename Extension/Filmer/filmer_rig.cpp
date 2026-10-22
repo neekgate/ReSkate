@@ -1369,8 +1369,8 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
                         rise_index = i;
                         break;
                     }
-                } else if (y < lvl - 0.35f) {
-                    lvl = y;
+                } else {
+                    lvl = y; // rolling along: up and down slopes and banks, and down off things
                 }
                 jumped = false;
             }
