@@ -1329,10 +1329,33 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
         fresh_ = false;
     }
     const float sign = side_lock_ != 0.0f ? side_lock_ : (angle_target_ >= 0 ? 1.0f : -1.0f);
+    // How sharply you are turning (radians a second), eased.
+    {
+        const float yaw_now = yaw_of(t.heading_x, t.heading_z);
+        if (dt > 0.0f && speed > 1.0f) turn_rate_ += (wrap_angle(yaw_now - last_heading_yaw_) / dt - turn_rate_) * ease(dt, 0.15f);
+        else turn_rate_ *= 0.9f;
+        last_heading_yaw_ = yaw_now;
+    }
     // The angle round the skater: behind, or out to the side, never in front (a filmer behind you on
     // their board, not riding backwards ahead of you).
     switch (s.style) {
     case Style::automatic: {
+        // (Mid-turn is no time to swap sides, a ride across behind you as you carve: after it.)
+        if (std::abs(turn_rate_) > 0.25f && now >= angle_until_ - 0.05) angle_until_ = now + 0.5;
+        // A carve held for a moment: to the inside of it (the short way round, close to you), as a
+        // filmer does, instead of out round the outside of it falling back.
+        if (std::abs(turn_rate_) > 0.35f) {
+            if (turning_since_ < 0.0) turning_since_ = now;
+        } else if (std::abs(turn_rate_) < 0.2f) {
+            turning_since_ = -1.0;
+        }
+        if (turning_since_ >= 0.0 && now - turning_since_ > 0.35 && side_lock_ == 0.0f && !grinding_ && speed > 2.0f) {
+            const float inside = turn_rate_ > 0.0f ? 1.0f : -1.0f;
+            if (angle_target_ * inside < 0.0f) {
+                angle_target_ = std::abs(angle_target_) * inside;
+                angle_until_ = std::max(angle_until_, now + 2.0);
+            }
+        }
         const std::uint8_t allowed = static_cast<std::uint8_t>(s.angles & (angle_behind | angle_side));
         choose_angle(now, speed, allowed ? allowed : angle_behind);
         if (side_lock_ != 0.0f) angle_target_ = std::abs(angle_target_) * side_lock_;
@@ -2255,9 +2278,24 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
             if (on_foot_) gain = gap_now > gap_meant - 0.2f ? 4.5f : 0.5f;
             if (floor_rate_ < -0.3f) gain = std::max(gain, std::min(-floor_rate_ * 2.0f, 4.0f));
             if (lunge_ > 0.1f || settling_in) gain = std::max(6.0f, push);
-            const float allowed = (faster > 0.0f ? gain : 7.0f) * dt;
-            const float changed = flat_length(change);
-            if (changed > allowed) v = add(velocity_before, scale(change, allowed / changed));
+            // Speeding up takes a push; turning does not: a carve, the board leaning over, about as
+            // hard as a skater can carve (the way they ride turned without losing pace). So the change
+            // is split: along the way they ride (faster or slower), and across it (turning).
+            const float was = flat_length(velocity_before);
+            if (was > 0.5f) {
+                const Vec3 along_dir = scale(velocity_before, 1.0f / was);
+                const float along = change[0] * along_dir[0] + change[2] * along_dir[2];
+                Vec3 across = sub(change, scale(along_dir, along));
+                across[1] = 0.0f;
+                const float along_ok = std::clamp(along, -7.0f * dt, (faster > 0.0f ? gain : 7.0f) * dt);
+                const float across_len = flat_length(across), across_most = 9.0f * dt;
+                if (across_len > across_most) across = scale(across, across_most / across_len);
+                v = add(velocity_before, add(scale(along_dir, along_ok), across));
+            } else {
+                const float allowed = (faster > 0.0f ? gain : 7.0f) * dt;
+                const float changed = flat_length(change);
+                if (changed > allowed) v = add(velocity_before, scale(change, allowed / changed));
+            }
             const float top = on_foot_ ? std::max(4.0f, speed * 1.15f + 0.8f) : std::max(7.5f, speed * 1.2f + 1.0f);
             if (const float v_now = flat_length(v); v_now > top) v = scale(v, top / v_now);
             // Easing off before a drop they may have to stop at (and at a jump you are still in the air

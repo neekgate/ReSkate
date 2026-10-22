@@ -15,6 +15,7 @@
 #include "Extension/Multiplayer/Net/protocol.h"
 #include "Extension/Profile/local_profile_runtime.h"
 #include "Engine/Game/UI/game_view.h"
+#include "Extension/Multiplayer/Hud/game_ui_state.h"
 #include "Engine/Game/Multiplayer/session_tools.h"
 #include "Extension/Skater/client_source_spawn.h"
 #include "Extension/Trainer/trainer.h"
@@ -47,6 +48,7 @@ constexpr std::uint16_t dpad_up = 0x0001, dpad_down = 0x0002, start_button = 0x0
 constexpr std::uint16_t dpad_left = 0x0004, dpad_right = 0x0008;
 constexpr std::uint16_t right_shoulder = 0x0200; // XINPUT_GAMEPAD_RIGHT_SHOULDER: RB
 constexpr std::uint16_t left_shoulder = 0x0100;  // XINPUT_GAMEPAD_LEFT_SHOULDER: LB
+constexpr std::uint16_t a_button = 0x1000, b_button = 0x2000;
 constexpr float stick_dead_zone = 7849.0f;     // the left stick's XInput dead zone: fine framing
 constexpr std::size_t clip_history = 20;
 
@@ -79,6 +81,13 @@ struct State {
     Mode running = Mode::off;      // the mode the rig last ran in: a change starts it afresh
     bool held{};                   // the camera is the Filmer's
     bool hid_hud{};                // the Filmer hid the game's interface and shows it again when it stops
+    // The game's phone (the radial menu a D-pad press brings up: music and the rest): the Filmer keeps
+    // filming, but the game's interface is shown, the look is not drawn over it and the pad is the
+    // game's until it is put away. A full game menu (throwdowns, quick drops, playlists, the pause
+    // menu): the camera is the game's until it closes.
+    bool radial_open{}, menu_paused{}, ui_shown_for_menu{};
+    std::uint64_t radial_since{}, radial_closing_at{};
+    std::uint16_t radial_previous{};
     ULONGLONG next_attempt{};      // after a refused activation, the next try
     std::string status = "Off.", last;
     std::string subject_name;
@@ -584,6 +593,7 @@ void publish_view(State &s) {
     next->cruise_note = s.cruise_note;
     next->holdtest = s.holdtest;
     next->held_status = s.held_status;
+    next->look_held = s.radial_open;
     next->rolling_since = s.rolling_since;
     next->slap_at = s.slap_at;
     next->slap_serial = s.slap_serial;
@@ -622,8 +632,47 @@ std::uint16_t slap_bit(const State &s) {
 // the filmer's (stop and film / ride again), and the slap button is the slap's. With the camera cycle
 // on, the right stick's click stays the game's (its camera height button), so the cycle goes on.
 // Nothing is taken while the Filmer does not have the camera.
+// The game's phone menu and its full menus, while filming (see State).
+void watch_game_menus(State &s, std::uintptr_t base, std::uint64_t ticks) {
+    const bool filming = s.settings.mode != Mode::off;
+    std::uint16_t buttons = 0;
+    if (overlay::GamepadValues pad; filming && DingoSDKOverlayReadGamepad(&pad)) buttons = pad.buttons;
+    const auto pressed = static_cast<std::uint16_t>(buttons & ~s.radial_previous);
+    s.radial_previous = buttons;
+    const bool was_radial = s.radial_open, was_paused = s.menu_paused;
+    if (!filming) {
+        s.radial_open = s.menu_paused = false;
+    } else {
+        // A D-pad press the game gets (not one the Filmer has taken): the phone comes out.
+        const auto taken = masked_buttons.load(std::memory_order_acquire);
+        const auto dpad_game = static_cast<std::uint16_t>((dpad_up | dpad_down | dpad_left | dpad_right) & ~taken);
+        if (!s.radial_open && (pressed & dpad_game)) {
+            s.radial_open = true;
+            s.radial_since = ticks;
+            s.radial_closing_at = 0;
+        } else if (s.radial_open) {
+            // Put away: picked (A) or backed out of (B), a moment for the phone to go; or long open.
+            if (!s.radial_closing_at && (pressed & (a_button | b_button))) s.radial_closing_at = ticks + 700;
+            if ((s.radial_closing_at && ticks >= s.radial_closing_at) || ticks - s.radial_since > 15000) s.radial_open = false;
+        }
+        // A full menu of the game's: the camera is the game's until it closes.
+        s.menu_paused = multiplayer::sample_game_ui_state(base).in_menu;
+        if (s.menu_paused) s.radial_open = false;
+    }
+    // The game's interface, hidden while filming: shown while either is up, hidden again after.
+    const bool want_ui = s.radial_open || s.menu_paused;
+    if (want_ui && s.hid_hud && !s.ui_shown_for_menu) {
+        console::request_debug(overlay::DebugAction::set_game_ui_hidden, false);
+        s.ui_shown_for_menu = true;
+    } else if (!want_ui && s.ui_shown_for_menu) {
+        if (s.hid_hud) console::request_debug(overlay::DebugAction::set_game_ui_hidden, true);
+        s.ui_shown_for_menu = false;
+    }
+    if (was_radial != s.radial_open || was_paused != s.menu_paused) s.view_due = true;
+}
+
 void update_filter(State &s) {
-    const bool film = s.settings.mode == Mode::film && s.held && s.settings.take_stick;
+    bool film = s.settings.mode == Mode::film && s.held && s.settings.take_stick;
     const bool clicks = (s.settings.mode == Mode::follow || s.settings.mode == Mode::tripod) && s.held && s.settings.stick_clicks;
     std::uint16_t mask = 0;
     if (film) mask |= right_thumb;
@@ -636,6 +685,11 @@ void update_filter(State &s) {
     // The boost's button (B unless bound otherwise, Settings > Binds): the boost's while filming, so
     // not the game's (foot brake) then; a keyboard key is left alone.
     if (s.held && s.settings.mode != Mode::off && valid_controller_combo(s.boost_combo)) mask |= static_cast<std::uint16_t>(s.boost_combo & 0xffffu);
+    // The phone out: the pad is the game's (to pick in it and put it away), all but Start and Back.
+    if (s.radial_open) {
+        mask &= static_cast<std::uint16_t>(start_button | back_button);
+        film = false;
+    }
     take_right_stick.store(film, std::memory_order_release);
     masked_buttons.store(mask, std::memory_order_release);
     const bool wanted = s.settings.mode != Mode::off;
@@ -663,6 +717,11 @@ std::string switch_side(State &s) {
 // The pad: the slap button slaps the lens; the left stick's click, following, stops the filmer to
 // film from where they stand, and sends them riding again (on the tripod, sets it down where you are).
 void read_clicks(State &s, std::uint16_t buttons) {
+    // (The phone out: its buttons are the game's, not the Filmer's.)
+    if (s.radial_open) {
+        s.previous_buttons = buttons;
+        return;
+    }
     const auto pressed = [&](std::uint16_t button) { return button && (buttons & button) != 0 && (s.previous_buttons & button) == 0; };
     const bool follow = s.settings.mode == Mode::follow && s.settings.stick_clicks;
     const bool tripod = s.settings.mode == Mode::tripod && s.settings.stick_clicks;
@@ -829,12 +888,17 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready, bool camera_ph
                 for (std::size_t i = 0; i < action_binds.size(); ++i)
                     if (action_binds[i].key == "filmer_boost") s.boost_combo = binds.action_combos[i];
         }
+        watch_game_menus(s, base, ticks);
         update_filter(s);
         // You filming: the nametags off while you have the camera (if you want them off).
         multiplayer::nametags_held_off.store(s.settings.mode == Mode::film && s.held && s.settings.hide_nametags, std::memory_order_relaxed);
         if (s.settings.mode == Mode::off) {
             release_camera(s, base, client, camera_phase);
             set_status(s, s.held ? "Giving the camera back." : "Off.");
+        } else if (s.menu_paused) {
+            // A game menu (throwdowns, quick drops, playlists): its own camera until it closes.
+            release_camera(s, base, client, camera_phase);
+            set_status(s, "Paused: a game menu is open (filming again when you leave it).");
         } else if (!ready || !self.valid) {
             // Loading, a menu, a cutscene: the game's camera, until the skater is back.
             release_camera(s, base, client, camera_phase);
@@ -1425,7 +1489,7 @@ std::string command(std::string_view verb, const std::vector<std::string> &argum
         reply = arguments.size() >= 2 ? set_option(s, lower(arg(0)), arg(1)) : "error: filmer set <option> <value>.";
     } else if (verb == "boost") {
         // Only while filming (its button is the game's otherwise): the cheats' Forward Boost.
-        if (s.settings.mode != Mode::off && s.held) {
+        if (s.settings.mode != Mode::off && s.held && !s.radial_open) {
             console::request_debug(overlay::DebugAction::add_forward_velocity);
             reply = "Boost.";
         } else {

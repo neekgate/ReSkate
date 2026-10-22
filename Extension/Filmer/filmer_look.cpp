@@ -375,14 +375,14 @@ std::uint32_t bits(float value) { return std::bit_cast<std::uint32_t>(value); }
 
 bool pending() noexcept {
     const auto v = view();
-    return v && v->settings.look.enabled && (v->active || v->settings.look.anywhere);
+    return v && v->settings.look.enabled && (v->active || v->settings.look.anywhere) && !v->look_held;
 }
 
 bool record(const Target &t) noexcept {
     try {
         auto &g = graphics();
         const auto v = view();
-        if (!v || !v->settings.look.enabled || !(v->active || v->settings.look.anywhere) || g.failed) return false;
+        if (!v || !v->settings.look.enabled || !(v->active || v->settings.look.anywhere) || v->look_held || g.failed) return false;
         if (!t.device || !t.commands || !t.buffer || !t.srvs) return false;
         if (!build_pipeline(t.device, t.format) || !ensure_copy(t) || !ensure_iris(t)) return false;
         const auto &look = v->settings.look;

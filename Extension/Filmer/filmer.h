@@ -112,6 +112,7 @@ struct View {
     bool resting{};           // follow: you are still, and the filmer has settled behind you
     std::string doing;        // follow: what the filmer is up to
     std::string cost;         // follow: what it costs a frame (DEBUG)
+    bool look_held{};         // the game's phone (radial) menu is up: the look is not drawn over it
     bool at_edge{};           // follow: the filmer stopped where you went over a drop or a gap
     float camera_fov{};       // the game camera's own field of view (the look over another camera)
     bool stationary{};        // the camera is held still: mouse look and the long lens's zoom work

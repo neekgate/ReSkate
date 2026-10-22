@@ -501,7 +501,9 @@ private:
     float grind_side_{};
     bool grind_down_checked_{}, grind_follow_down_{}; // a downrail: stopped at its top, or down it with you
     double side_switch_until_{-1.0};
-    bool sprinting_{}; // pushing hard to get up beside you // sent to your other side: over there quickly
+    bool sprinting_{}; // pushing hard to get up beside you
+    float turn_rate_{}, last_heading_yaw_{};
+    double turning_since_{-1.0}; // how sharply you are turning (radians a second) // sent to your other side: over there quickly
     double drift_done_at_{-1.0};
     bool drift_over_{};
     double placed_at_{-100.0}, losing_since_{-1.0}, stuck_since_{-1.0};
