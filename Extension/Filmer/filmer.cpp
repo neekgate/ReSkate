@@ -41,7 +41,7 @@ namespace {
 constexpr unsigned filter_slot = 1;            // DingoSDKOverlaySetGamepadFilterSlot
 constexpr std::uint16_t left_thumb = 0x0040;   // XINPUT_GAMEPAD_LEFT_THUMB: following, stop and film / ride again
 constexpr std::uint16_t right_thumb = 0x0080;  // XINPUT_GAMEPAD_RIGHT_THUMB: the stick click (the camera cycle, or a slap)
-constexpr std::uint16_t dpad_up = 0x0001, dpad_down = 0x0002, back_button = 0x0020;
+constexpr std::uint16_t dpad_up = 0x0001, dpad_down = 0x0002, start_button = 0x0010, back_button = 0x0020;
 constexpr std::uint16_t dpad_left = 0x0004, dpad_right = 0x0008;
 constexpr std::uint16_t right_shoulder = 0x0200; // XINPUT_GAMEPAD_RIGHT_SHOULDER: RB
 constexpr float stick_dead_zone = 7849.0f;     // the left stick's XInput dead zone: fine framing
@@ -206,6 +206,7 @@ void load_store() {
         r.lunge = flag(o, "lunge", d.rig.lunge);
         r.slam_zoom = flag(o, "slam_zoom", d.rig.slam_zoom);
         r.stop_zoom = flag(o, "stop_zoom", d.rig.stop_zoom);
+        r.drop_strictness = clamped(o, "drop_strictness", d.rig.drop_strictness, 0.0f, 1.0f);
         s.meat_restore = flag(o, "meat_restore", false);
         s.settings.stick_clicks = flag(o, "stick_clicks", d.stick_clicks);
         s.settings.camera_cycle = flag(o, "camera_cycle", d.camera_cycle);
@@ -308,6 +309,7 @@ void save_store() {
         json["lunge"] = r.lunge;
         json["slam_zoom"] = r.slam_zoom;
         json["stop_zoom"] = r.stop_zoom;
+        json["drop_strictness"] = r.drop_strictness;
         json["meat_restore"] = s.meat_restore;
         json["stick_clicks"] = s.settings.stick_clicks;
         json["camera_cycle"] = s.settings.camera_cycle;
@@ -608,6 +610,9 @@ void update_filter(State &s) {
     if (clicks) mask |= left_thumb;
     if (s.settings.mode == Mode::follow && s.held && s.settings.side_buttons) mask |= static_cast<std::uint16_t>(dpad_left | dpad_right);
     if (s.held && s.settings.mode != Mode::off) mask |= slap_bit(s);
+    // The game's pause (Start / Menu) and replay (Back / View) are off while filming: a press there
+    // would pause the game or jump into the replay mid-shot. (The ReSkate menu still opens.)
+    if (s.held && s.settings.mode != Mode::off) mask |= static_cast<std::uint16_t>(start_button | back_button);
     take_right_stick.store(film, std::memory_order_release);
     masked_buttons.store(mask, std::memory_order_release);
     const bool wanted = s.settings.mode != Mode::off;
@@ -1269,6 +1274,7 @@ std::string set_option(State &s, const std::string &key, const std::string &valu
     if (key == "lunge") return toggle(r.lunge);
     if (key == "slamzoom") return toggle(r.slam_zoom);
     if (key == "stopzoom") return toggle(r.stop_zoom);
+    if (key == "dropstrict") return real(r.drop_strictness, 0.0f, 1.0f);
     if (key == "cruise") return toggle(r.cruise);
     if (key == "stop") {
         const auto v = lower(value);

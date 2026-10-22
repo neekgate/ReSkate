@@ -134,8 +134,8 @@ void filmer_page(SkateMenu &menu, const Model &, const CallbacksV3 &callbacks) {
         filmer_slider(menu, callbacks, "Height variety", "Through a line the camera goes lower and higher, slowly (a filmer crouching, then standing a little). 0: always the height above; 1: a foot or so either way.", "heightvariety", r.height_variety, 0.0f, 1.0f, "%.2f");
         filmer_toggle(menu, callbacks, "Lunge", "Fisheye, flatground tricks only: as you pop, the filmer pushes in a little closer and lower, then eases back out as you land.", "lunge", r.lunge, r.lens == filmer::Lens::fisheye);
         filmer_toggle(menu, callbacks, "Stop at drops", "Ollie (or flip) off something too high for a filmer to huck after you (a big set, a gap down) and they ease off as you near it, stop at the top and film you land and ride away; push, step off the board or click the left stick (switching side) and they are back behind you. Rolling down a hill or a bank, they follow.", "drops", r.stop_at_drops);
-        filmer_toggle(menu, callbacks, "Slam zoom", "When you slam the filmer stops, still filming you; if you are small in the frame, the lens slowly zooms in until you fill it.", "slamzoom", r.slam_zoom);
-        filmer_toggle(menu, callbacks, "Zoom when they stop", "Now and then (about 4 times in 10) when the filmer stops by themselves, a slight zoom onto you.", "stopzoom", r.stop_zoom);
+        filmer_toggle(menu, callbacks, "Slam zoom", "When you slam the filmer stops, still filming you; if you are in the shot with nothing in the way and small in the frame, the lens slowly zooms in until you fill it.", "slamzoom", r.slam_zoom);
+        filmer_toggle(menu, callbacks, "Zoom when they stop", "When the filmer stops at the top of a drop and you skate away (in the shot, nothing in the way), they zoom in on you, slowly, before panning down and letting the shot go.", "stopzoom", r.stop_zoom);
         field(menu, "Stop", "How the filmer stops at a drop. Instant: on the spot, holding the framing. Stair: rolls to a halt short of the first step, rises a little and pans down to take in the whole set or rail.");
         int stop = static_cast<int>(r.stop_style);
         if (choice(menu, "stop", stop, {"Instant", "Stair"})) filmer_command(menu, callbacks, stop ? "set stop stair" : "set stop instant");
@@ -234,6 +234,7 @@ void filmer_page(SkateMenu &menu, const Model &, const CallbacksV3 &callbacks) {
     }
     case 4: {
     begin_card(menu, "filmer-controls", "CONTROLLER", "The Filmer's buttons. Each is taken from the game only while the Filmer has the camera.");
+    note("While the Filmer has the camera the game's Start (pause) and View / Back (replay) buttons are off, so a press does not pause the game or jump into the replay mid-shot.");
     filmer_toggle(menu, callbacks, "Filmer in the camera cycle", "The game's camera height button (click the right stick) goes high, low, ReSkate's first person (when it is in the cycle: Skater settings), then the Filmer filming you, and back to high.", "cycle", s.camera_cycle);
     field(menu, "Slap the lens", "The button that slaps the lens to end a clip, while the Filmer has the camera. The right stick's click is the camera cycle's while the Filmer follows you with the cycle on, so it only slaps when you film or with the cycle off.");
     {
@@ -255,6 +256,15 @@ void filmer_page(SkateMenu &menu, const Model &, const CallbacksV3 &callbacks) {
     if (s.mode == filmer::Mode::follow) {
         info(menu, "Filmer", v.planted ? std::string("stopped by you") : v.doing.empty() ? std::string("riding with you") : v.doing);
         info(menu, "Angle", std::format("{:.0f} deg round you", v.auto_angle));
+    }
+    {
+        // Drop = stop, for tuning: how high a drop (and how long in the air off it) before the Filmer
+        // stops at the top rather than hucking it after you.
+        filmer_slider(menu, callbacks, "Drop stop:  lenient  <---------------->  strict",
+                      "Lenient: they follow you down higher drops and longer sets. Strict: they stop at smaller drops.", "dropstrict",
+                      r.drop_strictness, 0.0f, 1.0f, "%.2f");
+        note(std::format("{:.2f}: stops at drops over {:.2f} m, once you have been in the air {:.2f} s off one (fallen below where you took off).",
+                         r.drop_strictness, filmer::drop_height_for(r.drop_strictness), filmer::drop_airtime_for(r.drop_strictness)).c_str());
     }
     if (primary_button(menu, v.holdtest ? "STOP THE HOLD TEST" : "HOLD TEST: SEE YOUR SKATER HOLD IT"))
         filmer_command(menu, callbacks, std::string("holdtest ") + (v.holdtest ? "off" : "on"));

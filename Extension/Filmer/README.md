@@ -42,19 +42,30 @@ skate. filmed the way a skater with a VX1000 films a line.
   between it and you, nothing in the way (a trunk, a post, a building's corner). With something
   coming up on its side the clearest side and distance win, held a few seconds and carved back from
   slowly. Steering round things looks up to about 3 m ahead; through a tight gap it follows your own
-  line. Wedged with nowhere clear, it waits for you to come past, then pushes off after you. It never
-  gets closer than about a metre and a bit, and speeds up a push at a time.
+  line. Wedged with nowhere clear, it waits for you to come past, then pushes off after you. With no
+  room behind you (a wall at your back at the top of a ramp), it goes out to your side, the side with
+  more room. It never gets closer than about a metre and a bit, and speeds up a push at a time. On
+  foot it runs with you, close behind, quicker round corners, with the camera up a little (off its
+  board too).
+- **Ollies after you**: something low you ollied over (a bin, a hurdle, a kerb-high box, up to knee
+  high) or a gap you ollied (landing level or up onto something higher), it ollies too, near where you
+  popped: a jolt, the camera up quickly over it and back down.
 - **Stops by itself** (still panning with you; the left stick puts it straight back behind you in
   one click): a drop too high to huck after an ollie or a flip (it eases off as you near a lip, so
-  it stops gently; rolling down a hill or bank it follows), too far behind, a slam (and, with **Slam
-  zoom**, a slow zoom in if you are small in the frame), or wedged. About 4 times in 10 a stop brings a
-  slight zoom onto you (**Zoom when they stop**). Once you are well away the pan drifts on the way you
-  went and down. Drop and too-far stops end when you push or step off the board.
+  it stops gently; rolling down a hill or bank, or over a gap onto something level or higher, it
+  follows), too far behind, a slam (and, with **Slam zoom**, a slow zoom in if you are in the shot
+  with nothing in the way and small in the frame), or wedged. How high a drop it hucks goes by
+  **Drop stop** (DEBUG tab, lenient to strict, `filmer set dropstrict 0..1`; 0.6 by default: drops
+  over about 1.9 m, once you have been falling below your takeoff for about half a second; strict, 1.1 m).
+  Stopped at a drop with you skating away, it zooms in on you (**Zoom when they stop**) at a hand's
+  pace, quicker the further off you are; once the zoom is in, the pan drifts on the way you went and
+  down to the ground, and then it cuts back in behind you. Drop and too-far stops also end when you
+  push or step off the board.
 - **Height**: hidden behind a wall or fence you went over, after a beat the camera rises gently,
   as far as it takes to see you, up to about 7 ft. On a ledge you ollied onto it either rides round
   beside it or (a low one, now and then) waits at its foot with the camera raised over it. On a
-  grind it rides out wider with the camera up a little, or pushes well out for the landing, or, on a
-  slow grind with time to get there, races to the far end for a low angle. Ollie up onto something
+  grind it pushes up beside you (level, a touch back or a touch ahead, picked each grind) with the
+  camera up a little. Ollie up onto something
   low and wide (a ledge, a manual pad, up to about 0.8 m) and it ollies up after you, on your line,
   camera going up with it, rides it, and comes down off the end after you, or stops at the end if
   that drop is too high to huck; the board sits in the
@@ -112,6 +123,7 @@ Slap the lens: a hand rushes at it and smacks it, the camera is knocked back, th
 the palm is on the glass and overshoots as it comes off, and the clip ends. Clips are numbered and logged with their end time in
 `%LOCALAPPDATA%\ReSkate\filmer\clips.csv`, so they can be found in a recording.
 
+- While the Filmer has the camera the game's Start (pause) and View / Back (replay) buttons are off.
 - The slap button (`filmer set slapbutton rs|rb|down|up|back|none`, CONTROLS tab; D-pad down by
   default). The right stick click is the camera cycle's while the Filmer follows with the cycle on.
 - Any time: bind **Filmer: slap the lens** in Settings > Binds, or `filmer slap`.
@@ -138,7 +150,7 @@ Filmer's own camera does not run in replays yet.
 | `filmer mode off\|follow\|film` | |
 | `filmer subject me\|<player>` | Whom the Filmer films |
 | `filmer target auto\|<player>` | Whom the assist frames while you film |
-| `filmer set <option> <value>` | `style auto\|behind\|side`, `lens fisheye\|long`, `slapbutton rs\|rb\|down\|up\|back\|none`, `distance`, `height`, `tilt`, `human`, `reaction`, `sensitivity`, `hold`, `bend`, `age`; switches `cycle`, `assist`, `invert`, `recenter`, `hidehud`, `stick`, `clicks`, `drops`, `lunge`, `look`, `anywhere`, `dropouts`, `headswitch`, `tracking`, `smear`, `iris`, `fisheye`, `bars`, `hood`, `grade`, `soft`, `scanlines`, `grain`, `date`, `viewfinder` |
+| `filmer set <option> <value>` | `style auto\|behind\|side`, `lens fisheye\|long`, `slapbutton rs\|rb\|down\|up\|back\|none`, `distance`, `height`, `tilt`, `human`, `reaction`, `sensitivity`, `hold`, `bend`, `age`, `dropstrict`; switches `cycle`, `assist`, `invert`, `recenter`, `hidehud`, `stick`, `clicks`, `drops`, `lunge`, `look`, `anywhere`, `dropouts`, `headswitch`, `tracking`, `smear`, `iris`, `fisheye`, `bars`, `hood`, `grade`, `soft`, `scanlines`, `grain`, `date`, `viewfinder` |
 | `filmer plant [on\|off]` | The Filmer stops and films from where it is, or rides again |
 | `filmer slap` | End the clip |
 | `filmer clips` | This session's clips |

@@ -84,7 +84,21 @@ struct RigSettings {
     // follow: the side was chosen with the side buttons: kept to whatever (the way round something
     // is then yours to pick), not just preferred.
     bool side_hard = false;
+    // follow: how readily they stop at a drop, 0 lenient (they follow you down big drops and long
+    // sets) to 1 strict (they stop at drops a little over a metre). Debug tab.
+    float drop_strictness = 0.6f;
 };
+
+// The drop they stop at (metres below your takeoff) and how long you have to be in the air first
+// (seconds), for a strictness (RigSettings::drop_strictness).
+inline float drop_height_for(float strictness) noexcept {
+    const float k = strictness < 0.0f ? 0.0f : strictness > 1.0f ? 1.0f : strictness;
+    return 3.0f + (1.1f - 3.0f) * k;
+}
+inline float drop_airtime_for(float strictness) noexcept {
+    const float k = strictness < 0.0f ? 0.0f : strictness > 1.0f ? 1.0f : strictness;
+    return 0.8f + (0.25f - 0.8f) * k;
+}
 
 // The highest a filmer hucks down after you (metres, from where they ride to where you landed):
 // bigger than that (a big set, a gap down) they stop at the top and film you from there.
@@ -398,7 +412,9 @@ private:
     float auto_zoom_{1.0f};
     int zoom_kind_{};          // 0 none, 1 the slam's, 2 a stop's
     double zoom_since_{};
-    bool auto_zooming_{};      // the zoom is the filmer's own, still on its way
+    bool auto_zooming_{};
+    bool zoom_moving_{};       // that zoom still turning (not yet where it is going)
+    float zoom_pace_{0.3f};    // how quickly it turns (further off: quicker, never a snap)      // the zoom is the filmer's own, still on its way
     // The skater pushing (their speed rising on the flat), stepping off the board.
     float speed_slow_{}, skater_accel_{}, last_speed_{};
     bool pushed_{}, was_on_foot_{}, on_foot_{};
@@ -438,6 +454,23 @@ private:
     float focus_y_{};
     bool focus_have_{};
     float floor_rate_{};
+    // The drop they stop at and the airtime first (from the strictness).
+    float huck_{1.1f}, drop_airtime_{0.4f};
+    // Off the board (you): they hop off theirs, the camera up a little, and run with you.
+    float foot_lift_{}, foot_lift_rate_{};
+    // The filmer's own ollie over something low you ollied over: until when, how high, and when it
+    // popped (the camera's jolt); planned once it is coming up.
+    double ollie_until_{-1.0}, ollie_pop_at_{-100.0}, ollie_next_{};
+    float ollie_h_{}, ollie_base_{}, ollie_land_{}, ollie_span_{};
+    bool ollie_gap_{}; // (over a gap you ollied, not something in the way)
+    Vec3 ollie_dir_{};
+    bool ollie_planned_{};
+    Vec3 ollie_at_{};
+    bool ollied_over(const Vec3 &at, const Vec3 &way) const; // you were in the air over `at` (within a metre and a half)
+    // Grinding: how far round from behind they ride beside you (a little back of or ahead of you).
+    float grind_angle_{90.0f};
+    double drift_done_at_{-1.0};
+    bool drift_over_{};
     double placed_at_{-100.0}, losing_since_{-1.0}, stuck_since_{-1.0};
     // You standing still: the spot the filmer settled on, where you were then, and how long the spot
     // has been bad (in front of you, or out of sight of you).
