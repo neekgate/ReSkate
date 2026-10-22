@@ -260,6 +260,7 @@ void filmer_page(SkateMenu &menu, const Model &, const CallbacksV3 &callbacks) {
         info(menu, "Filmer", v.planted ? std::string("stopped by you") : v.doing.empty() ? std::string("riding with you") : v.doing);
         info(menu, "Angle", std::format("{:.0f} deg round you", v.auto_angle));
         if (!v.cost.empty()) info(menu, "Cost", v.cost);
+        if (!v.menu_note.empty()) info(menu, "Game menu", v.menu_note);
     }
     {
         // Drop = stop, for tuning: how high a drop (and how long in the air off it) before the Filmer

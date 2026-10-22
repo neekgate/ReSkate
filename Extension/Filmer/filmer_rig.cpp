@@ -1508,6 +1508,7 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
     bool edge = false;
     holding_ = false;
     Vec3 base{};
+    std::size_t base_index = static_cast<std::size_t>(-1);
     float offset = 0.0f;
     bool raised_ahead = false;
     std::size_t rise_index = 0;
@@ -1535,6 +1536,7 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
             ground = trail_[index].at[1];
         }
         base = trail_[index].at;
+        base_index = index;
         offset = d * std::sin(angle);
         // Level with you or a touch ahead (beside you through a grind): on along your way from there.
         if (d * std::cos(angle) < 0.25f) base = add(base, scale(heading, 0.25f - d * std::cos(angle)));
@@ -1690,8 +1692,19 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
             }
         }
         side_keep_ += (keep_target - side_keep_) * ease(dt, 0.5f);
-        raised_offset_ = offset * side_keep_;
-        desired = add(Vec3{base[0], ground, base[2]}, scale(side, raised_offset_));
+        // Through a turn they ride your line's own curve, close in on it: out from it square to the
+        // way your line went there (not the way you face now, which throws them wide), and closer to
+        // it the sharper you are turning, so they carve the same turn you do.
+        Vec3 out_dir = side;
+        if (base_index < trail_.size() && trail_.size() >= 3) {
+            const std::size_t i0 = base_index > 0 ? base_index - 1 : 0, i1 = std::min(base_index + 1, trail_.size() - 1);
+            const Vec3 tangent = sub(trail_[i1].at, trail_[i0].at);
+            const float tl = flat_length(tangent);
+            if (tl > 0.05f) out_dir = Vec3{tangent[2] / tl, 0.0f, -tangent[0] / tl};
+        }
+        const float tighten = std::clamp((std::abs(turn_rate_) - 0.15f) * 1.2f, 0.0f, 0.65f);
+        raised_offset_ = offset * side_keep_ * (1.0f - tighten);
+        desired = add(Vec3{base[0], ground, base[2]}, scale(out_dir, raised_offset_));
     }
     if (post_ != Post::none) desired = Vec3{post_spot_[0], ground, post_spot_[2]};
     // You standing still: the filmer settles on a spot behind you (left or right of your back, straight

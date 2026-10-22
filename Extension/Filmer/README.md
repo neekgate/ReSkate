@@ -55,7 +55,8 @@ skate. filmed the way a skater with a VX1000 films a line.
   your level and you in sight.
 - **Turns**: they carve with you, as hard as a skater can, without having to push to turn (only to
   go faster), and through a held carve they keep to the inside of it, close to you, rather than round
-  the outside falling back. No swapping sides mid-turn.
+  the outside falling back, riding your line's own curve, out from it square to it and closer the
+  sharper you turn. No swapping sides mid-turn.
 - **Ollies after you**: something low you ollied over (a bin, a hurdle, a kerb-high box, up to knee
   high) or a gap you ollied (landing level or up onto something higher), it ollies too, near where you
   popped: a jolt, the camera up quickly over it and back down.
@@ -140,10 +141,11 @@ the palm is on the glass and overshoots as it comes off, and the clip ends. Clip
 `%LOCALAPPDATA%\ReSkate\filmer\clips.csv`, so they can be found in a recording.
 
 - While the Filmer has the camera the game's Start (pause) and View / Back (replay) buttons are off.
-- The game's phone (the radial menu a D-pad press brings up: music and the rest): the Filmer keeps
-  filming, the game's interface shows over the picture without the VX look drawn over it, and the
-  pad is the game's until you put the phone away (A or B). A full game menu (throwdowns, quick drops,
-  playlists): the game's own camera until you leave it, then the Filmer films again.
+- A game menu up (the phone's radial menu and the rest, told from the game's own menu flag, not from
+  buttons): the Filmer keeps filming, the game's interface shows over the picture without the VX look
+  drawn over it, and the pad is the game's until it closes. Full-screen menus are to give the camera
+  back until they close once the game's flag for them is pinned down (DEBUG shows the menu data that
+  changes; `filmer set menuflag <byte>` to try one).
 - Boost while filming: B by default (**Filmer: boost** in Settings > Binds, `filmer boost`): a Forward
   Boost at the Skater > CHEATS speed. Its button is kept from the game (the foot brake) only while the
   Filmer has the camera.

@@ -48,7 +48,6 @@ constexpr std::uint16_t dpad_up = 0x0001, dpad_down = 0x0002, start_button = 0x0
 constexpr std::uint16_t dpad_left = 0x0004, dpad_right = 0x0008;
 constexpr std::uint16_t right_shoulder = 0x0200; // XINPUT_GAMEPAD_RIGHT_SHOULDER: RB
 constexpr std::uint16_t left_shoulder = 0x0100;  // XINPUT_GAMEPAD_LEFT_SHOULDER: LB
-constexpr std::uint16_t a_button = 0x1000, b_button = 0x2000;
 constexpr float stick_dead_zone = 7849.0f;     // the left stick's XInput dead zone: fine framing
 constexpr std::size_t clip_history = 20;
 
@@ -86,8 +85,13 @@ struct State {
     // game's until it is put away. A full game menu (throwdowns, quick drops, playlists, the pause
     // menu): the camera is the game's until it closes.
     bool radial_open{}, menu_paused{}, ui_shown_for_menu{};
-    std::uint64_t radial_since{}, radial_closing_at{};
-    std::uint16_t radial_previous{};
+    // Which byte of the game's screen data says a menu is full screen (-1: not known yet, so every
+    // menu keeps the Filmer filming). `filmer set menuflag <byte>` for testing.
+    int menu_fullscreen_offset{-1};
+    std::array<std::uint8_t, 128> menu_bytes{};
+    bool menu_bytes_have{};
+    std::uint64_t menu_bytes_at{};
+    std::string menu_bytes_note;
     ULONGLONG next_attempt{};      // after a refused activation, the next try
     std::string status = "Off.", last;
     std::string subject_name;
@@ -594,6 +598,7 @@ void publish_view(State &s) {
     next->holdtest = s.holdtest;
     next->held_status = s.held_status;
     next->look_held = s.radial_open;
+    next->menu_note = s.menu_bytes_note;
     next->rolling_since = s.rolling_since;
     next->slap_at = s.slap_at;
     next->slap_serial = s.slap_serial;
@@ -632,34 +637,38 @@ std::uint16_t slap_bit(const State &s) {
 // the filmer's (stop and film / ride again), and the slap button is the slap's. With the camera cycle
 // on, the right stick's click stays the game's (its camera height button), so the cycle goes on.
 // Nothing is taken while the Filmer does not have the camera.
-// The game's phone menu and its full menus, while filming (see State).
+// The game's menus while filming (see State), from the game's own menu flag, not from buttons: one is
+// up and the Filmer keeps filming, with the game's interface shown, no look drawn over it and the pad
+// the game's. A full-screen menu (told apart once its flag is known: menu_fullscreen_offset) gives the
+// camera back until it closes.
 void watch_game_menus(State &s, std::uintptr_t base, std::uint64_t ticks) {
     const bool filming = s.settings.mode != Mode::off;
-    std::uint16_t buttons = 0;
-    if (overlay::GamepadValues pad; filming && DingoSDKOverlayReadGamepad(&pad)) buttons = pad.buttons;
-    const auto pressed = static_cast<std::uint16_t>(buttons & ~s.radial_previous);
-    s.radial_previous = buttons;
-    const bool was_radial = s.radial_open, was_paused = s.menu_paused;
+    const bool was_up = s.radial_open, was_paused = s.menu_paused;
     if (!filming) {
         s.radial_open = s.menu_paused = false;
     } else {
-        // A D-pad press the game gets (not one the Filmer has taken): the phone comes out.
-        const auto taken = masked_buttons.load(std::memory_order_acquire);
-        const auto dpad_game = static_cast<std::uint16_t>((dpad_up | dpad_down | dpad_left | dpad_right) & ~taken);
-        if (!s.radial_open && (pressed & dpad_game)) {
-            s.radial_open = true;
-            s.radial_since = ticks;
-            s.radial_closing_at = 0;
-        } else if (s.radial_open) {
-            // Put away: picked (A) or backed out of (B), a moment for the phone to go; or long open.
-            if (!s.radial_closing_at && (pressed & (a_button | b_button))) s.radial_closing_at = ticks + 700;
-            if ((s.radial_closing_at && ticks >= s.radial_closing_at) || ticks - s.radial_since > 15000) s.radial_open = false;
-        }
-        // A full menu of the game's: the camera is the game's until it closes.
-        s.menu_paused = multiplayer::sample_game_ui_state(base).in_menu;
+        const auto ui = multiplayer::sample_game_ui_state(base);
+        s.radial_open = ui.in_menu;
+        s.menu_paused = ui.in_menu && s.menu_fullscreen_offset >= 0 && ui.raw_valid &&
+                        ui.raw[static_cast<std::size_t>(s.menu_fullscreen_offset)] != 0;
         if (s.menu_paused) s.radial_open = false;
+        // (Research, DEBUG: the menu data's bytes that changed while a menu was up, so the flag that
+        // tells a full-screen menu from the phone can be found.)
+        if (ui.raw_valid && ticks >= s.menu_bytes_at) {
+            s.menu_bytes_at = ticks + 250;
+            if (s.menu_bytes_have && ui.raw != s.menu_bytes) {
+                std::string changed;
+                for (std::size_t i = 0; i < ui.raw.size(); ++i)
+                    if (ui.raw[i] != s.menu_bytes[i]) changed += std::format("{}{}:{}>{}", changed.empty() ? "" : " ", i, s.menu_bytes[i], ui.raw[i]);
+                s.menu_bytes_note = std::format("menu {}: {}", ui.in_menu ? "up" : "down", changed);
+                say(logging::Level::info, "Filmer: game menu data changed (" + s.menu_bytes_note + ")");
+                s.view_due = true;
+            }
+            s.menu_bytes = ui.raw;
+            s.menu_bytes_have = true;
+        }
     }
-    // The game's interface, hidden while filming: shown while either is up, hidden again after.
+    // The game's interface, hidden while filming: shown while a menu is up, hidden again after.
     const bool want_ui = s.radial_open || s.menu_paused;
     if (want_ui && s.hid_hud && !s.ui_shown_for_menu) {
         console::request_debug(overlay::DebugAction::set_game_ui_hidden, false);
@@ -668,7 +677,7 @@ void watch_game_menus(State &s, std::uintptr_t base, std::uint64_t ticks) {
         if (s.hid_hud) console::request_debug(overlay::DebugAction::set_game_ui_hidden, true);
         s.ui_shown_for_menu = false;
     }
-    if (was_radial != s.radial_open || was_paused != s.menu_paused) s.view_due = true;
+    if (was_up != s.radial_open || was_paused != s.menu_paused) s.view_due = true;
 }
 
 void update_filter(State &s) {
@@ -1393,6 +1402,12 @@ std::string set_option(State &s, const std::string &key, const std::string &valu
     if (key == "slamzoom") return toggle(r.slam_zoom);
     if (key == "stopzoom") return toggle(r.stop_zoom);
     if (key == "dropstrict") return real(r.drop_strictness, 0.0f, 1.0f);
+    if (key == "menuflag") {
+        const auto n = number(value);
+        if (!n || *n < -1.0f || *n > 127.0f) return "error: menuflag is a byte from 0 to 127, or -1 for none.";
+        s.menu_fullscreen_offset = static_cast<int>(*n);
+        return std::format("Full-screen menus told by byte {}.", s.menu_fullscreen_offset);
+    }
     if (key == "cruise") return toggle(r.cruise);
     if (key == "stop") {
         const auto v = lower(value);
