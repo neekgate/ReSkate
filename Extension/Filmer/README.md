@@ -67,8 +67,9 @@ skate. filmed the way a skater with a VX1000 films a line.
   one click): a drop too high to huck after an ollie or a flip (it eases off as you near a lip, so
   it stops gently, over a second or so, and eases off the moment you pop off something with the ground
   well below; rolling down a hill or bank, or over a gap onto something level or higher, it
-  follows), too far behind, a slam (and, with **Slam zoom**, a slow zoom in if you are in the shot
-  with nothing in the way and small in the frame), or wedged. How high a drop it hucks goes by
+  follows), too far behind, a slam (they carve off to the side as they slow, never on towards you;
+  with **Slam zoom**, a slow zoom in if you are in the shot with nothing in the way and small in the
+  frame, and 1 in 10 a zoom right in on your face), or wedged. How high a drop it hucks goes by
   **Drop stop** (DEBUG tab, lenient to strict, `filmer set dropstrict 0..1`; 0.6 by default: drops
   over about 1.9 m, once you have been falling below your takeoff for about half a second; strict, 1.1 m).
   Stopped at a drop with you skating away, it zooms in on you (**Zoom when they stop**) at a hand's
@@ -87,7 +88,9 @@ skate. filmed the way a skater with a VX1000 films a line.
   how long the thing is (looked along for its end) and what it goes down over (**Stop at downrails**,
   separate from **Stop at drops**): a long downrail over stairs 6 times in 10, anything under about 4 m
   3 times in 10, otherwise never (a rail down a bank or a ramp: always down it with you). Through a
-  grind they are square out to your side, your board across the frame. Stopped at the top of one, the zoom onto you is only now and then. Ollie up onto something
+  grind or slide (from the moment the game says you are locked in) they go straight out to your side,
+  square to you, on the side they were on, your board across the frame; 1 in 25 they follow you along
+  it from behind instead, as if doing it too. Stopped at the top of one, the zoom onto you is only now and then. Ollie up onto something
   low and wide (a ledge, a manual pad, up to about 0.8 m) and it ollies up after you, on your line,
   camera going up with it, rides it, and comes down off the end after you, or stops at the end if
   that drop is too high to huck; the board sits in the

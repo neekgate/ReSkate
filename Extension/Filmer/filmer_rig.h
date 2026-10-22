@@ -501,13 +501,15 @@ private:
     float grind_angle_{90.0f};
     float grind_side_{};
     bool grind_side_due_{};
+    bool grind_trick_{}; // this grind (1 in 25): along it behind you, as if doing it too
     bool grind_down_checked_{}, grind_follow_down_{}; // a downrail: stopped at its top, or down it with you
     double side_switch_until_{-1.0};
     bool sprinting_{}; // pushing hard to get up beside you
     float turn_rate_{}, last_heading_yaw_{};
     double turning_since_{-1.0};
     float recent_speed_{}; // your pace lately (easing down slowly)
-    float zoom_rate_{};    // the zoom rocker's pace now (log of the zoom a second)
+    float zoom_rate_{};
+    float face_weight_{}; // the framing on your face (a slam's zoom onto it)    // the zoom rocker's pace now (log of the zoom a second)
     bool halt_for_grind_{}, halt_grind_zoom_rolled_{}; // stopped at the top of a rail you grind down // how sharply you are turning (radians a second) // sent to your other side: over there quickly
     double drift_done_at_{-1.0};
     bool drift_over_{};

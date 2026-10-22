@@ -1162,6 +1162,25 @@ void Rig::begin_halt(Halt why, double now, float room) {
     halt_speed_ = v;
     halt_stopped_ = v < 0.05f;
     halt_dir_ = v > 0.05f ? Vec3{operator_velocity_[0] / v, 0.0f, operator_velocity_[2] / v} : Vec3{subject_.heading_x, 0.0f, subject_.heading_z};
+    // You slammed: they carve off to the side as they slow, never on towards you (lying there): only
+    // the way that does not close on you is kept, at most of their speed, braking gently to a halt.
+    if (why == Halt::slam && v > 0.05f) {
+        Vec3 to_you{subject_.position[0] - operator_[0], 0.0f, subject_.position[2] - operator_[2]};
+        const float far = flat_length(to_you);
+        if (far > 0.1f) {
+            to_you = scale(to_you, 1.0f / far);
+            const float closing = halt_dir_[0] * to_you[0] + halt_dir_[2] * to_you[2];
+            if (closing > 0.0f) {
+                const Vec3 aside{halt_dir_[0] - to_you[0] * closing, 0.0f, halt_dir_[2] - to_you[2] * closing};
+                const float al = flat_length(aside);
+                // (Head on: off to their own side of you.)
+                const Vec3 side_way = al > 0.15f ? scale(aside, 1.0f / al) : Vec3{-to_you[2], 0.0f, to_you[0]};
+                halt_dir_ = side_way;
+                halt_speed_ = v * std::max(al, 0.6f);
+            }
+        }
+        room = std::max(room, halt_speed_ * halt_speed_ / (2.0f * 2.5f));
+    }
     // Never rolling on past you (you slammed, you stopped in front of them): short of you, by a body.
     {
         const float to_you = (subject_.position[0] - operator_[0]) * halt_dir_[0] + (subject_.position[2] - operator_[2]) * halt_dir_[2];
@@ -1169,7 +1188,8 @@ void Rig::begin_halt(Halt why, double now, float room) {
         if (to_you > 0.0f && across < 2.0f) room = std::min(room, std::max(0.0f, to_you - 1.4f));
     }
     // (Short of room, they may use some of the margin rather than stop dead.)
-    float reach = std::max(std::min(v * v / (2.0f * 2.5f), std::max(room, 0.0f)), std::min(v * v / (2.0f * 6.0f), std::max(room + 0.4f, 0.0f)));
+    const float vs = halt_speed_;
+    float reach = std::max(std::min(vs * vs / (2.0f * 2.5f), std::max(room, 0.0f)), std::min(vs * vs / (2.0f * 6.0f), std::max(room + 0.4f, 0.0f)));
     if (cast_ && reach > 0.2f) {
         probe_budget_ += 12;
         for (float step = 0.4f; step <= reach + 0.8f; step += 0.4f) {
@@ -1414,6 +1434,9 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
             // ahead (no rushing off to the end of it, no hanging back out wide).
             grind_style_ = 0;
             grind_angle_ = 84.0f + unit(random_) * 12.0f; // (square to you: your board across the frame)
+            // (1 in 25: in behind you on your line instead, as if they were doing the trick too.)
+            grind_trick_ = unit(random_) < 0.04f;
+            if (grind_trick_) grind_angle_ = 0.0f;
             // On the side of it they are on (the way across to the other side is over what you grind).
             // (Which side of the rail they are on is where they are now from you, up on it: not the
             // side they rode on before you hopped across onto it.)
@@ -1783,6 +1806,31 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
         desired = add(Vec3{base[0], ground, base[2]}, scale(out_dir, raised_offset_));
     }
     if (post_ != Post::none) desired = Vec3{post_spot_[0], ground, post_spot_[2]};
+    // Through a grind or a slide (the game says you are locked in): straight out to your side, square to
+    // you, so your board goes across the frame, on the side they were on when you locked in; whatever
+    // else would have them (behind you on your line, behind what you grind, waiting at its foot). The
+    // other side only if theirs has no ground to ride or a wall between. (Not on the 1 in 25 they
+    // follow you along it instead.)
+    if (grinding_ && !grind_trick_ && operator_have_ && !planted_ && halt_ == Halt::none && grind_side_ != 0.0f) {
+        Vec3 way{t.velocity[0], 0.0f, t.velocity[2]};
+        const float wl = flat_length(way);
+        way = wl > 0.5f ? scale(way, 1.0f / wl) : heading;
+        const Vec3 across{way[2], 0.0f, -way[0]};
+        const float feet = world(t.position[1]);
+        const float out = std::max(min_gap, distance);
+        const float ahead_of = -out * std::cos(grind_angle_ * degrees); // (a touch back or ahead)
+        const Vec3 centre_now{t.position[0], feet + 0.6f, t.position[2]};
+        for (const float which : {grind_side_, -grind_side_}) {
+            const Vec3 spot = add(Vec3{t.position[0], 0.0f, t.position[2]}, add(scale(across, out * which), scale(way, ahead_of)));
+            const auto g = cast_ && world_answers() ? ground_at(spot[0], spot[2], feet + 0.6f) : std::optional<float>(operator_floor_);
+            if (!g || *g > feet + 0.3f || *g < feet - 3.0f) continue;
+            if (cast_ && obstructed(centre_now, Vec3{spot[0], *g + height + 0.1f, spot[2]}, 0.25f, true)) continue;
+            desired = Vec3{spot[0], ground, spot[2]};
+            post_ = Post::none;
+            if (which != grind_side_) grind_side_ = which;
+            break;
+        }
+    }
     // You standing still: the filmer settles on a spot behind you (left or right of your back, straight
     // behind when those are no good) and stays there, still, so you can still see ahead of you. Only if
     // it goes bad (you turned round and it is in front of you now, or a wall is between) after a moment
@@ -2826,7 +2874,12 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
         if (halt_ == Halt::slam && (halt_stopped_ || operator_speed < 0.3f) && !halt_zoom_rolled_) {
             halt_zoom_rolled_ = true;
             zoom_kind_ = 0;
-            if (slam_zoom_ && far_enough && share < 0.45f && in_shot()) {
+            // (Now and then, 1 in 10, you in full view with nothing in the way: in on your face.)
+            const bool clear = slam_zoom_ && in_shot();
+            if (clear && far_off > 2.5f && unit(random_) < 0.1f) {
+                zoom_kind_ = 3;
+                zoom_since_ = now;
+            } else if (clear && far_enough && share < 0.45f) {
                 zoom_kind_ = 1;
                 zoom_since_ = now;
             }
@@ -2851,6 +2904,8 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
         // As far off as you are, so the pace: a turn of the ring that takes longer the further it has
         // to go, never a snap (a VX1000 zoomed by hand).
         zoom_pace_ = std::clamp(0.12f + far_off * 0.012f, 0.15f, 0.4f);
+        if (zoom_kind_ == 3) zoom_pace_ = 0.22f; // (in on your face: a moderate, even pace)
+        face_weight_ += ((zoom_kind_ == 3 ? 1.0f : 0.0f) - face_weight_) * ease(dt, zoom_kind_ == 3 ? 0.8f : 0.5f);
         if (zoom_kind_ != 0) {
             const bool still_on = halt_ != Halt::none || now - zoom_since_ < 3.5;
             if (!still_on) {
@@ -2860,6 +2915,11 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
                 const float fill = zoom_kind_ == 1 ? 0.55f : 0.4f;
                 const float most = zoom_kind_ == 1 ? (fish ? 2.0f : max_zoom) : (fish ? 1.5f : 2.5f);
                 auto_zoom_ = std::clamp(fill / std::max(share, 0.02f), 1.0f, most);
+                if (zoom_kind_ == 3) {
+                    // Your face (about a hand and a half across) to a good third of the frame's height.
+                    const float face_share = std::atan(0.13f / far_off) / base_half;
+                    auto_zoom_ = std::clamp(0.3f / std::max(face_share, 0.01f), 1.0f, fish ? 3.0f : max_zoom);
+                }
             }
         } else {
             auto_zoom_ = 1.0f;
@@ -2955,6 +3015,12 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
             const float board_pitch = std::atan2(late[1] + 0.05f - eye[1], std::max(flat_length(to_late), 0.3f));
             want_pitch = mix(want_pitch, board_pitch, board_weight_);
         }
+        // In on your face (a slam, now and then): the framing goes up from your board to your face.
+        if (face_weight_ > 0.01f) {
+            const float face_y = world(t.position[1]) + (subject.bailing ? 0.25f : 1.5f);
+            const float face_pitch = std::atan2(face_y - eye[1], std::max(flat_length(to_late), 0.3f));
+            want_pitch = mix(want_pitch, face_pitch, face_weight_);
+        }
         want_yaw += wobble_[2].sample(now * 0.4) * 3.5f * degrees * human;
         want_pitch += wobble_[3].sample(now * 0.17) * 2.5f * degrees * human;
         const float true_yaw = yaw_of(to_now[0], to_now[2]);
@@ -2976,7 +3042,7 @@ Frame Rig::follow(double now, float dt, const Subject &subject, const RigSetting
             if (std::abs(dy) > limit) aim_.yaw = wrap_angle(true_yaw - std::copysign(limit, dy));
             const float horizontal = std::max(flat_length(to_now), 0.3f);
             const float feet = std::atan2(true_y + 0.05f - eye[1], horizontal);
-            aim_.pitch = std::clamp(aim_.pitch, feet - 0.85f * half_view(s), feet + 0.85f * half_view(s));
+            if (face_weight_ < 0.3f) aim_.pitch = std::clamp(aim_.pitch, feet - 0.85f * half_view(s), feet + 0.85f * half_view(s));
         }
     }
     // Leaning into the turns the filmer rides.
