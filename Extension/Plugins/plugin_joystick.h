@@ -6,7 +6,9 @@
 #include <array>
 #include <atomic>
 #include <cstdint>
+#include <mutex>
 #include <string>
+#include <vector>
 #ifdef _WIN32
 #include <Windows.h>
 #include <mmsystem.h>
@@ -93,6 +95,36 @@ inline Sample poll() {
     }
     if (first >= 0) { detail::read_device(static_cast<UINT>(first), sample); cached.store(first); }
     return sample;
+}
+
+// One controller by its number (Sample::device, from list()); not valid when it is not there.
+inline Sample poll(int device) {
+    if (device < 0) return poll();
+    InputAccess access;
+    Sample sample;
+    if (device < 16) detail::read_device(static_cast<UINT>(device), sample);
+    return sample;
+}
+
+// Every controller plugged in (number and name). Any thread; looks again at most once a second,
+// since asking Windows about empty slots is slow.
+inline std::vector<Sample> list() {
+    static std::mutex lock;
+    static std::vector<Sample> found;
+    static ULONGLONG next_scan = 0;
+    const std::lock_guard guard(lock);
+    const auto now = GetTickCount64();
+    if (now >= next_scan) {
+        next_scan = now + 1000;
+        InputAccess access;
+        found.clear();
+        const UINT count = std::min<UINT>(joyGetNumDevs(), 16);
+        for (UINT i = 0; i < count; ++i) {
+            Sample candidate;
+            if (detail::read_device(i, candidate)) found.push_back(std::move(candidate));
+        }
+    }
+    return found;
 }
 
 // True while this game's window has focus, so a controller does not drive it from the background.

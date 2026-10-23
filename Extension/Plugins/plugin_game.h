@@ -76,6 +76,12 @@ struct StickInput {
     std::array<float, 6> axes{};
     std::uint32_t buttons{};
     std::string name;
+    int device = -1; // its number, as joysticks() lists it
+};
+// A controller plugged in: its number (for joystick(device)) and name.
+struct StickDevice {
+    int device{};
+    std::string name;
 };
 // A sound a plugin plays (reskate.audio): its wave, or the motor synth when it has none.
 struct SoundStart {
@@ -859,7 +865,9 @@ public:
     // and only while the plugin's camera is shown.
     virtual std::optional<FlightInput> flight_input(std::string_view /*plugin*/) { return std::nullopt; }
     virtual std::optional<PadInput> gamepad() { return std::nullopt; }
-    virtual std::optional<StickInput> joystick() { return std::nullopt; }
+    // The first controller (a radio first), or with device >= 0 that one (StickDevice::device).
+    virtual std::optional<StickInput> joystick(int /*device*/ = -1) { return std::nullopt; }
+    virtual std::vector<StickDevice> joysticks() { return {}; }
     virtual std::string capture_input(std::string_view /*plugin*/, bool) { return unavailable; }
     // A named action on a key or pad combo (controller_bindings.h's encoding); presses come back
     // from take_presses as (plugin, action), only while the game itself has the input.

@@ -898,11 +898,16 @@ public:
         if (!pad.valid) return std::nullopt;
         return PadInput{pad.left_x, pad.left_y, pad.right_x, pad.right_y, pad.left_trigger, pad.right_trigger, pad.buttons, pad.playstation};
     }
-    std::optional<StickInput> joystick() override {
+    std::optional<StickInput> joystick(int device) override {
         if (!joystick::game_in_foreground()) return std::nullopt;
-        const auto sample = joystick::poll();
+        const auto sample = joystick::poll(device);
         if (!sample.valid) return std::nullopt;
-        return StickInput{sample.axes, sample.buttons, sample.name};
+        return StickInput{sample.axes, sample.buttons, sample.name, sample.device};
+    }
+    std::vector<StickDevice> joysticks() override {
+        std::vector<StickDevice> out;
+        for (const auto& sample : joystick::list()) out.push_back({sample.device, sample.name});
+        return out;
     }
     std::string capture_input(std::string_view plugin, bool on) override {
         if (!on) {
