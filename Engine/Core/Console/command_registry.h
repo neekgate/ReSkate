@@ -139,6 +139,23 @@ template <class Context> class Registry {
         const auto it = lookup_.find(lower(name));
         return it == lookup_.end() ? nullptr : &entries_[it->second];
     }
+    // The other entries whose name or an alias goes on from a name by more words:
+    // `perf hud` and `perf status` under `perf`.
+    std::vector<const Entry *> under(std::string_view name) const {
+        const auto prefix = std::string(name) + ' ';
+        const auto *self = find(name); // (`log` is also `log status`)
+        std::vector<const Entry *> result;
+        for (const auto &entry : entries_) {
+            if (&entry == self)
+                continue;
+            bool below = ascii_case_insensitive_starts_with(entry.name, prefix);
+            for (const auto &alias : entry.aliases)
+                below = below || ascii_case_insensitive_starts_with(alias, prefix);
+            if (below)
+                result.push_back(&entry);
+        }
+        return result;
+    }
     static std::string usage(const Entry &entry) {
         std::string result = entry.name;
         for (const auto &arg : entry.arguments) {
@@ -171,6 +188,8 @@ template <class Context> class Registry {
         const auto [entry, consumed] = resolve(words);
         return !entry || entry->echo_input || consumed != words.size();
     }
+    // Whether the words start with one of its commands.
+    bool knows(std::span<const std::string> words) const { return resolve(words).first != nullptr; }
     bool local(std::span<const std::string> words, const Context &context) const {
         const auto [entry, consumed] = resolve(words);
         return !entry || entry->execution == Execution::local ||
@@ -259,7 +278,9 @@ template <class Context> class Registry {
             values.push_back(std::move(*value));
         }
         if (index != args.size()) {
-            output("error: Too many arguments. Usage: " + usage(*entry));
+            // `perf hdu`: neither an argument of perf nor a command under it.
+            output("error: Too many arguments. Usage: " + usage(*entry) +
+                   (under(entry->name).empty() ? "" : ". Use help " + entry->name + " for the commands under it."));
             return false;
         }
         if (!entry->run) {

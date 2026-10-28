@@ -1,4 +1,5 @@
 #pragma once
+#include <array>
 #include <string_view>
 
 namespace dingosdk::game::build::v20260929::ui_textures {
@@ -59,6 +60,19 @@ inline constexpr float thrasher_wordmark_arch = 0.70f;
 // A tile with rough, hand-cut edges (256 x 256): about 16 pixels of each edge are rough.
 inline constexpr Texture rough_tile{root_toc, root_bundle, "ui/textures/common/tiles/img_tilebackground_roughfull_256_256_256",
     {}, {}, 32.0f / 256};
+// skate.'s own loading screen's board doing kickflips beside its "Loading..." (the imports of
+// UI/Foundations/Loading/LoadScreen/DingoLoadScreen_Widget, found for the Animator Studio, PR 297): a
+// flipbook, flip_Skateboard_Kickflip_256, of 27 frames at 30 a second, 9 across and 3 down its texture
+// (2304 x 768 for a 2160 screen). Kept with the widget, or in the level roots: tried in that order.
+inline constexpr std::string_view loading_board_name =
+    "ui/textures/common/flipbooks/loading/flip_skateboard_kickflip_256_win32_"
+    "6143a1fc-cfd7-13ed-c764-164f1af9c663_0_2160_c2cf948c-5744-ac69-b92d-360134ba7b45_input";
+inline constexpr std::array<Texture, 3> loading_board{{
+    {"Win32/globals.toc", "win32/ui/foundations/loading/loadscreen/dingoloadscreen_widget_bundle", loading_board_name},
+    {root_toc, root_bundle, loading_board_name},
+    {bam_toc, "win32/levels/game/bam_levelroot/bam_levelroot", loading_board_name},
+}};
+inline constexpr int loading_board_frames = 27, loading_board_columns = 9, loading_board_rows = 3;
 // A film's scratches and dust, light on black (2048 x 2048, opaque): drawn by their brightness over a panel.
 inline constexpr Texture scratches{root_toc, root_bundle,
     "ui/textures/common/backgrounds/img_background_slicedgrainytexture01_2048_2048_2048"};
@@ -68,4 +82,27 @@ inline constexpr Texture brush_bar{bam_toc, bam_bundle, "ui/textures/common/bann
 // A long brush streak, thick on the left and tapering right (1024 x 152): pixels 8 to 1013 across, 30 to 115 down.
 inline constexpr Texture streak{root_toc, root_bundle, "ui/textures/common/brushs/img_brush_splashstreak_1024_1024_152",
     {}, {8.0f / 1024, 30.0f / 152, 1014.0f / 1024, 116.0f / 152}};
+
+// The picture on the loading screen of each of the game's own maps, by the map's name as a
+// server's vote for the next map gives it (world_level_name). Each is in its loading screen's
+// own widget bundle, in the globals superbundle, at two sizes: this is the smaller, 1280 by
+// 720 (the name without a size is not a texture). Found by following each LoadScreen_*_Widget's
+// "Map_Texture" and read from the game's files on 2026-10-11. The tutorial island has no
+// loading screen of its own.
+struct MapPicture {
+    std::string_view map, bundle, name;
+};
+inline constexpr std::string_view map_picture_toc = "Win32/globals.toc";
+inline constexpr MapPicture map_pictures[]{
+    {"San Vansterdam", "win32/ui/foundations/loading/loadscreen/loadscreen_bam_widget_bundle",
+     "ui/textures/screens/loadscreen/img_loadscreen_sanvan_1440_1280_720"},
+    {"Isle of Grom", "win32/ui/foundations/loading/loadscreen/loadscreen_isleofgrom_widget_bundle",
+     "ui/textures/screens/loadscreen/img_loadscreen_gromday_1440_1280_720"},
+    {"Super Ultra Mega Resort", "win32/ui/foundations/loading/loadscreen/loadscreen_megapark_widget_bundle",
+     "ui/textures/screens/loadscreen/img_loadscreen_summercamp_default_1440_1280_720"},
+    {"Stadium 1", "win32/ui/foundations/loading/loadscreen/loadscreen_stadium_widget_bundle",
+     "ui/textures/screens/loadscreen/img_loadscreen_stadium_default_1440_1280_720"},
+    {"Stadium 2", "win32/ui/foundations/loading/loadscreen/loadscreen_stadium_nanaimo_widget_bundle",
+     "ui/textures/screens/loadscreen/img_loadscreen_stadium_nanaimo_1440_1280_720"},
+};
 }

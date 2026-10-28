@@ -8,20 +8,23 @@
 
 namespace dingosdk::multiplayer::menu_view {
 enum class Sort { name, players, map };
-// The busiest servers first, until the player picks another order.
-struct BrowserOptions { std::string query; bool same_map{}; Sort sort = Sort::players; };
+// The busiest servers first, until the player picks another order. A second click on that
+// column sets reverse, which flips only that column.
+struct BrowserOptions { std::string query; bool same_map{}; Sort sort = Sort::players; bool reverse{}; };
 
-// Owned pages: Multiplayer and Mod Options (needs the overlay's tool callbacks).
-inline constexpr unsigned page_count = 2, tools_page = 1;
+// Owned pages: Multiplayer, Mod Options (needs the overlay's tool callbacks) and the Mod Manager
+// (Extension/Assets/mod_store.h), which sits after Mod Options.
+inline constexpr unsigned page_count = 3, tools_page = 1, mods_page = 2;
 // Return missing owned slots in canonical order. Existing native stack indices
 // remain untouched, including their active focus bindings. Offline mode has
-// no Multiplayer tab.
+// no Multiplayer tab. The Mod Manager waits for Mod Options, so that it is never
+// appended before it.
 inline std::vector<unsigned> missing_tabs(const std::vector<std::uint32_t>& keys,
                                           std::uint32_t multiplayer_key, bool has_tools,
                                           bool has_multiplayer = true) {
     std::vector<unsigned> result;
     for (unsigned slot = 0; slot < page_count; ++slot)
-        if ((has_tools || slot != tools_page) && (has_multiplayer || slot != 0) &&
+        if ((has_tools || (slot != tools_page && slot != mods_page)) && (has_multiplayer || slot != 0) &&
             std::find(keys.begin(), keys.end(), multiplayer_key + slot * 0x100) == keys.end()) result.push_back(slot);
     return result;
 }
@@ -79,13 +82,16 @@ inline BrowserResults browse(const MultiplayerModel& model, const BrowserOptions
         if (a->official != b->official) return a->official;
         // Then where friends are.
         if (a->friends.empty() != b->friends.empty()) return !a->friends.empty();
-        if (options.sort == Sort::players && a->players != b->players) return a->players > b->players;
+        if (options.sort == Sort::players && a->players != b->players)
+            return options.reverse ? a->players < b->players : a->players > b->players;
         if (options.sort == Sort::map) {
             const auto an = fold(map_name(a->map, levels)), bn = fold(map_name(b->map, levels));
-            if (an != bn) return an < bn;
+            if (an != bn) return options.reverse ? an > bn : an < bn;
         }
         const auto an = fold(a->name), bn = fold(b->name);
-        return an != bn ? an < bn : a->id < b->id;
+        // A name or map tie stays A to Z, then by id. Reversing NAME flips the names themselves.
+        if (an != bn) return options.sort == Sort::name && options.reverse ? an > bn : an < bn;
+        return a->id < b->id;
     });
     result.total = result.lobbies.size();
     return result;

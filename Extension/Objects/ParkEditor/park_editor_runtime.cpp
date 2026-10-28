@@ -10,6 +10,9 @@
 #include "Extension/Objects/network_object_runtime.h"
 #include "park_document.h"
 #include "park_mods.h"
+#include "park_object_sets.h"
+#include <chrono>
+#include <future>
 
 namespace dingosdk::profile_runtime {
 namespace park_editor_detail {
@@ -30,16 +33,56 @@ const profile::PlacedObject *find_object(const profile::ObjectLayout &objects, s
     return it == objects.end() ? nullptr : &*it;
 }
 std::atomic<bool> park_mod_list_visible{true};
-void refresh_park_mods() {
-    auto &e = editor_state();
-    e.next_park_scan = GetTickCount64() + 5000;
+// What is in the Mods folder: every mod's manifest is read to find the ones with parks, which
+// with many mods takes ten milliseconds and more.
+struct ParkScan {
+    std::vector<editor::ParkMod> mods;
+    std::vector<std::string> legacy;
+};
+ParkScan scan_parks(const std::filesystem::path &data_root, const std::filesystem::path &directory) {
+    ParkScan found;
     try {
-        e.park_mods = e.data_root.empty() ? std::vector<editor::ParkMod>{} : editor::list_park_mods(e.data_root);
-        e.legacy_parks = e.directory.empty() ? std::vector<std::string>{} : editor::list_parks(e.directory);
+        if (!data_root.empty()) found.mods = editor::list_park_mods(data_root);
+        if (!directory.empty()) found.legacy = editor::list_parks(directory);
     } catch (...) { /* An unreadable Mods folder just lists nothing. */ }
+    return found;
+}
+void use_park_scan(ParkScan found) {
+    auto &e = editor_state();
+    e.park_mods = std::move(found.mods);
+    e.legacy_parks = std::move(found.legacy);
     if (!e.project.empty() && std::none_of(e.park_mods.begin(), e.park_mods.end(),
                                            [&](const auto &mod) { return mod.folder == e.project; }))
         e.project.clear(); // The project was removed or renamed outside the game.
+}
+// The look every few seconds runs on a thread of its own and is taken up when it is done
+// (poll_park_mods): on the game's thread it was a hitch every five seconds. `park_scans` counts
+// the looks asked for, so one that a later look has overtaken is dropped.
+std::future<ParkScan> park_scan;
+std::uint64_t park_scans{}, park_scan_running{};
+// At once: after the player made, renamed or removed a park, when the list has to be right.
+void refresh_park_mods() {
+    auto &e = editor_state();
+    e.next_park_scan = GetTickCount64() + 5000;
+    ++park_scans;
+    use_park_scan(scan_parks(e.data_root, e.directory));
+}
+void refresh_object_sets() {
+    auto &e = editor_state();
+    e.object_sets = std::make_shared<const std::vector<EditorObjectSet>>(editor::load_object_sets(e.sets_directory));
+}
+void poll_park_mods() {
+    auto &e = editor_state();
+    if (park_scan.valid()) {
+        if (park_scan.wait_for(std::chrono::seconds(0)) != std::future_status::ready) return;
+        auto found = park_scan.get();
+        if (park_scan_running == park_scans) use_park_scan(std::move(found));
+        return;
+    }
+    if (GetTickCount64() < e.next_park_scan) return;
+    e.next_park_scan = GetTickCount64() + 5000;
+    park_scan_running = ++park_scans;
+    park_scan = std::async(std::launch::async, [data_root = e.data_root, directory = e.directory] { return scan_parks(data_root, directory); });
 }
 // Multiplayer guests play on the host's objects; only the host swaps layouts.
 bool is_lobby_guest() {
@@ -128,13 +171,12 @@ void refresh_catalog() {
     if (e.assets && e.catalog_revision == snapshot.revision && e.catalog_manager == c.item_manager)
         return;
     const auto config = snapshot.extensions.value("object_dropper", Json::object());
-    const auto inventory = config.value("inventory", Json::object());
     const auto catalog = config.value("catalog", Json::object());
     const auto &cache = content_cache::catalogs();
     const auto groups = objects::object_groups(cache);
     auto assets = std::make_shared<std::vector<EditorAsset>>();
     for (const auto &[key, item] : c.items) {
-        if (!item.build_kit || !inventory.value(key, false) || assets->size() >= 4096)
+        if (!item.build_kit || !profile_runtime::installed_item_owned(snapshot, key, item.hash, true) || assets->size() >= 4096)
             continue;
         std::string title = key.starts_with("own_") ? key.substr(4) : key;
         std::replace(title.begin(), title.end(), '_', ' ');
@@ -214,10 +256,53 @@ void move_existing(std::uint64_t entity, const profile::PlacedObject &object) {
     }
     e.transform_move(query.data(), pose.data(), source);
 }
+struct WorldRays {
+    struct Ray {
+        std::array<float, 3> origin{}, end{};
+    };
+    std::mutex mutex;
+    std::map<std::uint32_t, Ray> pending;
+    std::map<std::uint32_t, WorldRayHit> answers;
+};
+WorldRays &world_rays() {
+    static auto *value = new WorldRays;
+    return *value;
+}
+// Casts the queued outside rays on the client update, where the client physics context resolves.
+void cast_world_rays() {
+    auto &w = world_rays();
+    std::map<std::uint32_t, WorldRays::Ray> rays;
+    {
+        std::lock_guard lock(w.mutex);
+        rays.swap(w.pending);
+    }
+    if (rays.empty())
+        return;
+    auto &e = editor_state();
+    auto &r = placements_runtime();
+    std::array<std::uintptr_t, 2> context{};
+    if (r.context)
+        r.context(context.data());
+    const auto world = e.surface_api.ready && context[0] ? e.surface_api.world(context[0]) : 0;
+    const auto now = GetTickCount64();
+    for (const auto &[id, ray] : rays) {
+        WorldRayHit answer{true, false, {}, now};
+        answer.available = world != 0;
+        if (world)
+            if (const auto hit = editor::cast_surface(e.surface_api, world, ray.origin, ray.end)) {
+                answer.hit = true;
+                answer.at = *hit;
+            }
+        std::lock_guard lock(w.mutex);
+        w.answers[id] = answer;
+    }
+}
 } // namespace
 void initialize_park_editor(const std::filesystem::path &directory) {
     auto &e = editor_state();
     e.directory = directory / L"parks";
+    e.sets_directory = directory / L"object_sets";
+    refresh_object_sets();
     e.surface_api = editor::surface_api(local_runtime().base);
     e.picking_api = editor::picking_api(local_runtime().base);
     e.highlight_api = editor::highlight_api(local_runtime().base);
@@ -245,6 +330,12 @@ void set_park_mods_root(const std::filesystem::path &data_root) {
 }
 void reset_park_editor() {
     auto &e = editor_state();
+    {
+        auto &w = world_rays();
+        std::lock_guard lock(w.mutex);
+        w.pending.clear();
+        w.answers.clear();
+    }
     ++e.generation;
     ++e.revision;
     e.transaction.reset();
@@ -273,6 +364,10 @@ bool park_editor_owns_placements() {
     // ownership swallowed every later native placement acknowledgement and
     // permanently starved the regular place/delete updater.
     return editor_state().transaction.has_value();
+}
+const profile::ObjectLayout *park_editor_pending_layout() {
+    const auto &e = editor_state();
+    return e.transaction ? &e.transaction->change.after : nullptr;
 }
 void park_editor_external_change() {
     auto &e = editor_state();
@@ -519,6 +614,17 @@ void update_park_editor() {
             }
             if (tx.preview && !tx.preview->ending)
                 return; // Live poses remain temporary until mouse release.
+            if (step.kind == Kind::create && step.object.scale != 1.0f && lobby_object_scaling_allowed()) {
+                // The create recipe has no scale, so the object spawned at 1x (a paste, a set, an
+                // undo or a loaded park). Resize it with a move, verified by the server tick's
+                // readback before the object is committed, as a placement preview does. Not where
+                // the session has scaling off: the server would not take it, and the edit would
+                // wait on it; the object stays 1x and keeps its scale in the layout.
+                step = {Kind::move, step.object, step.entity};
+                tx.sent = false;
+                tx.waiting_since = GetTickCount64();
+                return;
+            }
             if (step.kind == Kind::erase) {
                 r.tracked.erase(step.entity);
                 std::erase_if(r.rows, [&](const auto &row) { return row.entity == step.entity; });
@@ -575,12 +681,46 @@ void update_park_editor() {
 } // namespace dingosdk::profile_runtime
 namespace dingosdk {
 using namespace profile_runtime;
+void queue_world_ray(std::uint32_t id, const std::array<float, 3> &origin, const std::array<float, 3> &direction, float length) {
+    for (int i = 0; i < 3; ++i)
+        if (!std::isfinite(origin[i]) || !std::isfinite(direction[i]) || std::abs(origin[i]) > 100000)
+            return;
+    const float size = std::sqrt(direction[0] * direction[0] + direction[1] * direction[1] + direction[2] * direction[2]);
+    if (size < 0.5f || !(length > 0) || length > 2000)
+        return;
+    std::array<float, 3> end{};
+    for (int i = 0; i < 3; ++i)
+        end[i] = origin[i] + direction[i] / size * length;
+    auto &w = world_rays();
+    std::lock_guard lock(w.mutex);
+    w.pending[id] = {origin, end};
+}
+WorldRayHit world_ray(std::uint32_t id) {
+    auto &w = world_rays();
+    std::lock_guard lock(w.mutex);
+    const auto it = w.answers.find(id);
+    return it == w.answers.end() ? WorldRayHit{} : it->second;
+}
+void tick_local_world_rays() noexcept {
+    PreserveError preserve;
+    try {
+        std::lock_guard lock(local_runtime().native_mutex);
+        if (!local_runtime().active || cosmetic_runtime().update_thread != GetCurrentThreadId())
+            return;
+        cast_world_rays();
+    } catch (...) {
+        // A mode's optional aim query must not fail or disable park editing.
+    }
+}
 void tick_local_park_editor() noexcept {
     PreserveError preserve;
     try {
         std::lock_guard lock(local_runtime().native_mutex);
         if (!local_runtime().active || cosmetic_runtime().update_thread != GetCurrentThreadId())
             return;
+        // Mode placement uses the client physics world even before the park
+        // placement store/server manager becomes ready.
+        cast_world_rays();
         update_placement_restore();
     } catch (...) {
         std::lock_guard lock(local_runtime().native_mutex);
@@ -603,8 +743,7 @@ ParkEditorModel local_park_editor() {
     model.can_undo = idle() && !e.undo.empty();
     model.can_redo = idle() && !e.redo.empty();
     model.assets = e.assets;
-    if (park_mod_list_visible.load(std::memory_order_relaxed) && GetTickCount64() >= e.next_park_scan)
-        refresh_park_mods();
+    if (park_mod_list_visible.load(std::memory_order_relaxed)) poll_park_mods();
     for (const auto &mod : e.park_mods)
         model.park_mods.push_back({mod.folder, mod.details.title, mod.details.author, mod.details.version,
                                    mod.details.description, mod.enabled,
@@ -613,6 +752,7 @@ ParkEditorModel local_park_editor() {
     model.project = e.project;
     model.can_load_parks = !is_lobby_guest();
     model.surface = e.surface;
+    model.object_sets = e.object_sets;
     if (e.transaction && e.transaction->preview)
         model.preview_token = e.transaction->preview->token;
     model.status = e.status;

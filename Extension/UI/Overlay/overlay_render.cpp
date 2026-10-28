@@ -3,15 +3,27 @@
 #include "Engine/Core/Profiling/profiler.h"
 #include "overlay_internal.h"
 #include "Extension/Trainer/trainer_page.h"
-#include "Extension/HallOfMeat/hall_of_meat_overlay.h"
+#include "Extension/UI/Overlay/game_images.h"
+#include "plugin_overlay.h"
+#include "screen_look.h"
+#include "viewmodel.h"
 #include "park_previews.h"
 #include "chat_emotes.h"
 #include "input_capture.h"
 #include "cursor.h"
+#include <algorithm>
+#include <chrono>
 #include <dxgi1_6.h>
 #include <imgui_internal.h>
 
 namespace dingosdk::overlay::detail {
+void draw_plugin_dialog(); // reskate.ui.dialog (plugin_dialog.cpp)
+namespace {
+// The overlay's output transfer (setup_graphics), for the screen look (it grades colour in SDR only)
+// and the viewmodel, with white's brightness in nits.
+int output_transfer{};
+float output_white_nits{80};
+}
 
 // ImGui draws into the swapchain's back buffer, so its display is the buffer, in the buffer's
 // pixels. The Win32 backend sizes the display by the window's client area and places the mouse in
@@ -74,6 +86,19 @@ void destroy_graphics() {
     s.frames.clear();
     s.card_texture.Reset(); s.card_upload.Reset();
     card_image_lost();
+    s.menu_map_texture.Reset(); s.menu_map_upload.Reset();
+    menu_map_pixels_lost();
+    s.mod_icon_texture.Reset(); s.mod_icon_upload.Reset();
+    mod_icon_lost();
+    release_frame_grab();
+    for (auto& texture : s.plugin_textures) texture.Reset();
+    for (auto& upload : s.plugin_uploads) upload.Reset();
+    plugin_images_lost();
+    for (auto& texture : s.store_textures) texture.Reset();
+    for (auto& upload : s.store_uploads) upload.Reset();
+    store_icons_lost();
+    screen_look::release();
+    viewmodel::release();
     s.commands.Reset(); s.rtvs.Reset(); s.srvs.Reset(); s.fence.Reset(); s.device.Reset();
     if (s.fence_event) CloseHandle(s.fence_event);
     s.fence_event = nullptr;
@@ -103,11 +128,48 @@ Binding* find_binding(IUnknown* identity) {
     return found == bindings.end() ? nullptr : &*found;
 }
 
+// A swapchain that presents without the overlay having seen it made (on some Intel systems
+// the game's menus never drew: the chain that was registered at creation is not the one that
+// reaches Present). A D3D12 swapchain gives the queue it was made with, which is all a binding
+// needs. Render thread, with the render lock held.
+Binding* bind_presented(IDXGISwapChain* presented, IUnknown* identity) {
+    auto& s = state();
+    static std::atomic<unsigned> refused{};
+    const auto refuse = [&](const char* why) -> Binding* {
+        if (refused.fetch_add(1) < 3)
+            dingosdk::logging::printf(dingosdk::logging::Level::warning, dingosdk::logging::Channel::graphics,
+                "Overlay: a swapchain it did not see created is presenting, and it cannot draw on it (%s).", why);
+        return nullptr;
+    };
+    DXGI_SWAP_CHAIN_DESC description{};
+    if (FAILED(presented->GetDesc(&description)) || !description.OutputWindow) return refuse("no description or window");
+    if (description.BufferCount < 2 || description.BufferCount > 8) return refuse("an unusual buffer count");
+    DWORD process = 0;
+    GetWindowThreadProcessId(description.OutputWindow, &process);
+    if (process != GetCurrentProcessId()) return refuse("another process's window");
+    ComPtr<ID3D12CommandQueue> queue;
+    if (FAILED(presented->GetDevice(IID_PPV_ARGS(&queue))) || !queue) return refuse("it gives no D3D12 queue");
+    if (queue->GetDesc().Type != D3D12_COMMAND_LIST_TYPE_DIRECT) return refuse("its queue is not a direct one");
+    if (s.bindings.size() >= maximum_bindings) {
+        const auto evict = std::find_if(s.bindings.begin(), s.bindings.end(),
+            [&](const Binding& candidate) { return candidate.identity != s.swapchain_identity; });
+        if (evict == s.bindings.end()) return refuse("too many swapchains");
+        s.bindings.erase(evict);
+    }
+    s.bindings.push_back({identity, queue, description.OutputWindow});
+    dingosdk::logging::printf(dingosdk::logging::Level::info, dingosdk::logging::Channel::graphics,
+        "Registered a DX12 swapchain first seen as it presented (%ux%u, %u buffers, format %d).",
+        description.BufferDesc.Width, description.BufferDesc.Height, description.BufferCount,
+        static_cast<int>(description.BufferDesc.Format));
+    return &s.bindings.back();
+}
+
 bool select_presented_swapchain(IDXGISwapChain* presented) {
     auto& s = state();
     const auto identity = object_identity(presented);
     if (!identity) return false;
     Binding* binding = find_binding(identity.Get());
+    if (!binding) binding = bind_presented(presented, identity.Get());
     if (!binding) return false;
 
     const auto now = std::chrono::steady_clock::now();
@@ -186,6 +248,8 @@ bool setup_graphics() {
     GetWindowThreadProcessId(description.OutputWindow, &pid);
     if (pid != GetCurrentProcessId()) return false;
     if (FAILED(s.swapchain->GetDevice(IID_PPV_ARGS(&s.device)))) return false;
+    dingosdk::overlay::record_gpu_identity(s.device.Get());
+    dingosdk::overlay::watch_device_removal(s.device.Get());
     const auto adapter = s.device->GetAdapterLuid();
     dingosdk::logging::printf(dingosdk::logging::Level::debug, dingosdk::logging::Channel::graphics, "Device=%p adapter_luid=%08lx:%08lx node_count=%u",
         s.device.Get(), static_cast<unsigned long>(adapter.HighPart),
@@ -242,7 +306,9 @@ bool setup_graphics() {
         return false;
     }
     heap.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-    heap.NumDescriptors = 2; // ImGui's atlas, then the map download card's icon (upload_card_image)
+    // ImGui's atlas, the map download card's icon, the menu's map pictures, an item's mod icon,
+    // plugins' pictures (upload_image), the screen look's, the Mod Manager's icons and a viewmodel's pictures
+    heap.NumDescriptors = viewmodel_first_slot + viewmodel_slots;
     heap.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
     graphics_result = s.device->CreateDescriptorHeap(&heap, IID_PPV_ARGS(&s.srvs));
     if (FAILED(graphics_result)) {
@@ -307,6 +373,9 @@ bool setup_graphics() {
         return false;
     }
     s.commands->SetName(L"ReSkate overlay draw");
+    dingosdk::overlay::watch_draws(s.commands.Get());
+    dingosdk::overlay::watch_addresses(s.commands.Get());
+    install_depth_probe(s.commands.Get());
     s.fence->SetName(L"ReSkate overlay fence");
     s.fence_event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
     if (!s.fence_event) return false;
@@ -316,17 +385,24 @@ bool setup_graphics() {
     ImGui::SetCurrentContext(s.context);
     ImGui::GetIO().IniFilename = nullptr;
     ImGui::GetIO().LogFilename = nullptr;
-    ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+    ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_NavEnableGamepad;
     ImGui::StyleColorsDark();
     dingosdk::overlay::load_skate_fonts(s.menu);
     // Thumbnails are read from the game's own data at startup; the read is
     // normally long finished by the time the first frame gets here.
     // Emotes and Hall of Meat's images reserve their room before the park previews build the atlas, and fill it after.
-    const auto emote_count = reserve_chat_emotes(*ImGui::GetIO().Fonts, std::chrono::seconds(5));
-    reserve_hall_of_meat_images(*ImGui::GetIO().Fonts, std::chrono::seconds(5));
-    const auto preview_count = load_park_previews(*ImGui::GetIO().Fonts, std::chrono::seconds(5));
+    // (Five seconds for the three together, not each: this is the game's render thread, and three
+    // reads still under way at the first frame held it up to fifteen.)
+    const auto waited_until = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    const auto left = [&] {
+        return std::max(std::chrono::milliseconds(0),
+            std::chrono::duration_cast<std::chrono::milliseconds>(waited_until - std::chrono::steady_clock::now()));
+    };
+    const auto emote_count = reserve_chat_emotes(*ImGui::GetIO().Fonts, left());
+    reserve_game_images(*ImGui::GetIO().Fonts, left());
+    const auto preview_count = load_park_previews(*ImGui::GetIO().Fonts, left());
     fill_chat_emotes(*ImGui::GetIO().Fonts);
-    fill_hall_of_meat_images(*ImGui::GetIO().Fonts);
+    fill_game_images(*ImGui::GetIO().Fonts);
     if (emote_count)
         dingosdk::logging::printf(dingosdk::logging::Level::info, dingosdk::logging::Channel::graphics,
             "Chat emotes: %zu ready.", emote_count);
@@ -357,6 +433,8 @@ bool setup_graphics() {
         const int transfer = format == DXGI_FORMAT_R16G16B16A16_FLOAT ? 1
                            : format == DXGI_FORMAT_R10G10B10A2_UNORM && hdr_display ? 2 : 0;
         ImGui_ImplDX12_SetOutputTransfer(transfer, hdr_display ? hdr_white_nits : 80.0f);
+        output_transfer = transfer;
+        output_white_nits = hdr_display ? hdr_white_nits : 80.0f;
         dingosdk::logging::printf(dingosdk::logging::Level::info, dingosdk::logging::Channel::graphics,
             "Overlay output: %s (buffer format %d, display %s).",
             transfer == 1 ? "scRGB" : transfer == 2 ? "HDR10" : "SDR", static_cast<int>(format), hdr_display ? "in HDR" : "in SDR");
@@ -364,6 +442,9 @@ bool setup_graphics() {
     // Font upload uses the exact swapchain queue, and this pinned backend waits
     // for its own upload fence before returning from device-object creation.
     const bool objects = s.dx12_ready && ImGui_ImplDX12_CreateDeviceObjects();
+    if (objects && !ImGui_ImplDX12_HasOutputTransfer())
+        dingosdk::logging::write(dingosdk::logging::Level::warning, dingosdk::logging::Channel::graphics,
+            "Overlay output: this system could not build the HDR-aware shader; drawing in SDR, so an HDR game shows the overlay off-colour.");
     ImGui::SetCurrentContext(previous);
     if (!objects) {
         dingosdk::logging::printf(dingosdk::logging::Level::error, dingosdk::logging::Channel::graphics, "Graphics setup failed in ImGui initialization: win32=%d dx12=%d objects=%d",
@@ -470,17 +551,76 @@ void draw_menu() {
     if (!visible) s.visible.store(false);
 }
 
-// The map download card's icon (map_download_card.cpp), when one is waiting: made into a
-// texture in the SRV heap's second slot. Recorded on the frame's command list ahead of ImGui's
-// draws, so the copy is done before anything samples it. Nothing here is fatal: without the
-// icon the card shows a plain tile.
-void upload_card_image(State& s) {
-    CardPixels pixels;
-    if (!take_card_pixels(pixels) || pixels.rgba.empty() || !s.device || !s.srvs) return;
-    // Frames still on the GPU may sample the icon this one replaces.
-    if (s.card_texture && s.next_fence && !completed(s.next_fence, render_fence_timeout_ms)) return;
-    s.card_texture.Reset();
-    s.card_upload.Reset();
+// The ReSkate menu on a controller: while it is open the pad drives ImGui's navigation (the game
+// does not see the pad then), and nothing of it reaches the overlay otherwise. X is left out: ImGui
+// holds it for its window switcher.
+void feed_menu_gamepad(bool menu_open) {
+    auto& io = ImGui::GetIO();
+    // Holding a direction in the full screen menu waits before it repeats, then moves at a pace
+    // the eye can follow (ImGui's own, made for a keyboard, races through a list).
+    const bool slow = menu_open && dingosdk::overlay::menu_fullscreen_shown().load();
+    io.KeyRepeatDelay = slow ? 0.42f : 0.275f;
+    io.KeyRepeatRate = slow ? 0.16f : 0.05f;
+    // A page with its own focus (the full screen ONLINE page) takes the D-pad and the arrow keys itself.
+    if (menu_open && dingosdk::overlay::menu_page_owns_pad().load()) io.ConfigFlags &= ~ImGuiConfigFlags_NavEnableKeyboard;
+    else io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+    struct Button { unsigned bit; ImGuiKey key; };
+    static constexpr Button buttons[]{
+        {0x0001, ImGuiKey_GamepadDpadUp}, {0x0002, ImGuiKey_GamepadDpadDown}, {0x0004, ImGuiKey_GamepadDpadLeft},
+        {0x0008, ImGuiKey_GamepadDpadRight}, {0x0010, ImGuiKey_GamepadStart}, {0x0020, ImGuiKey_GamepadBack},
+        {0x0040, ImGuiKey_GamepadL3}, {0x0080, ImGuiKey_GamepadR3}, {0x0100, ImGuiKey_GamepadL1}, {0x0200, ImGuiKey_GamepadR1},
+        {0x1000, ImGuiKey_GamepadFaceDown}, {0x2000, ImGuiKey_GamepadFaceRight}, {0x8000, ImGuiKey_GamepadFaceUp}};
+    static bool fed = false;
+    const auto pad = menu_open ? dingosdk::overlay::read_gamepad() : dingosdk::overlay::Gamepad{};
+    {
+        // A button pressed, a trigger pulled or a stick pushed in the full screen menu hands it to
+        // the controller: the pointer hides until the mouse is used again.
+        static unsigned before{};
+        const bool used = pad.valid && ((pad.buttons & ~before) != 0 || pad.left_trigger > 0.5f || pad.right_trigger > 0.5f ||
+                                        std::abs(pad.left_x) > 0.5f || std::abs(pad.left_y) > 0.5f || std::abs(pad.right_x) > 0.5f ||
+                                        std::abs(pad.right_y) > 0.5f);
+        before = pad.valid ? pad.buttons : 0;
+        if (used && slow) dingosdk::overlay::menu_pad_in_charge().store(true);
+        if (!menu_open) dingosdk::overlay::menu_pad_in_charge().store(false);
+    }
+    if (!pad.valid && !fed) return;
+    for (const auto& button : buttons) io.AddKeyEvent(button.key, (pad.buttons & button.bit) != 0);
+    io.AddKeyAnalogEvent(ImGuiKey_GamepadL2, pad.left_trigger > 0.5f, pad.left_trigger);
+    io.AddKeyAnalogEvent(ImGuiKey_GamepadR2, pad.right_trigger > 0.5f, pad.right_trigger);
+    // The left stick moves like the D-pad, past a dead zone.
+    constexpr float dead = 0.35f;
+    const auto stick = [&](ImGuiKey key, float value) {
+        const float past = std::clamp((value - dead) / (1.0f - dead), 0.0f, 1.0f);
+        io.AddKeyAnalogEvent(key, value > dead, past);
+    };
+    stick(ImGuiKey_GamepadLStickLeft, -pad.left_x);
+    stick(ImGuiKey_GamepadLStickRight, pad.left_x);
+    stick(ImGuiKey_GamepadLStickUp, pad.left_y);
+    stick(ImGuiKey_GamepadLStickDown, -pad.left_y);
+    // The right stick scrolls the full screen menu's page.
+    stick(ImGuiKey_GamepadRStickUp, pad.right_y);
+    stick(ImGuiKey_GamepadRStickDown, -pad.right_y);
+    fed = pad.valid;
+    if (fed && !(menu_open && dingosdk::overlay::menu_page_owns_pad().load())) {
+        io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
+        io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
+    } else if (fed) {
+        io.ConfigFlags &= ~ImGuiConfigFlags_NavEnableGamepad;
+        io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
+    } else {
+        io.ConfigFlags &= ~ImGuiConfigFlags_NavEnableGamepad;
+        io.BackendFlags &= ~ImGuiBackendFlags_HasGamepad;
+    }
+}
+
+// Pixels made into a texture in the SRV heap's slot `slot`: the map download card's icon (1),
+// the menu's map pictures (2) or the item card's mod icon (3). Recorded on the frame's command list ahead of ImGui's draws, so
+// the copy is done before anything samples it. Returns the texture's id for ImGui, or 0. Nothing
+// here is fatal: without it a card shows a plain tile.
+ImTextureID upload_image(State& s, const CardPixels& pixels, UINT slot, ComPtr<ID3D12Resource>& texture_out,
+                         ComPtr<ID3D12Resource>& upload_out) {
+    texture_out.Reset();
+    upload_out.Reset();
     D3D12_RESOURCE_DESC texture{};
     texture.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
     texture.Width = pixels.width;
@@ -511,10 +651,10 @@ void upload_card_image(State& s) {
                                                  IID_PPV_ARGS(&made))) ||
         FAILED(s.device->CreateCommittedResource(&upload_heap, D3D12_HEAP_FLAG_NONE, &buffer, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
                                                  IID_PPV_ARGS(&upload))))
-        return;
+        return {};
     void* mapped{};
     const D3D12_RANGE none{};
-    if (FAILED(upload->Map(0, &none, &mapped)) || !mapped) return;
+    if (FAILED(upload->Map(0, &none, &mapped)) || !mapped) return {};
     for (UINT row = 0; row < pixels.height; ++row)
         std::memcpy(static_cast<unsigned char*>(mapped) + layout.Offset + std::size_t{row} * layout.Footprint.RowPitch,
                     pixels.rgba.data() + std::size_t{row} * pixels.width * 4, std::size_t{pixels.width} * 4);
@@ -536,25 +676,86 @@ void upload_card_image(State& s) {
     const auto step = s.device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
     auto cpu = s.srvs->GetCPUDescriptorHandleForHeapStart();
     auto gpu = s.srvs->GetGPUDescriptorHandleForHeapStart();
-    cpu.ptr += step;
-    gpu.ptr += step;
+    cpu.ptr += std::size_t{step} * slot;
+    gpu.ptr += std::uint64_t{step} * slot;
     D3D12_SHADER_RESOURCE_VIEW_DESC view{};
     view.Format = texture.Format;
     view.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
     view.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
     view.Texture2D.MipLevels = 1;
     s.device->CreateShaderResourceView(made.Get(), &view, cpu);
-    s.card_texture = std::move(made);
-    s.card_upload = std::move(upload);
+    texture_out = std::move(made);
+    upload_out = std::move(upload);
     // Drawable from the next frame on: this frame's draws were made before the copy was recorded.
-    card_image_uploaded(static_cast<ImTextureID>(gpu.ptr), pixels.serial);
+    return static_cast<ImTextureID>(gpu.ptr);
+}
+
+void upload_card_image(State& s) {
+    CardPixels pixels;
+    if (!take_card_pixels(pixels) || pixels.rgba.empty() || !s.device || !s.srvs) return;
+    // Frames still on the GPU may sample the icon this one replaces.
+    if (s.card_texture && s.next_fence && !completed(s.next_fence, render_fence_timeout_ms)) return;
+    if (const auto id = upload_image(s, pixels, 1, s.card_texture, s.card_upload)) card_image_uploaded(id, pixels.serial);
+}
+
+// The menu's map pictures (menu_map_pictures.cpp), when a new set is waiting.
+void upload_menu_map_image(State& s) {
+    if (!s.device || !s.srvs) return;
+    if (s.menu_map_texture && s.next_fence && !completed(s.next_fence, render_fence_timeout_ms)) return;
+    CardPixels pixels;
+    if (!take_menu_map_pixels(pixels) || pixels.rgba.empty()) return;
+    if (const auto id = upload_image(s, pixels, 2, s.menu_map_texture, s.menu_map_upload)) menu_map_pixels_uploaded(id, pixels.serial);
+}
+
+// The item card's mod icon (item_browser_overlay.cpp), when another is waiting.
+void upload_mod_icon(State& s) {
+    if (!s.device || !s.srvs) return;
+    if (s.mod_icon_texture && s.next_fence && !completed(s.next_fence, render_fence_timeout_ms)) return;
+    CardPixels pixels;
+    if (!take_mod_icon_pixels(pixels) || pixels.rgba.empty()) return;
+    if (const auto id = upload_image(s, pixels, 3, s.mod_icon_texture, s.mod_icon_upload)) mod_icon_uploaded(id, pixels.serial);
+}
+
+// A plugin's picture (plugin_images.cpp), one a frame, into the slot the cache chose.
+void upload_plugin_image(State& s) {
+    if (!s.device || !s.srvs) return;
+    auto next = take_plugin_image();
+    if (!next) return;
+    const auto slot = static_cast<std::size_t>(next->slot);
+    // A texture in the slot may still be sampled by frames on the GPU.
+    if (s.plugin_textures[slot] && s.next_fence && !completed(s.next_fence, render_fence_timeout_ms)) {
+        plugin_image_uploaded(next->path, next->slot, {}, true);
+        return;
+    }
+    const auto id = upload_image(s, next->pixels, plugin_image_first_slot + static_cast<UINT>(slot), s.plugin_textures[slot],
+                                 s.plugin_uploads[slot]);
+    plugin_image_uploaded(next->path, next->slot, id);
+}
+
+// A Thunderstore icon for the Mod Manager page (store_icons.cpp), one a frame, into the slot it was given.
+void upload_store_icon(State& s) {
+    if (!s.device || !s.srvs) return;
+    auto next = take_store_icon();
+    if (!next) return;
+    const auto slot = static_cast<std::size_t>(next->slot);
+    if (s.store_textures[slot] && s.next_fence && !completed(s.next_fence, render_fence_timeout_ms)) {
+        store_icon_uploaded(next->url, next->slot, {}, true);
+        return;
+    }
+    const auto id = upload_image(s, next->pixels, store_icon_first_slot + static_cast<UINT>(slot), s.store_textures[slot], s.store_uploads[slot]);
+    store_icon_uploaded(next->url, next->slot, id);
 }
 
 void render(IDXGISwapChain* presented, UINT flags) {
     auto& s = state();
     if (flags & DXGI_PRESENT_TEST) return;
     dingosdk::profiler::record_present();
+    DINGO_PROFILE_ZONE("present/overlay");
     std::lock_guard lock(s.render_mutex);
+    // Said once: a log without this line is a game whose presentations never reach the overlay.
+    if (static bool said{}; !std::exchange(said, true))
+        dingosdk::logging::write(dingosdk::logging::Level::info, dingosdk::logging::Channel::graphics,
+            "The game's first presentation reached the overlay.");
     if (s.stop.load()) {
         if (!s.swapchain || completed(s.next_fence, 0)) {
             restore_input(true);
@@ -587,15 +788,21 @@ void render(IDXGISwapChain* presented, UINT flags) {
     // Refreshes the chat feed every frame, which also decides whether T opens it.
     const bool chat_frame = chat_pending();
     const bool map_download_frame = map_download_pending();
+    const bool mod_apply_frame = mod_apply_card_pending();
     const bool game_text_frame = game_text_pending();
-    const bool drone_hud_frame = drone_hud_pending();
     const bool skate_hud_frame = skate_hud_pending();
     const bool nametag_frame = nametags_pending();
-    const bool meat_frame = hall_of_meat_pending();
+    const bool plugins_frame = plugins_pending();
     const bool item_browser_frame = item_browser_pending();
     const bool perf_frame = perf_hud_pending() || trainer_hud_pending();
     const bool hub_frame = hub_page_pending();
+    const bool grab_frame = frame_grab_pending() || depth_probe_pending();
+    // A plugin's screen look is drawn under every frame it asks for (reskate.screen.look).
+    const bool look_frame = screen_look::pending();
+    // And a plugin's viewmodel (reskate.viewmodel), or its pictures still going up to the GPU.
+    const bool viewmodel_frame = viewmodel::pending();
     if (trainer_open_requested()) s.visible.store(true);
+    if (dingosdk::overlay::menu_open_flag().exchange(false)) s.visible.store(true); // `menu`, or its controller bind
     const bool menu_frame = interactive_visible(s);
     if (!menu_frame) {
         if (s.ui_was_interactive) {
@@ -611,8 +818,9 @@ void render(IDXGISwapChain* presented, UINT flags) {
             sync_menu_cursor();
         }
         // Hidden, the overlay still draws while a notice or chat line is on screen.
-        if (s.loaded_notice_posted && !notices_pending() && !chat_frame && !game_text_frame && !drone_hud_frame && !skate_hud_frame &&
-            !nametag_frame && !meat_frame && !item_browser_frame && !perf_frame && !hub_frame && !map_download_frame) return;
+        if (s.loaded_notice_posted && !notices_pending() && !chat_frame && !game_text_frame && !skate_hud_frame &&
+            !nametag_frame && !plugins_frame && !item_browser_frame && !perf_frame && !hub_frame && !map_download_frame && !mod_apply_frame && !look_frame &&
+            !viewmodel_frame && !grab_frame) return;
     } else if (!s.ui_was_interactive) {
         s.ui_was_interactive = true;
         s.last_model = {}; // Reopening immediately reads fresh state.
@@ -634,6 +842,16 @@ void render(IDXGISwapChain* presented, UINT flags) {
         restore_input(true);
         return;
     }
+    // A screen capture takes the game's frame before anything of ReSkate's is drawn on it.
+    {
+        const auto size = frame.buffer->GetDesc();
+        const bool grabbing = frame_grab_pending();
+        depth_tap_present(s, static_cast<std::uint32_t>(size.Width), size.Height, grabbing);
+        if (grab_frame) {
+            if (grabbing) grab_presented_frame(s, frame.buffer.Get());
+            depth_probe_present(s, static_cast<std::uint32_t>(size.Width), size.Height);
+        }
+    }
     ImGuiContext* previous = ImGui::GetCurrentContext();
     ImGui::SetCurrentContext(s.context);
     {
@@ -650,6 +868,7 @@ void render(IDXGISwapChain* presented, UINT flags) {
     // (Watching the pointer for the pause menu's browser keeps the mouse state between frames,
     // or every frame would look like a fresh click.)
     if (!interactive) { ImGui::GetIO().ClearInputKeys(); if (!hub_frame) ImGui::GetIO().ClearInputMouse(); }
+    feed_menu_gamepad(interactive && (s.visible.load() || s.plugin_dialog_visible.load()) && !s.editor_visible.load());
     ImGui::GetIO().MouseDrawCursor = owns_menu_cursor(s);
     ImGui_ImplDX12_NewFrame();
     { OverlayInputAccess access; ImGui_ImplWin32_NewFrame(); }
@@ -658,25 +877,26 @@ void render(IDXGISwapChain* presented, UINT flags) {
     ImGui::NewFrame();
     if (menu_frame) {
         draw_menu();
+        draw_plugin_screen();
         draw_console();
         draw_perf_window();
-        draw_drone_window();
     }
     draw_hub_page();
-    draw_hall_of_meat();
+    draw_plugins();
     draw_nametags();
     draw_game_text();
-    draw_drone_hud();
     draw_skate_hud();
     draw_perf_hud();
     draw_trainer_hud();
     draw_notices();
     draw_item_browser();
+    draw_plugin_dialog();
     draw_chat();
+    if (mod_apply_frame) draw_mod_apply_card();
     draw_map_download();
     sync_menu_cursor(); // close buttons also change visibility, without a key message
     ImGui::Render();
-    if (ImGui::GetDrawData()->TotalVtxCount == 0) { ImGui::SetCurrentContext(previous); return; }
+    if (ImGui::GetDrawData()->TotalVtxCount == 0 && !look_frame && !viewmodel_frame) { ImGui::SetCurrentContext(previous); return; }
     const auto upload_slot = static_cast<std::size_t>(s.submitted_draws % s.upload_fences.size());
     // The ImGui backend rotates upload buffers by submitted draw count, while
     // command allocators rotate by swapchain index. Wait for both exact owners
@@ -693,6 +913,48 @@ void render(IDXGISwapChain* presented, UINT flags) {
         ImGui::SetCurrentContext(previous); s.failed = true; restore_input(true); return;
     }
     upload_card_image(s);
+    upload_menu_map_image(s);
+    upload_mod_icon(s);
+    upload_plugin_image(s);
+    upload_store_icon(s);
+    if (viewmodel_frame) {
+        // Under the screen look (a camcorder films the gun too) and ImGui. Left in PRESENT, as found.
+        ID3D12DescriptorHeap* viewmodel_heaps[] = {s.srvs.Get()};
+        s.commands->SetDescriptorHeaps(1, viewmodel_heaps);
+        viewmodel::Target target;
+        target.device = s.device.Get();
+        target.commands = s.commands.Get();
+        target.buffer = frame.buffer.Get();
+        target.rtv = frame.rtv;
+        target.srvs = s.srvs.Get();
+        target.slot = viewmodel_first_slot;
+        target.slots = viewmodel_slots;
+        target.format = frame.buffer->GetDesc().Format;
+        target.transfer = output_transfer;
+        target.white_nits = output_white_nits;
+        target.fence = s.next_fence + 1; // what this frame's commands signal (below)
+        target.gpu_done = [] {
+            const auto& fence = state().fence;
+            return fence ? fence->GetCompletedValue() : std::uint64_t{0};
+        };
+        (void)viewmodel::record(target);
+    }
+    if (look_frame) {
+        // Drawn first, so ImGui draws over it. It leaves the back buffer in PRESENT, as it found it.
+        ID3D12DescriptorHeap* look_heaps[] = {s.srvs.Get()};
+        s.commands->SetDescriptorHeaps(1, look_heaps);
+        screen_look::Target look;
+        look.device = s.device.Get();
+        look.commands = s.commands.Get();
+        look.buffer = frame.buffer.Get();
+        look.rtv = frame.rtv;
+        look.srvs = s.srvs.Get();
+        look.slot = screen_look_slot;
+        look.format = frame.buffer->GetDesc().Format;
+        look.transfer = output_transfer;
+        look.wait_idle = [] { return completed(state().next_fence, render_fence_timeout_ms); };
+        (void)screen_look::record(look);
+    }
     D3D12_RESOURCE_BARRIER barrier{};
     barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
     barrier.Transition.pResource = frame.buffer.Get();

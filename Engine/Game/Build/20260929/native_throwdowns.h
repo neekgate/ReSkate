@@ -4,6 +4,11 @@
 
 namespace dingosdk::game::build::v20260929::native_throwdowns {
 // Hooked functions.
+// GetPlayerIsInActivity (6dae8d15). The typed fast thunk calls this same
+// implementation, including calls inlined into the activity pause menu.
+inline constexpr std::uintptr_t player_in_activity = 0x834520;
+inline constexpr std::array<unsigned char,19> player_in_activity_prefix{
+    0x40,0x55,0x48,0x83,0xec,0x20,0x8b,0xe9,0xba,0x89,0x97,0x0f,0xbf,0x48,0x8d,0x4c,0x24,0x38,0xe8};
 // Reports whether a throwdown mode exists in the backend catalogue.
 inline constexpr std::uintptr_t mode_available = 0x807130;
 inline constexpr std::array<unsigned char, 19> mode_available_prefix{
@@ -149,6 +154,10 @@ inline constexpr std::uintptr_t bool_and = 0x16e7130, bool_or = 0x16eb6e0, bool_
 inline constexpr std::array<unsigned char, 9> bool_and_prefix{0x80,0x39,0x00,0x74,0x0a,0x80,0x3a,0x00,0x74};
 inline constexpr std::array<unsigned char, 9> bool_or_prefix{0x80,0x39,0x00,0x75,0x0a,0x80,0x3a,0x00,0x75};
 inline constexpr std::array<unsigned char, 9> bool_not_prefix{0x80,0x39,0x00,0x0f,0x94,0xc0,0x88,0x02,0xc3};
+// ParseInt expression native (09586973): int (const char* const* text), which is
+// "mov rcx, [rcx]; jmp [atoi]". Its record's generic and fast entries both call this.
+inline constexpr std::uintptr_t parse_int = 0x864dc0;
+inline constexpr std::array<unsigned char, 10> parse_int_prefix{0x48,0x8b,0x09,0x48,0xff,0x25,0x7e,0x66,0x78,0x05};
 inline constexpr std::uintptr_t player_id = 0x854b90;
 inline constexpr std::array<unsigned char, 19> player_id_prefix{
     0x40,0x53,0x48,0x83,0xec,0x20,0x48,0x8b,0x11,0x48,0x8b,0xd9,0x48,0x85,0xd2,0x0f,0x84,0xb9,0x00};

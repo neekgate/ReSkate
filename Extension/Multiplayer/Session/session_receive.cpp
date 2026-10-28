@@ -1,9 +1,11 @@
 #include "session_internal.h"
 #include "Extension/Profile/local_profile_runtime.h"
-#include "Extension/Skater/drone_beacon.h"
 #include "Extension/Multiplayer/Net/wire_codec.h"
+#include "Extension/Plugins/plugin_wire.h"
+#include "Engine/Core/Log/logging.h"
 #include "Engine/Game/Build/supported_build.h"
 #include <algorithm>
+#include <format>
 #include <iterator>
 #include <stdexcept>
 #include <utility>
@@ -146,7 +148,9 @@ std::vector<Packet> unpack_poses(Session &s, std::span<const std::uint8_t> bytes
     bool complete = true;
     out.reserve(batch->entries.size());
     for (const auto &entry : batch->entries) {
-        auto rebuilt = pose_batch::rebuild(s.pose_streams, entry);
+        // A stream is opened only for a player in this session (a server sends no others; one
+        // whose player is not known yet is not acked, so it comes again).
+        auto rebuilt = entry.whole && !find_peer(s, entry.source) ? std::nullopt : pose_batch::rebuild(s.pose_streams, entry);
         if (!rebuilt) {
             complete = false;
             continue;
@@ -180,7 +184,8 @@ std::vector<Packet> unpack_sound(Session &s, std::span<const std::uint8_t> bytes
     std::vector<Packet> out;
     if (s.sound_streams.size() > 2 * max_players)
         std::erase_if(s.sound_streams, [&](const auto &stream) { return !find_peer(s, stream.second.source); });
-    auto heard = sound_codec::read(s.sound_streams, bytes, s.world, s.map);
+    // (A stream only for a player in this session; it is sent whole again every couple of seconds.)
+    auto heard = sound_codec::read(s.sound_streams, bytes, s.world, s.map, [&](std::uint64_t source) { return find_peer(s, source) != nullptr; });
     if (!heard) return out;
     out.reserve(heard->size());
     for (auto &one : *heard) {
@@ -257,10 +262,14 @@ void apply_roster(Session &s, const Packet &p, std::uint64_t now) {
     if (s.roster_sequence && !newer_sequence(p.sequence, s.roster_sequence))
         return;
     s.roster_sequence = p.sequence;
-    s.server_admin = false;
+    s.own_tag.clear();
+    s.own_tag_color = 0;
     for (const auto &m : p.members)
         if (m.id == s.transport.status().local_id) {
-            s.server_admin = m.admin && game_server_steam_id(s.host_id);
+            if (game_server_steam_id(s.host_id)) {
+                s.own_tag = m.tag;
+                s.own_tag_color = m.tag_color;
+            }
             set_local_party(s, m);
             s.local_speeding = m.speeding && game_server_steam_id(s.host_id);
             if (m.scoring && !s.local_scoring) add_chat(s, 0, "ReSkate", own_scoring_notice());
@@ -275,9 +284,9 @@ void apply_roster(Session &s, const Packet &p, std::uint64_t now) {
     }
     apply_object_placement(s, p.object_placement);
     apply_object_limit(s, p.object_limit); // after server_admin, which exempts an admin
-    s.object_scaling = !dedicated_host(s) || p.object_scaling;
+    apply_object_scaling(s, !dedicated_host(s) || p.object_scaling);
     s.sync_effects = !dedicated_host(s) || p.sync_effects;
-    apply_guest_tools(s, p.guest_noclip, p.guest_no_bail, p.guest_boosts);
+    apply_guest_tools(s, p.guest_noclip, p.guest_no_bail, p.guest_boosts, p.guest_ollies);
     s.enforce_tuning = p.enforce_tuning;
     s.server_votes = dedicated_host(s) ? p.server_votes : 0;
     s.server_polls = dedicated_host(s) ? p.server_polls : 0;
@@ -367,9 +376,6 @@ bool accept_data(Peer &peer, const Packet &p, std::uint64_t now) {
             for (const auto &impact : p.impacts) peer.impacts.emplace_back(due, impact);
             while (peer.impacts.size() > 64) peer.impacts.pop_front();
         }
-    } else if (p.kind == PacketKind::drone) {
-        accepted = peer.effect_budget.accept(now);
-        if (accepted) drone::beacon::receive(peer.member.id, peer.member.name, p.drone_position, p.drone_active);
     } else if (p.kind == PacketKind::pose)
         accepted = peer.poses.push_validated(p, now);
     if (accepted) {
@@ -444,6 +450,11 @@ void networking(Session &s, const NativeFrame &local, std::uint64_t now) {
         }
     }
     if (s.mode == Mode::join && physical(s.host_id) == links.end()) {
+        // What the other end said as it closed the link, when it was said to this player
+        // ("You were kicked...", "You are banned...", "Your mods..."), is put in front of
+        // them (take_removed_notice): otherwise it is only the status line of a menu they
+        // may never open. A link that just went away says nothing of the kind.
+        if (const auto said = s.transport.status().detail; said.starts_with("You ") || said.starts_with("Your ")) s.removed_notice = said;
         stop(s, s.transport.status().detail);
         return;
     }
@@ -588,12 +599,36 @@ void networking(Session &s, const NativeFrame &local, std::uint64_t now) {
             continue;
         if (!decoded || decoded->session != s.secret ||
             ((s.mode == Mode::host || direct_link) && decoded->source != message.peer)) {
+            // Which of the three it was, and what the message looked like: the status line
+            // says only that one of them failed (2026-10-13: joins to updated servers ended
+            // here with nothing to tell them apart).
+            try {
+                std::string start;
+                for (std::size_t i = 0; i < message.bytes.size() && i < 16; ++i) start += std::format("{:02x}", static_cast<unsigned>(message.bytes[i]));
+                dingosdk::logging::log(dingosdk::logging::Level::warning, dingosdk::logging::Channel::runtime,
+                    "Multiplayer: a message from {} was turned down: {}. {} byte(s), starting {}; {} link{}{}.", message.peer,
+                    !decoded ? std::string("it could not be read")
+                    : decoded->session != s.secret ? std::format("it is of another session (kind {})", static_cast<int>(decoded->kind))
+                    : std::format("it names another sender, {} (kind {})", decoded->source, static_cast<int>(decoded->kind)),
+                    message.bytes.size(), start, direct_link ? "a direct" : "the host's", batch.empty() ? "" : ", one of a batch",
+                    s.mode == Mode::join && dedicated_host(s) ? ", a dedicated server" : "");
+            } catch (...) {}
             disconnect(s, message.peer, "Join code, sender identity, or multiplayer protocol did not match.");
             if (s.mode == Mode::off)
                 return;
             continue;
         }
         const auto &p = *decoded;
+        if (s.mode == Mode::join && map_fetch_policy::expired(s.map_fetch_deadline, now)) {
+            stop(s, "Map download timed out. Please try joining the server again.");
+            return;
+        }
+        if (s.mode == Mode::host && link->fetching_since && (!link->handshaken || link->travel_since) &&
+            map_fetch_policy::host_expired(link->fetching_since, now)) {
+            disconnect(s, message.peer, "The server stopped waiting for the map download.");
+            if (s.mode == Mode::off) return;
+            continue;
+        }
         // A dedicated server sends no poses; its roster and control traffic keep it alive.
         if (dedicated_host(s) && message.peer == s.host_id) link->last_packet = now;
         if (p.kind == PacketKind::world_state) {
@@ -608,6 +643,8 @@ void networking(Session &s, const NativeFrame &local, std::uint64_t now) {
                                      !newer_sequence(p.sequence, s.world_state_sequence)))
                 continue;
             if (p.world > s.world) {
+                // Initial authorization during an automatic rejoin keeps the original budget.
+                const auto fetch_deadline = s.world ? 0 : s.map_fetch_deadline;
                 clear_world(s, now);
                 s.world = p.world;
                 s.travelling = s.awaiting_map = s.join_map_authorized = true;
@@ -618,6 +655,8 @@ void networking(Session &s, const NativeFrame &local, std::uint64_t now) {
                 s.map_label.clear();
                 s.map_package.clear();
                 s.fetching_since = 0;
+                s.map_fetch_deadline = fetch_deadline;
+                map_fetch_deadline_flag.store(fetch_deadline);
                 fetching_map_flag.store(false, std::memory_order_relaxed);
                 s.map = 0;
                 s.map_load_submitted = false;
@@ -735,8 +774,11 @@ void networking(Session &s, const NativeFrame &local, std::uint64_t now) {
             s.join_destination = p.destination;
             s.map_label = p.map_label;
             s.map_package = p.map_package;
+            // (Only a dedicated server needs plugins of its players.)
+            if (dedicated_host(s)) s.required_plugins = p.required_plugins;
             s.world = p.world;
             s.join_map_authorized |= p.map_authorized;
+            link->last_packet = now;
             if (new_challenge)
                 s.last_map_request = 0;
             if (!s.join_map_authorized)
@@ -830,6 +872,10 @@ void networking(Session &s, const NativeFrame &local, std::uint64_t now) {
             link->world_ready = true;
             link->travel_since = 0;
             link->last_packet = now;
+            if (s.mode == Mode::join && message.peer == s.host_id && !s.awaiting_map) {
+                s.map_fetch_deadline = 0;
+                map_fetch_deadline_flag.store(0);
+            }
             if (joined) s.join_backoff.joined(message.peer);
             if (s.mode == Mode::host) {
                 send_required(s, message.peer, encode_wire(packet(s, PacketKind::welcome, now)));
@@ -915,6 +961,41 @@ void networking(Session &s, const NativeFrame &local, std::uint64_t now) {
                 s.host_extras = p.extras;
             continue;
         }
+        // What the player's role on the server lets them do: the rules that depend on it are applied again.
+        if (p.kind == PacketKind::permissions) {
+            if (dedicated_host(s) && message.peer == s.host_id && p.source == s.host_id) {
+                s.role = p.role;
+                s.role_all_commands = p.role_all_commands;
+                s.role_commands = p.role_commands;
+                s.role_permissions = p.role_permissions;
+                s.server_admin = s.role_all_commands || !s.role_commands.empty();
+                apply_object_limit(s, s.object_limit);
+                apply_object_placement(s, s.object_placement);
+                apply_object_scaling(s, s.object_scaling);
+                apply_guest_tools(s, s.guest_noclip, s.guest_no_bail, s.guest_boosts, s.guest_ollies);
+                publish(s);
+                publish_chat(s);
+            }
+            continue;
+        }
+        // The maps the server's vote for the next map will offer, for their pictures (map_icons.h).
+        if (p.kind == PacketKind::next_maps) {
+            if (dedicated_host(s) && message.peer == s.host_id && p.source == s.host_id) {
+                std::vector<NextMapWanted> maps;
+                for (const auto &map : p.next_maps) maps.push_back({clean_chat_text(map.name), map.package});
+                set_next_maps(std::move(maps));
+            }
+            continue;
+        }
+        // The server's own filtered chat words: filtered here too while on it (reset_session clears them).
+        if (p.kind == PacketKind::words) {
+            if (dedicated_host(s) && message.peer == s.host_id && p.source == s.host_id) {
+                text::set_own_words(p.words, {});
+                s.chat_masked.clear();
+                publish_chat(s);
+            }
+            continue;
+        }
         if (p.kind == PacketKind::maps) {
             if (dedicated_host(s) && message.peer == s.host_id && p.source == s.host_id) {
                 s.server_maps = p.maps;
@@ -995,6 +1076,26 @@ void networking(Session &s, const NativeFrame &local, std::uint64_t now) {
             if (s.mode == Mode::host) broadcast(s, p, true, false, now, p.source);
             continue;
         }
+        // Grey dots above the sender. Not a chat line. "On" is held to a few a second so a
+        // modified client cannot flood the relay, and "off" only clears dots that are up, so
+        // it cannot outpace "on".
+        if (p.kind == PacketKind::typing) {
+            auto *sender = find_peer(s, p.source);
+            if (direct_link || !sender || !sender->handshaken) continue;
+            if (!routed_source(p, sender->member, message.peer, s.mode == Mode::host, s.host_id))
+                continue;
+            if (p.typing) {
+                if (sender->typing_notice && now < sender->typing_notice + 200000) continue;
+                sender->typing_notice = now;
+                sender->typing_until = now + typing_hold_us;
+            } else {
+                if (!sender->typing_until) continue;
+                sender->typing_until = 0;
+            }
+            sender->last_packet = now;
+            if (s.mode == Mode::host) broadcast(s, p, true, false, now, p.source);
+            continue;
+        }
         // Throwdown messages are relayed like chat, but only within one map: a drop
         // belongs to the world it was placed in.
         if (p.kind == PacketKind::throwdown) {
@@ -1002,13 +1103,16 @@ void networking(Session &s, const NativeFrame &local, std::uint64_t now) {
             if (direct_link || !sender || !sender->handshaken || p.map != s.map || p.world != s.world ||
                 !routed_source(p, sender->member, message.peer, s.mode == Mode::host, s.host_id))
                 continue;
-            if (!sender->throwdown_budget.accept(now, throwdown_burst)) continue;
+            if (!(plugins::wire::is_plugin(p.throwdown) ? sender->plugin_budget.accept(now, plugin_burst)
+                                                        : sender->throwdown_budget.accept(now, throwdown_burst)))
+                continue;
             sender->last_packet = now;
             // A player whose mods change scoring or physics takes part in nothing linked: the host
             // passes none of theirs on.
             if (sender->member.scoring) continue;
             if (s.throwdown_inbox.size() < 256) s.throwdown_inbox.emplace_back(p.source, p.throwdown);
-            if (s.mode == Mode::host) broadcast(s, p, true, false, now, p.source);
+            // A plugin message for the authority alone stays here (plugin_wire.h).
+            if (s.mode == Mode::host && plugins::wire::relayed(p.throwdown)) broadcast(s, p, true, false, now, p.source);
             continue;
         }
         // A host-ready notice and its fresh cosmetics can share one receive
@@ -1080,7 +1184,15 @@ void networking(Session &s, const NativeFrame &local, std::uint64_t now) {
         }
         // Authorized arrivals get time for native loading; this has an absolute
         // deadline, so requests cannot keep an unused slot reserved indefinitely.
+        if (s.mode == Mode::host && p.fetching_since && (!p.handshaken || p.travel_since) &&
+            map_fetch_policy::host_expired(p.fetching_since, now)) {
+            disconnect(s, p.member.id, "The server stopped waiting for the map download.");
+            if (s.mode == Mode::off) return;
+            continue;
+        }
         const std::uint64_t handshake_timeout = p.map_authorized ? 180000000 : 8000000;
+        const bool fetching_from_host = s.mode == Mode::join && p.member.id == s.host_id &&
+            s.map_fetch_deadline && !map_fetch_policy::expired(s.map_fetch_deadline, now);
         if (p.handshaken && (s.travelling || p.travel_since)) {
             if (p.travel_since && now - p.travel_since > 180000000) {
                 disconnect(s, p.member.id, "A player could not finish loading the new map.");
@@ -1088,7 +1200,8 @@ void networking(Session &s, const NativeFrame &local, std::uint64_t now) {
             }
             continue;
         }
-        if ((!p.handshaken && p.connected_at && now - p.connected_at > handshake_timeout) ||
+        if ((!p.handshaken && p.connected_at &&
+             (fetching_from_host ? now - p.last_packet > 10000000 : now - p.connected_at > handshake_timeout)) ||
             (p.handshaken && now - p.last_packet > 10000000)) {
             disconnect(s, p.member.id, "A player timed out while waiting for gameplay data.");
             if (s.mode == Mode::off)
@@ -1108,6 +1221,7 @@ void networking(Session &s, const NativeFrame &local, std::uint64_t now) {
         }
     }
     update_scoring(s, now); // before the roster, so a host's own flag goes out with it
+    update_presence(s, now);
     tick_host_parties(s, now); // and the lobby's parties, which the roster carries
     if (s.mode == Mode::host && world_playing(s, local) && (s.roster_dirty || now - s.last_roster > 2000000))
         send_roster(s, now);
@@ -1116,14 +1230,17 @@ void networking(Session &s, const NativeFrame &local, std::uint64_t now) {
         std::any_of(peers.begin(), peers.end(), [](const auto &peer) { return peer.handshaken && !peer.world_ready; })) &&
         (!s.last_world_state || now - s.last_world_state >= 1000000) && (s.travelling || s.world > 1))
         send_world_state(s, now);
-    if (s.mode == Mode::join && s.world > 1 && (s.travelling || !s.last_world_ready) &&
-        (!s.last_world_ready || now - s.last_world_ready >= 1000000)) {
+    // (And through a reload of its own, begin_local_reload, whatever the world: the host or server hears
+    // it is loading, not silent, and when it is back.)
+    if (s.mode == Mode::join && (s.world > 1 || s.local_reload || s.reload_ready_due) && (s.travelling || !s.last_world_ready || s.reload_ready_due) &&
+        (!s.last_world_ready || now - s.last_world_ready >= 1000000 || s.reload_ready_due)) {
         if (const auto *host_peer = find_peer(s, s.host_id); host_peer && host_peer->handshaken) {
             auto ready = packet(s, PacketKind::world_ready, now);
             ready.world_ready = local.ready && !s.awaiting_map;
             ready.map_fetching = !ready.world_ready && s.fetching_since != 0;
             send_required(s, s.host_id, encode_wire(ready));
             s.last_world_ready = now;
+            s.reload_ready_due = false;
         }
     }
     if (s.public_host)

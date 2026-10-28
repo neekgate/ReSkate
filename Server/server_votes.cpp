@@ -19,6 +19,7 @@ const char *vote_name(Host::VoteKind kind) {
     case Host::VoteKind::time: return "Time of day";
     case Host::VoteKind::custom: return "Custom";
     case Host::VoteKind::poll: return "Poll";
+    case Host::VoteKind::extend: return "Extend";
     }
     return "";
 }
@@ -29,6 +30,7 @@ std::uint8_t vote_bit(Host::VoteKind kind) {
     case Host::VoteKind::time: return server_vote_time;
     case Host::VoteKind::custom: return multiplayer::server_vote_custom;
     case Host::VoteKind::poll: return multiplayer::server_vote_poll;
+    case Host::VoteKind::extend: return multiplayer::server_vote_custom; // a yes or no vote, as the owner's are
     }
     return 0;
 }
@@ -64,6 +66,7 @@ const VoteSetting &Host::vote_setting(VoteKind kind, std::size_t custom) const {
     case VoteKind::kick: return config_.votes.kick;
     case VoteKind::time: return config_.votes.time;
     case VoteKind::custom: return custom < config_.votes.custom.size() ? config_.votes.custom[custom].setting : none;
+    case VoteKind::extend: return config_.votes.extend;
     case VoteKind::poll: break;
     }
     return none;
@@ -85,8 +88,12 @@ std::vector<multiplayer::ServerCustomVote> Host::custom_votes() const {
     std::vector<multiplayer::ServerCustomVote> list;
     for (const auto &v : config_.votes.custom)
         if (v.setting.enabled) list.push_back({v.name, v.description, v.choices});
+    // The server's own "extend" goes with them: games list it in their "/" menu as they do those.
+    if (extend_vote_on() && list.size() < multiplayer::server_custom_vote_limit)
+        list.push_back({"extend", "Give this map " + std::to_string(config_.rotation_extend) + " more minutes", {}});
     return list;
 }
+bool Host::extend_vote_on() const { return config_.votes.extend.enabled && config_.map_rotation && config_.rotation_extend; }
 void Host::reply(Guest &guest, std::string_view text, unsigned max_lines) {
     // Chat lines are single lines: longer answers (admin commands) arrive a line at a time.
     unsigned lines{};
@@ -136,16 +143,31 @@ void Host::chat_command(Guest &guest, std::string_view line) {
             text += "/vote <name>: this server's own votes (" + joined(names, ", ") + "); /vote list says what each does\n";
         }
         if (votes || !custom.empty()) text += "/yes or /no: vote in the running vote\n";
-        if (polls == ServerPolls::everyone || (polls == ServerPolls::admins && is_admin(guest.member.id)))
+        if (polls == ServerPolls::everyone || (polls == ServerPolls::admins && has(guest.member.id, multiplayer::role_polls)))
             text += "/poll <question> | <answer> | <answer>...: ask everyone a question\n";
         if (polls != ServerPolls::off) text += "/1, /2...: answer the running poll\n";
         if (config_.map_rotation) text += "The map changes every " + std::to_string(config_.map_rotation) + " min.\n";
         if (config_.parties) text += "/party: your party (invite, accept, leave...; /party help); /p <message>: party chat\n";
-        if (is_admin(guest.member.id))
-            text += "Admins: any server command as /<command>, e.g. /kick, /map, /tpall, /votes, /announce, /announce-to, /msg, /msg-party, /msg-admins\n";
+        if (const auto *role = role_of(guest.member.id); staff(role))
+            text += role->all_commands
+                ? "Admins: any server command as /<command>, e.g. /kick, /map, /tpall, /votes, /announce, /announce-to, /msg, /msg-party, /msg-admins, /lock, /unlock, /locks\n"
+                : "Your role (" + role->name + "): these server commands as /<command>: " + joined(role->commands, ", ") + "\n";
         const std::string whisper = "/w <player> <message>: send a private message";
         return reply(guest, (text.empty() ? "This server has no player votes. Type /tp <player> to teleport.\n" : text) + whisper);
     }
+    // A number from a player with a plugin's poll open answers that one, not the server's: it is the
+    // plugin's question, so their role's "votes" is not asked.
+    if (plugin_polls_.contains(guest.member.id)) {
+        const auto word = verb == "vote" ? lower(split(rest).first) : verb;
+        if (word.size() == 1 && word[0] >= '1' && word[0] <= '9' && answer_plugin_poll(guest, static_cast<std::size_t>(word[0] - '1'))) return;
+    }
+    if ((verb == "party" || verb == "p") && !may(guest.member.id, multiplayer::role_parties))
+        return reply(guest, role_refusal(guest.member.id, "use parties"));
+    if ((verb == "w" || verb == "whisper" || verb == "tell") && !may(guest.member.id, multiplayer::role_whisper))
+        return reply(guest, role_refusal(guest.member.id, "send private messages"));
+    if ((verb == "vote" || verb == "yes" || verb == "y" || verb == "no" || verb == "n" || (verb.size() == 1 && verb[0] >= '1' && verb[0] <= '9')) &&
+        !may(guest.member.id, multiplayer::role_votes))
+        return reply(guest, role_refusal(guest.member.id, "vote"));
     if (verb == "party") return party_command(guest, rest);
     if (verb == "p") {
         if (!config_.parties) return reply(guest, "Parties are off on this server.");
@@ -185,6 +207,7 @@ void Host::chat_command(Guest &guest, std::string_view line) {
         if (what == "map") return say(start_vote(&guest, VoteKind::map, argument));
         if (what == "kick") return say(start_vote(&guest, VoteKind::kick, argument));
         if (what == "tod" || what == "time") return say(start_vote(&guest, VoteKind::time, argument));
+        if (what == "extend") return say(start_vote(&guest, VoteKind::extend, argument));
         if (what == "list") {
             if (custom.empty()) return reply(guest, "This server has no votes of its own.");
             std::string text;
@@ -196,16 +219,19 @@ void Host::chat_command(Guest &guest, std::string_view line) {
         for (std::size_t i = 0; i < config_.votes.custom.size(); ++i)
             if (config_.votes.custom[i].name == what) return say(start_vote(&guest, VoteKind::custom, argument, i));
         if (vote_) return reply(guest, running_vote_text());
-        return reply(guest, enabled_votes() || !custom.empty() ? "Start one with /vote map, /vote kick, /vote tod or /vote list (see /help)."
+        return reply(guest, enabled_votes() || !custom.empty() ? "Start one with /vote map, /vote kick, /vote tod, /vote extend or /vote list (see /help)."
                                                                : "This server has no player votes.");
     }
     // The owner's own commands (ReSkateServer.json "commands"), never listed in /help.
     for (const auto &custom_command : config_.commands)
-        if (custom_command.name == verb && (!custom_command.admin || is_admin(guest.member.id)))
+        if (custom_command.name == verb && (!custom_command.admin || is_staff(guest.member.id)))
             return run_custom_command(guest, custom_command, trim(rest));
     // Admins run any server command from chat, as they do with "mp server". The caller
     // has already logged the line with any password hidden, so it is not logged again here.
-    if (is_admin(guest.member.id)) {
+    // A word that is not one of the server's commands is the plugins' while one hears chat: a game
+    // mode's "/race join". They answer the player themselves (server.tell).
+    if (custom_command_name_free(verb) && chat_to_plugins(guest, line)) return;
+    if (is_staff(guest.member.id)) {
         const auto id = guest.member.id;
         const auto answer_text = command(line, id);
         if (auto *still = find(id)) reply(*still, answer_text.empty() ? std::string("Done.") : answer_text);
@@ -239,9 +265,10 @@ std::string Host::running_vote_text() const {
 std::string Host::start_vote(Guest *starter, VoteKind kind, std::string_view argument, std::size_t custom) {
     const auto &setting = vote_setting(kind, custom);
     const std::string slash = starter ? "/" : ""; // usage: "/vote ..." in chat, "vote ..." on the console
-    const bool on = kind == VoteKind::custom ? setting.enabled : (enabled_votes() & vote_bit(kind)) != 0;
+    const bool on = kind == VoteKind::custom ? setting.enabled : kind == VoteKind::extend ? extend_vote_on() : (enabled_votes() & vote_bit(kind)) != 0;
     if (!on)
-        return kind == VoteKind::time && setting.enabled ? std::string("Time of day votes need world layer sync on the server.")
+        return kind == VoteKind::extend && setting.enabled ? std::string("This server's maps are not on a timer, so there is none to extend.")
+             : kind == VoteKind::time && setting.enabled ? std::string("Time of day votes need world layer sync on the server.")
              : kind == VoteKind::custom ? "That vote is off on this server."
                                         : std::string(vote_name(kind)) + " votes are off on this server.";
     if (vote_) return running_vote_text();
@@ -270,7 +297,7 @@ std::string Host::start_vote(Guest *starter, VoteKind kind, std::string_view arg
         auto *target = match_player(argument);
         if (!target) return "No single connected player matches \"" + std::string(argument) + "\".";
         if (target == starter) return "You cannot vote to kick yourself.";
-        if (is_admin(target->member.id)) return "Admins cannot be kicked by a vote.";
+        if (has(target->member.id, multiplayer::role_vote_immune)) return guest_name(*target) + " cannot be kicked by a vote.";
         vote.target = target->member.id;
         vote.label = "kick " + guest_name(*target);
         break;
@@ -297,6 +324,10 @@ std::string Host::start_vote(Guest *starter, VoteKind kind, std::string_view arg
         if (!vote.label.empty() && vote.label.front() >= 'A' && vote.label.front() <= 'Z') vote.label.front() = static_cast<char>(vote.label.front() + 32);
         break;
     }
+    case VoteKind::extend:
+        vote.value = std::to_string(config_.rotation_extend);
+        vote.label = "give " + map_name() + " " + vote.value + " more minutes";
+        break;
     case VoteKind::poll: return start_poll(starter, argument);
     }
     if (starter && config_.votes.starter_votes_yes) vote.yes.insert(starter->member.id);
@@ -308,7 +339,7 @@ std::string Host::start_vote(Guest *starter, VoteKind kind, std::string_view arg
     const auto label = vote.label;
     vote_ = std::move(vote);
     const auto who = starter ? guest_name(*starter) : std::string("The server");
-    send_chat(who + " started a vote to " + label + " (" + std::to_string(setting.percent) + "% needed, " +
+    send_chat(who + " started a vote to " + label + " (" + std::to_string(setting.percent) + "% of the votes cast passes it, " +
               std::to_string(seconds) + " s). Vote on the card at the right of your screen, or type /yes or /no.");
     log_("[vote] " + who + " started a vote to " + label + ".");
     check_vote(false);
@@ -321,7 +352,7 @@ std::string Host::start_poll(Guest *starter, std::string_view text, std::string 
     using multiplayer::ServerPolls;
     const auto polls = enabled_polls();
     const std::string slash = starter ? "/" : "";
-    const bool admin = !starter || is_admin(starter->member.id);
+    const bool admin = !starter || has(starter->member.id, multiplayer::role_polls);
     if (starter && polls == ServerPolls::off) return "Polls are off on this server.";
     if (polls == ServerPolls::admins && !admin) return "Only admins can start a poll on this server.";
     if (vote_) return running_vote_text();
@@ -350,13 +381,9 @@ std::string Host::start_poll(Guest *starter, std::string_view text, std::string 
     poll.id = vote_ids_;
     poll.ends = now_ + microseconds(config_.votes.poll_seconds);
     if (!admin) vote_cooldowns_[starter->member.id] = now_ + microseconds(config_.votes.cooldown);
-    std::string choices;
-    for (std::size_t i = 0; i < poll.answers.size(); ++i) choices += (i ? "  " : "") + std::string("/") + std::to_string(i + 1) + " " + poll.answers[i];
     vote_ = std::move(poll);
+    // The card shows the question and its answers; chat does not repeat them.
     const auto who = starter ? guest_name(*starter) : std::string("The server");
-    send_chat(who + " asks: " + vote_->label + " (" + std::to_string(config_.votes.poll_seconds) +
-              " s). Answer on the card at the right of your screen, or type:");
-    send_chat(choices);
     log_("[poll] " + who + " started a poll: " + vote_->label + " " + joined(vote_->answers, " | "));
     check_vote(false);
     return {};
@@ -386,10 +413,24 @@ void Host::answer_poll(Guest &guest, std::size_t answer) {
     check_vote(false);
 }
 
+bool Host::answers_vote(const Guest &guest, std::string_view line) const {
+    // "/2", "/yes", or the same after "/vote", as chat_command takes them.
+    const auto [first, rest] = split(line);
+    auto verb = lower(first);
+    if (verb == "vote") verb = lower(split(rest).first);
+    if (const auto poll = plugin_polls_.find(guest.member.id);
+        poll != plugin_polls_.end() && verb.size() == 1 && verb[0] >= '1' && static_cast<std::size_t>(verb[0] - '0') <= poll->second.answers.size())
+        return true;
+    if (!vote_) return false;
+    if (vote_->kind == VoteKind::poll)
+        return verb.size() == 1 && verb[0] >= '1' && static_cast<std::size_t>(verb[0] - '0') <= vote_->answers.size();
+    return guest.member.id != vote_->target && (verb == "yes" || verb == "y" || verb == "no" || verb == "n");
+}
+
 // `by` nullptr: the server console, which may always end it.
 std::string Host::end_poll(Guest *by) {
     if (!vote_ || vote_->kind != VoteKind::poll) return "No poll is running.";
-    if (by && vote_->starter != by->member.id && !is_admin(by->member.id))
+    if (by && vote_->starter != by->member.id && !has(by->member.id, multiplayer::role_polls))
         return "Only whoever started the poll, or an admin, can end it early.";
     check_vote(true);
     return {};
@@ -402,10 +443,12 @@ std::set<std::uint64_t> Host::vote_voters(const Vote &vote) const {
         if (guest->handshaken && id != vote.target) voters.insert(id);
     return voters;
 }
-unsigned Host::votes_needed(const Vote &vote, unsigned voters) const {
+// The yes votes that pass a vote in which `cast` players voted: its percentage of them. A vote is
+// decided by those who vote, not by everyone on the server.
+unsigned Host::votes_needed(const Vote &vote, unsigned cast) const {
     const auto percent = std::clamp(vote_setting(vote.kind, vote.custom).percent, 1U, 100U);
     // A kick needs a second player's yes: with only the starter and the target on, it fails.
-    return std::max(vote.kind == VoteKind::kick ? 2U : 1U, (voters * percent + 99) / 100);
+    return std::max(vote.kind == VoteKind::kick ? 2U : 1U, (cast * percent + 99) / 100);
 }
 std::vector<unsigned> Host::poll_count(const Vote &poll) const {
     std::vector<unsigned> count(poll.answers.size());
@@ -427,7 +470,8 @@ void Host::show_vote(const Vote &vote, std::uint8_t outcome) {
     } else {
         shown.yes = capped(static_cast<unsigned>(vote.yes.size()));
         shown.no = capped(static_cast<unsigned>(vote.no.size()));
-        shown.needed = capped(votes_needed(vote, static_cast<unsigned>(vote_voters(vote).size())));
+        // What yes needs of the votes cast so far: where the card's bar tips over.
+        shown.needed = capped(votes_needed(vote, static_cast<unsigned>(vote.yes.size() + vote.no.size())));
     }
     shown.starter = vote.starter;
     shown.target = vote.target;
@@ -456,32 +500,39 @@ void Host::check_vote(bool expired) {
     std::erase_if(vote.no, [&](std::uint64_t id) { return !voters.contains(id); });
     std::erase_if(vote.chosen, [&](const auto &entry) { return !voters.contains(entry.first); });
     if (vote.kind == VoteKind::poll) {
+        // (The vote for the next map is over once everyone on has answered.)
+        if (vote.next_map && !voters.empty() && vote.chosen.size() >= voters.size()) expired = true;
         // Games show the count as it changes (the card); chat is not filled with it.
         if (!expired) return show_vote(vote, multiplayer::vote_running);
         const auto count = poll_count(vote);
         show_vote(vote, multiplayer::vote_passed); // "passed": it ran its course
         const auto done = std::move(vote);
         vote_.reset();
+        if (done.next_map) return finish_next_map_vote(done, count);
         const auto top = *std::max_element(count.begin(), count.end());
         std::vector<std::string> leaders;
         for (std::size_t i = 0; i < count.size(); ++i)
             if (top && count[i] == top) leaders.push_back(done.answers[i]);
         const auto outcome = !top ? std::string("nobody answered") : leaders.size() > 1 ? "a tie: " + joined(leaders, ", ")
                                                                                         : leaders.front() + " wins";
-        const auto line = "Poll \"" + done.label + "\" ended: " + answer_count(done.answers, count) + " (" + outcome + ").";
-        send_chat(line);
-        log_("[poll] " + line);
+        // The card shows the result for a while; chat does not repeat it.
+        log_("[poll] Poll \"" + done.label + "\" ended: " + answer_count(done.answers, count) + " (" + outcome + ").");
         // A console poll-run: the winning answer's command, as the console. A tie or no answer runs nothing.
         if (!done.run.empty() && top && leaders.size() == 1) log_(command(fill(done.run, "{answer}", leaders.front())));
         return;
     }
     if (vote.kind == VoteKind::kick && !find(vote.target)) return cancel_vote("the player left");
     const auto eligible = static_cast<unsigned>(voters.size());
-    const auto needed = votes_needed(vote, eligible);
     const auto yes = static_cast<unsigned>(vote.yes.size()), no = static_cast<unsigned>(vote.no.size());
-    const bool passed = yes >= needed;
-    const bool lost = !passed && (expired || yes + (eligible - std::min(eligible, yes + no)) < needed);
-    const auto tally = std::to_string(yes) + " yes, " + std::to_string(no) + " no, " + std::to_string(needed) + " needed";
+    const auto cast = yes + no, waiting = eligible - std::min(eligible, cast);
+    // It runs its time and is then decided by the votes cast. It ends before that once the
+    // players still to vote cannot change it: yes has enough even if they all say no, or not
+    // enough even if they all say yes (which is also how it ends when everyone has voted).
+    const auto needed = votes_needed(vote, cast), of_all = votes_needed(vote, eligible);
+    const bool passed = expired ? cast && yes >= needed : yes >= of_all;
+    const bool lost = !passed && (expired || yes + waiting < of_all);
+    const auto tally = std::to_string(yes) + " yes, " + std::to_string(no) + " no, " + std::to_string(needed) + " needed of " +
+                       std::to_string(cast) + " vote" + (cast == 1 ? "" : "s");
     if (!passed && !lost) {
         // Games show the tally as it changes (the vote card); chat is not filled with it.
         show_vote(vote, multiplayer::vote_running);
@@ -500,11 +551,18 @@ void Host::check_vote(bool expired) {
     switch (done.kind) {
     case VoteKind::map: log_(command("map " + done.value)); break;
     case VoteKind::time: log_(command("tod " + done.value)); break;
-    case VoteKind::custom: log_(command(done.value)); break; // the owner's command, as the console
+    case VoteKind::extend: log_(command("rotation extend " + done.value)); break;
+    case VoteKind::custom: { // the owner's command, as the console
+        by_vote_ = true;
+        struct Reset { bool &flag; ~Reset() { flag = false; } } reset{by_vote_};
+        log_(command(done.value));
+        break;
+    }
     case VoteKind::kick:
         if (find(done.target)) {
-            kicked_.insert(done.target);
-            drop(done.target, "You were kicked from this server by a vote.");
+            // (For as long as votes.kick_minutes says, not as long as an admin's kick.)
+            const auto how_long = keep_out(done.target, config_.votes.kick_minutes);
+            drop(done.target, "You were kicked from this server by a vote" + how_long + ".");
         }
         break;
     case VoteKind::poll: break;
@@ -526,13 +584,15 @@ std::pair<std::string, bool> Host::votes_command(std::string_view argument) {
     };
     if (what.empty()) {
         auto text = describe("map votes", config_.votes.map) + "\n" + describe("kick votes", config_.votes.kick) + "\n" +
-                    describe("time of day votes", config_.votes.time) + (config_.world_layer_sync ? "" : " (needs layer-sync on)");
+                    describe("time of day votes", config_.votes.time) + (config_.world_layer_sync ? "" : " (needs layer-sync on)") + "\n" +
+                    describe("extend votes", config_.votes.extend) + (config_.map_rotation && config_.rotation_extend ? "" : " (needs rotation on, and rotation stay)");
         for (const auto &v : config_.votes.custom)
             text += "\n" + describe("/vote " + v.name + (v.choices.empty() ? "" : " <" + joined(v.choices, "|") + ">"), v.setting) +
                     " -> " + v.command;
         text += "\npolls: " + config_.votes.polls + ", run " + std::to_string(config_.votes.poll_seconds) + " s";
         text += "\nvotes last " + std::to_string(config_.votes.seconds) + " s; a player waits " + std::to_string(config_.votes.cooldown) +
                 " s between votes; the starter " + (config_.votes.starter_votes_yes ? "votes yes" : "does not vote");
+        text += "\na vote kick lasts " + (config_.votes.kick_minutes ? std::to_string(config_.votes.kick_minutes) + " min" : std::string("until the server restarts"));
         if (vote_) text += "\nrunning: " + vote_title(vote_->kind, vote_->label);
         return {text, false};
     }
@@ -543,6 +603,15 @@ std::pair<std::string, bool> Host::votes_command(std::string_view argument) {
         if (!n || (seconds ? *n < 10 || *n > 300 : *n > 3600)) return {seconds ? "votes seconds <10-300>" : "votes cooldown <0-3600>", false};
         (seconds ? config_.votes.seconds : config_.votes.cooldown) = static_cast<unsigned>(*n);
         return {seconds ? "Votes now last " + std::to_string(*n) + " s." : "Players now wait " + std::to_string(*n) + " s between votes.", true};
+    }
+    if (what == "kick-minutes") {
+        const auto n = value == "restart" ? number("0") : number(value);
+        if (!n || *n > 1440)
+            return {"votes kick-minutes <1-1440>|restart (now " +
+                        (config_.votes.kick_minutes ? std::to_string(config_.votes.kick_minutes) + " min" : std::string("until the server restarts")) + ")",
+                    false};
+        config_.votes.kick_minutes = static_cast<unsigned>(*n);
+        return {*n ? "A player kicked by a vote can join again after " + std::to_string(*n) + " min." : "A player kicked by a vote is kept out until the server restarts.", true};
     }
     if (what == "polls") {
         if (value != "off" && value != "admins" && value != "everyone") return {"votes polls off|admins|everyone (now " + config_.votes.polls + ")", false};
@@ -568,17 +637,19 @@ std::pair<std::string, bool> Host::votes_command(std::string_view argument) {
     if (what == "map") label = "Map votes";
     else if (what == "kick") kind = VoteKind::kick, label = "Kick votes";
     else if (what == "tod" || what == "time") kind = VoteKind::time, label = "Time of day votes";
+    else if (what == "extend") kind = VoteKind::extend, label = "Extend votes";
     else {
         kind = VoteKind::custom;
         while (custom < config_.votes.custom.size() && config_.votes.custom[custom].name != what) ++custom;
         if (custom == config_.votes.custom.size())
-            return {"votes [<vote> on|off|<percent>|seconds <n>|cooldown <n>|min-players <n>] (map, kick, tod or a custom vote)\n"
-                    "votes seconds|cooldown <n> | votes polls off|admins|everyone | votes poll-seconds <n> | votes starter-yes on|off",
+            return {"votes [<vote> on|off|<percent>|seconds <n>|cooldown <n>|min-players <n>] (map, kick, tod, extend or a custom vote)\n"
+                    "votes seconds|cooldown <n> | votes kick-minutes <n>|restart | votes polls off|admins|everyone | votes poll-seconds <n> | votes starter-yes on|off",
                     false};
         label = "\"/vote " + what + "\" votes";
     }
     auto &setting = kind == VoteKind::map ? config_.votes.map : kind == VoteKind::kick ? config_.votes.kick
-                  : kind == VoteKind::time ? config_.votes.time : config_.votes.custom[custom].setting;
+                  : kind == VoteKind::time ? config_.votes.time : kind == VoteKind::extend ? config_.votes.extend
+                  : config_.votes.custom[custom].setting;
     const auto [option_text, n_text] = split(value);
     const std::string option(option_text);
     if (option == "seconds" || option == "cooldown" || option == "min-players") {
@@ -625,6 +696,7 @@ void Host::announce(std::string_view text, std::uint64_t to) {
     roster_dirty_ = true;
 }
 void Host::tick_announcements() { // the timer waits while nobody is on
+    tick_plugin_screens();
     if (announcement_.id && now_ >= announcement_until_) {
         announcement_ = {};
         announcement_for_ = 0;
@@ -640,6 +712,143 @@ void Host::tick_announcements() { // the timer waits while nobody is on
     next_announcement_ %= a.messages.size();
     announce(a.messages[next_announcement_++]);
 }
+// ---- The plugins' cards and polls ------------------------------------------------------------------
+std::vector<Host::Guest *> Host::plugin_screen_players(const std::vector<std::uint64_t> &players, std::string &why) {
+    std::vector<Guest *> found;
+    for (auto &[id, guest] : guests_)
+        if (guest->handshaken && (players.empty() || std::find(players.begin(), players.end(), id) != players.end())) found.push_back(guest.get());
+    if (found.empty())
+        why = players.empty() ? "nobody is on the server" : players.size() == 1 ? "that player is not on the server" : "none of those players is on the server";
+    return found;
+}
+
+std::string Host::plugin_card(std::string_view plugin, const std::vector<std::uint64_t> &players, std::string_view text, unsigned seconds) {
+    const auto line = clean_chat_text(text);
+    if (line.empty()) return "the card has nothing to show";
+    std::string why;
+    const auto shown = plugin_screen_players(players, why);
+    if (shown.empty()) return why;
+    // As long as an announcement of the same text, unless the plugin says.
+    if (!seconds) seconds = static_cast<unsigned>(std::clamp<std::size_t>(5 + line.size() / 20, 6, 15));
+    if (!++announcement_ids_) ++announcement_ids_;
+    std::vector<std::string> names;
+    for (const auto *guest : shown) {
+        plugin_cards_[guest->member.id] = {std::string(plugin), {announcement_ids_, static_cast<std::uint16_t>(seconds), line}, now_ + microseconds(seconds)};
+        names.push_back(guest_name(*guest));
+    }
+    log_("[card by plugin " + std::string(plugin) + " -> " + (players.empty() ? std::string("everyone") : joined(names, ", ")) + "] " + line);
+    roster_dirty_ = true;
+    return {};
+}
+
+std::string Host::plugin_poll(std::string_view plugin, const std::vector<std::uint64_t> &players, std::string_view question,
+                              const std::vector<std::string> &answers, unsigned seconds, std::uint32_t &id) {
+    auto label = clean_chat_text(question);
+    cut_text(label, multiplayer::max_vote_label);
+    std::vector<std::string> choices;
+    for (const auto &answer : answers) {
+        auto choice = clean_chat_text(answer);
+        cut_text(choice, multiplayer::max_vote_answer);
+        if (choice.empty()) return "an answer has nothing to show";
+        choices.push_back(std::move(choice));
+    }
+    if (label.empty()) return "the question has nothing to show";
+    if (choices.size() < 2 || choices.size() > multiplayer::max_vote_answers)
+        return "a poll has 2 to " + std::to_string(multiplayer::max_vote_answers) + " answers";
+    std::string why;
+    const auto shown = plugin_screen_players(players, why);
+    if (shown.empty()) return why;
+    // From the server's own count of votes: no game takes one poll for another.
+    if (!++vote_ids_) ++vote_ids_;
+    id = vote_ids_;
+    const auto ends = now_ + microseconds(seconds ? seconds : config_.votes.poll_seconds);
+    std::vector<std::string> names;
+    for (const auto *guest : shown) {
+        if (plugin_polls_.contains(guest->member.id)) close_plugin_poll(guest->member.id, "replaced");
+        plugin_polls_[guest->member.id] = {std::string(plugin), id, label, choices, ends};
+        names.push_back(guest_name(*guest));
+    }
+    log_("[poll by plugin " + std::string(plugin) + " #" + std::to_string(id) + " -> " +
+         (players.empty() ? std::string("everyone") : joined(names, ", ")) + "] " + label + " | " + joined(choices, " | "));
+    roster_dirty_ = true;
+    return {};
+}
+
+std::string Host::plugin_poll_close(std::string_view plugin, std::uint32_t id) {
+    std::vector<std::uint64_t> open;
+    for (const auto &[player, poll] : plugin_polls_)
+        if (poll.id == id && poll.plugin == plugin) open.push_back(player);
+    if (open.empty()) return "no poll of the plugin's with that id is open";
+    for (const auto player : open) close_plugin_poll(player, "closed");
+    return {};
+}
+
+void Host::plugin_screens_release(std::string_view plugin) {
+    const auto before = plugin_cards_.size() + plugin_polls_.size();
+    std::erase_if(plugin_cards_, [&](const auto &entry) { return entry.second.plugin == plugin; });
+    std::erase_if(plugin_polls_, [&](const auto &entry) { return entry.second.plugin == plugin; });
+    if (plugin_cards_.size() + plugin_polls_.size() != before) roster_dirty_ = true;
+}
+
+void Host::close_plugin_poll(std::uint64_t player, std::string_view why) {
+    const auto found = plugin_polls_.find(player);
+    if (found == plugin_polls_.end()) return;
+    if (poll_news_.size() < 4096) poll_news_.push_back({found->second.plugin, found->second.id, player, 0, {}, std::string(why)});
+    plugin_polls_.erase(found);
+    roster_dirty_ = true;
+}
+
+bool Host::answer_plugin_poll(Guest &guest, std::size_t answer) {
+    const auto found = plugin_polls_.find(guest.member.id);
+    if (found == plugin_polls_.end()) return false;
+    const auto &poll = found->second;
+    if (answer >= poll.answers.size()) {
+        reply(guest, "Answer with /1 to /" + std::to_string(poll.answers.size()) + ".");
+        return true;
+    }
+    // One answer closes it for them: the card goes, and the server's vote or poll shows again if one runs.
+    log_("[poll by plugin " + poll.plugin + " #" + std::to_string(poll.id) + "] " + guest_name(guest) + " answered " +
+         std::to_string(answer + 1) + " " + poll.answers[answer]);
+    if (poll_news_.size() < 4096) poll_news_.push_back({poll.plugin, poll.id, guest.member.id, answer + 1, poll.answers[answer], {}});
+    plugin_polls_.erase(found);
+    roster_dirty_ = true;
+    return true;
+}
+
+void Host::tick_plugin_screens() {
+    if (std::erase_if(plugin_cards_, [&](const auto &entry) { return now_ >= entry.second.until; })) roster_dirty_ = true;
+    std::vector<std::uint64_t> ended;
+    for (const auto &[player, poll] : plugin_polls_)
+        if (now_ >= poll.ends) ended.push_back(player);
+    for (const auto player : ended) close_plugin_poll(player, "timeout");
+}
+
+void Host::plugin_screens_left(std::uint64_t player) {
+    plugin_cards_.erase(player);
+    close_plugin_poll(player, "left");
+}
+
+void Host::plugin_screens_roster(std::uint64_t id, multiplayer::ServerAnnouncement &card, multiplayer::ServerVote &vote) const {
+    const auto left = [&](std::uint64_t until) {
+        return static_cast<std::uint16_t>(std::min<std::uint64_t>(until > now_ ? (until - now_ + 999999) / 1000000 : 0, 65535));
+    };
+    if (const auto found = plugin_cards_.find(id); found != plugin_cards_.end()) {
+        card = found->second.card;
+        card.seconds = left(found->second.until);
+    }
+    if (const auto found = plugin_polls_.find(id); found != plugin_polls_.end()) {
+        const auto &poll = found->second;
+        vote = {};
+        vote.id = poll.id;
+        vote.kind = multiplayer::server_vote_poll;
+        vote.outcome = multiplayer::vote_running;
+        vote.label = poll.question;
+        vote.answers = poll.answers;
+        vote.counts.assign(poll.answers.size(), 0);
+        vote.seconds = left(poll.ends);
+    }
+}
+
 std::pair<std::string, bool> Host::announcements_command(std::string_view argument) {
     auto &a = config_.announcements;
     const auto [what_text, rest] = split(argument);
@@ -693,29 +902,166 @@ std::string Host::rotation_text() const {
     if (!players()) return every + " while players are on. Next: " + next->name + ".";
     const auto due = map_since_ + std::uint64_t{config_.map_rotation} * 60000000;
     const auto left = due > now_ ? (due - now_ + 59999999) / 60000000 : 0;
+    if (config_.rotation_vote) return every + ". A vote for the next map in about " + std::to_string(std::max<std::uint64_t>(left, 1)) + " min.";
     return every + ". Next: " + next->name + " in about " + std::to_string(std::max<std::uint64_t>(left, 1)) + " min.";
 }
 void Host::resend_maps() {
     for (auto &[id, guest] : guests_) guest->maps_sent = false;
 }
-void Host::tick_rotation() { // waits while nobody is on, and for a running map vote
+std::string Host::reload_maps() {
+    std::vector<std::string> before;
+    for (const auto &level : levels()) before.push_back(level.asset);
+    const auto problems = load_levels(config_.mods);
+    resend_maps(); // whoever picks maps is sent the list again
+    std::string added;
+    std::size_t gone{};
+    for (const auto &level : levels())
+        if (std::find(before.begin(), before.end(), level.asset) == before.end()) added += (added.empty() ? "" : ", ") + level.name;
+    for (const auto &asset : before)
+        if (!find_level(asset)) ++gone;
+    std::string text = "Maps read again from Mods: " + std::to_string(levels().size()) + " maps" +
+                       (added.empty() ? ", none new" : ", new: " + added) + (gone ? ", " + std::to_string(gone) + " no longer there" : "") + ".";
+    for (const auto &problem : problems) text += "\nMods: skipped " + problem;
+    return text;
+}
+std::string Host::map_folder_in_play() const {
+    if (!players()) return {};
+    // The package is the folder and the version (protocol.h: map_package_name).
+    const auto package = map_package(config_.map);
+    const auto version = multiplayer::map_package_version(package);
+    if (package.empty()) return {};
+    return version.empty() ? package : package.substr(0, package.size() - version.size() - 1);
+}
+// The rotation's vote: three maps of the pool other than this one, picked at random, then any
+// map of the pool, then staying. Asked as a poll, so every game can answer it (/1, /2...); games
+// that know next_map_vote show the maps to pick from.
+void Host::draw_next_maps() {
+    std::vector<const ServerLevel *> others;
+    for (const auto *level : pool_levels(config_))
+        if (!same_map(level->asset)) others.push_back(level);
+    std::shuffle(others.begin(), others.end(), random_);
+    if (others.size() > 3) others.resize(3);
+    next_maps_.clear();
+    for (const auto *level : others) {
+        auto name = clean_chat_text(level->name);
+        cut_text(name, multiplayer::max_vote_answer);
+        if (!name.empty()) next_maps_.push_back({std::move(name), multiplayer::valid_map_package(level->package) ? level->package : std::string()});
+    }
+    ++next_maps_revision_;
+}
+bool Host::start_next_map_vote() {
+    // (Drawn a minute ago as a rule; now when the rotation was set shorter than that.)
+    if (next_maps_.empty()) draw_next_maps();
+    const auto others = next_maps_.size();
+    if (others < 2 && !config_.rotation_extend) return false; // one way on: nothing to vote on
+    if (!others) return false;
+    Vote poll;
+    poll.kind = VoteKind::poll;
+    poll.next_map = true;
+    poll.target = multiplayer::next_map_vote;
+    poll.label = "Next map";
+    for (const auto &map : next_maps_) poll.answers.push_back(map.name);
+    if (others > 1) poll.answers.emplace_back(multiplayer::next_map_random);
+    if (config_.rotation_extend) poll.answers.emplace_back(multiplayer::next_map_stay);
+    if (poll.answers.size() < 2) return false;
+    if (!++vote_ids_) ++vote_ids_;
+    poll.id = vote_ids_;
+    poll.ends = now_ + microseconds(config_.rotation_vote_seconds);
+    std::string choices;
+    for (std::size_t i = 0; i < poll.answers.size(); ++i) choices += (i ? "  " : "") + std::string("/") + std::to_string(i + 1) + " " + poll.answers[i];
+    vote_ = std::move(poll);
+    send_chat("Time is up on " + map_name() + ". Vote for the next map (" + std::to_string(config_.rotation_vote_seconds) + " s):");
+    send_chat(choices);
+    log_("[rotation] Vote for the next map: " + joined(vote_->answers, " | "));
+    check_vote(false);
+    return true;
+}
+void Host::extend_map(unsigned minutes) {
+    // Due in `minutes` from now, whatever the rotation's length.
+    map_since_ = now_ + std::uint64_t{minutes} * 60000000 - std::uint64_t{config_.map_rotation} * 60000000;
+    rotation_warned_ = false;
+    rotation_voted_ = false;
+    // The marks that are still ahead are announced again.
+    rotation_told_ = (minutes <= 10 ? 1U : 0U) | (minutes <= 5 ? 2U : 0U) | (minutes <= 1 ? 4U : 0U);
+}
+void Host::finish_next_map_vote(const Vote &done, const std::vector<unsigned> &count) {
+    // The most votes wins; a tie is drawn between the leaders; with no vote at all it is the
+    // next map of the pool, as without the vote.
+    const auto top = count.empty() ? 0U : *std::max_element(count.begin(), count.end());
+    std::vector<std::size_t> leaders;
+    for (std::size_t i = 0; i < count.size(); ++i)
+        if (top && count[i] == top) leaders.push_back(i);
+    std::string answer;
+    if (!leaders.empty()) answer = done.answers[leaders[std::uniform_int_distribution<std::size_t>(0, leaders.size() - 1)(random_)]];
+    const auto tally = answer_count(done.answers, count);
+    if (answer == multiplayer::next_map_stay && config_.rotation_extend) {
+        extend_map(config_.rotation_extend);
+        const auto line = "The vote keeps " + map_name() + " for " + std::to_string(config_.rotation_extend) + " more minutes (" + tally + ").";
+        send_chat(line);
+        log_("[rotation] " + line);
+        return;
+    }
+    const ServerLevel *next{};
+    if (!answer.empty() && answer != multiplayer::next_map_random && answer != multiplayer::next_map_stay)
+        for (const auto *level : pool_levels(config_))
+            if (!same_map(level->asset) && clean_chat_text(level->name).starts_with(answer)) { next = level; break; }
+    if (!next && !answer.empty()) { // any map of the pool but this one
+        std::vector<const ServerLevel *> others;
+        for (const auto *level : pool_levels(config_))
+            if (!same_map(level->asset)) others.push_back(level);
+        if (!others.empty()) next = others[std::uniform_int_distribution<std::size_t>(0, others.size() - 1)(random_)];
+    }
+    if (!next) next = next_pool_map(config_, config_.map);
+    if (!next) {
+        map_since_ = now_;
+        return;
+    }
+    const auto line = "Next map: " + next->name + (top ? " (" + tally + ")." : " (nobody voted).");
+    send_chat(line);
+    log_("[rotation] " + line);
+    change_map(next->name);
+    save();
+}
+void Host::tick_rotation() { // waits while nobody is on, and for a running vote
     if (!config_.map_rotation || !players()) {
         map_since_ = now_;
         rotation_warned_ = false;
+        rotation_told_ = 0;
+        rotation_voted_ = false;
         return;
     }
     const auto due = map_since_ + std::uint64_t{config_.map_rotation} * 60000000;
-    if (now_ + 60000000 < due) return;
     const auto *next = next_pool_map(config_, config_.map);
     if (!next) {
         map_since_ = now_;
         return;
     }
-    if (!rotation_warned_ && config_.map_rotation > 1) {
-        rotation_warned_ = true;
-        send_chat("Next map in 1 minute: " + next->name + ".");
+    // Ten, five and one minute before: a card, when that long is not the whole of the map's time.
+    if (config_.rotation_announce && now_ < due) {
+        static constexpr unsigned marks[]{10, 5, 1};
+        const auto left = due - now_;
+        for (unsigned i = 0; i < 3; ++i) {
+            if ((rotation_told_ & (1U << i)) || left > std::uint64_t{marks[i]} * 60000000) continue;
+            // (Only the nearest mark is said when several have gone by at once.)
+            const bool nearest = i == 2 || left > std::uint64_t{marks[i + 1]} * 60000000;
+            rotation_told_ |= 1U << i;
+            if (!nearest || config_.map_rotation <= marks[i]) continue;
+            announce(map_name() + " ends in " + std::to_string(marks[i]) + (marks[i] == 1 ? " minute. " : " minutes. ") +
+                     (config_.rotation_vote ? "A vote for the next map follows." : "Next: " + next->name + "."));
+        }
     }
-    if (now_ < due || (vote_ && vote_->kind == VoteKind::map)) return;
+    if (now_ + 60000000 < due) return;
+    if (!config_.rotation_announce && !rotation_warned_ && config_.map_rotation > 1) {
+        rotation_warned_ = true;
+        send_chat(config_.rotation_vote ? "A vote for the next map starts in 1 minute." : "Next map in 1 minute: " + next->name + ".");
+    }
+    // The vote's maps are drawn now, a minute ahead, and games told (send_next_maps).
+    if (config_.rotation_vote && !rotation_voted_ && next_maps_.empty()) draw_next_maps();
+    if (now_ < due || vote_) return;
+    if (config_.rotation_vote && !rotation_voted_) {
+        rotation_voted_ = true;
+        if (start_next_map_vote()) return;
+    }
     send_chat("Changing the map to " + next->name + ".");
     log_("[rotation] Changing the map to " + next->name + ".");
     change_map(next->name);

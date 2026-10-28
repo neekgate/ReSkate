@@ -1,5 +1,6 @@
 #include "skate_menu_internal.h"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 
@@ -38,7 +39,7 @@ void camera_controls(SkateMenu& menu, const Model& model, const CallbacksV3& cal
         const float reset = trailing_width("Default");
         ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - reset - ImGui::GetStyle().ItemSpacing.x);
         ImGui::BeginDisabled(!callbacks.queue_debug);
-        if (ImGui::SliderInt("##free-camera-fov", &free_fov, 40, 120, custom ? "%d degrees" : "%d degrees (game)",
+        if (::dingosdk::overlay::menu::slider_int("##free-camera-fov", &free_fov, 40, 120, custom ? "%d degrees" : "%d degrees (game)",
                 ImGuiSliderFlags_AlwaysClamp))
             debug_request(menu, callbacks, {DebugAction::set_free_camera_fov, false, static_cast<float>(free_fov)});
         ImGui::SameLine();
@@ -55,13 +56,36 @@ void camera_controls(SkateMenu& menu, const Model& model, const CallbacksV3& cal
     int selected = 3;
     for (int i = 0; i < static_cast<int>(speeds.size()); ++i)
         if (std::abs(debug.camera_speed - speeds[i]) < .01f) selected = i;
-    if (ImGui::SliderInt("##flight-speed", &selected, 0, 6, labels[selected], ImGuiSliderFlags_NoInput))
+    if (::dingosdk::overlay::menu::slider_int("##flight-speed", &selected, 0, 6, labels[selected], ImGuiSliderFlags_NoInput))
         debug_request(menu, callbacks, {DebugAction::set_camera_speed, false, speeds[selected]});
     ImGui::EndDisabled();
     if (debug.free_camera) note("Close the menu to fly. WASD / Q E move; hold the right mouse button to look.");
     if (!debug.camera_available) warn(debug.camera_unavailable.c_str());
     end_card();
 
+    // Keyframe smoothing (Extension/ReplayKeyframes/replay_keyframes.h).
+    begin_card(menu, "replay-editor", "REPLAY EDITOR");
+    bool keysmooth = model.keyframe_smoothing.enabled;
+    if (toggle_row(menu, "Keyframe smoothing",
+            "The free camera glides through its keys instead of changing speed at each one. Every key is still met, at its time.",
+            keysmooth, model.keyframe_smoothing.available && callbacks.queue_console_command))
+        send_console(menu, callbacks, keysmooth ? "keysmooth on" : "keysmooth off");
+    field(menu, "Smoothness", "100% is the smoothest that still meets every key; 0% the game's own curve.");
+    // Sent once it is let go: every change rebuilds the open replay's camera.
+    static int dragged = -1;
+    int smoothness = dragged >= 0 ? dragged : keyframe_smoothness_percent(model.keyframe_smoothing);
+    ImGui::BeginDisabled(!model.keyframe_smoothing.available || !model.keyframe_smoothing.enabled || !callbacks.queue_console_command);
+    if (::dingosdk::overlay::menu::slider_int("##keyframe-smoothness", &smoothness, 0, 100, "%d%%", ImGuiSliderFlags_AlwaysClamp))
+        dragged = smoothness;
+    if (ImGui::IsItemDeactivatedAfterEdit() && dragged >= 0)
+        send_console(menu, callbacks, "keysmooth amount " + std::to_string(dragged / 100.0));
+    if (!ImGui::IsItemActive()) dragged = -1;
+    ImGui::EndDisabled();
+    end_card();
+}
+
+void first_person_controls(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks) {
+    const auto& debug = model.debug;
     begin_card(menu, "first-person", "FIRST PERSON");
     bool first_person = debug.first_person;
     if (toggle_row(menu, "First person", "See the world through the skater's eyes.", first_person,
@@ -70,7 +94,7 @@ void camera_controls(SkateMenu& menu, const Model& model, const CallbacksV3& cal
     field(menu, "Field of view");
     int fov = static_cast<int>(std::lround(debug.first_person_fov > 0 ? debug.first_person_fov : debug.camera_fov));
     ImGui::BeginDisabled(!debug.first_person || !callbacks.queue_debug);
-    if (ImGui::SliderInt("##first-person-fov", &fov, 40, 120, "%d degrees", ImGuiSliderFlags_AlwaysClamp))
+    if (::dingosdk::overlay::menu::slider_int("##first-person-fov", &fov, 40, 120, "%d degrees", ImGuiSliderFlags_AlwaysClamp))
         debug_request(menu, callbacks, {DebugAction::set_first_person_fov, false, static_cast<float>(fov)});
     ImGui::EndDisabled();
     {
@@ -82,7 +106,7 @@ void camera_controls(SkateMenu& menu, const Model& model, const CallbacksV3& cal
         ImGui::BeginDisabled(!settings.stabilize || !can_edit);
         const auto percent = [&](const char* label, const char* id, float value, DebugAction action) {
             field(menu, label);
-            if (ImGui::SliderFloat(id, &value, 0, dingosdk::first_person::strength_limit, "%.0f%%", ImGuiSliderFlags_AlwaysClamp))
+            if (::dingosdk::overlay::menu::slider_float(id, &value, 0, dingosdk::first_person::strength_limit, "%.0f%%", ImGuiSliderFlags_AlwaysClamp))
                 debug_request(menu, callbacks, {action, false, value});
         };
         percent("Smoothing", "##fp-smoothing", settings.smoothing, DebugAction::set_first_person_smoothing);
@@ -97,6 +121,11 @@ void camera_controls(SkateMenu& menu, const Model& model, const CallbacksV3& cal
                 "Use the game's camera while walking; first person comes back when you get on the board.",
                 settings.board_only, can_edit))
             debug_request(menu, callbacks, {DebugAction::set_first_person_board_only, settings.board_only});
+        if (toggle_row(menu, "First person in the camera cycle",
+                "Clicking the right stick (R3) on the board goes high camera, low camera, first person, then high again. "
+                "Needs Camera height control on in the game's settings (Gameplay > Advanced Camera).",
+                settings.camera_cycle, can_edit))
+            debug_request(menu, callbacks, {DebugAction::set_first_person_camera_cycle, settings.camera_cycle});
         note("Nod, tilt and bob are the share of the head's own movement kept. Use Spring arm > Pitch to look "
              "further down at the board.");
     }
@@ -110,7 +139,7 @@ void camera_controls(SkateMenu& menu, const Model& model, const CallbacksV3& cal
         const auto slider = [&](const char* label, float value, float low, float high, const char* format, DebugAction action) {
             field(menu, label);
             ImGui::PushID(label);
-            if (ImGui::SliderFloat("##arm-value", &value, low, high, format, ImGuiSliderFlags_AlwaysClamp))
+            if (::dingosdk::overlay::menu::slider_float("##arm-value", &value, low, high, format, ImGuiSliderFlags_AlwaysClamp))
                 debug_request(menu, callbacks, {action, false, value});
             ImGui::PopID();
         };
@@ -137,9 +166,10 @@ void camera_controls(SkateMenu& menu, const Model& model, const CallbacksV3& cal
     end_card();
 }
 
-void movement_controls(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks) {
+// Skater > CHEATS: flying through things, never bailing, and the boosts.
+void cheats_tab(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks) {
     const auto& debug = model.debug;
-    begin_card(menu, "movement", "FLIGHT & BAILS");
+    begin_card(menu, "cheats", "NOCLIP AND NO BAIL");
     bool noclip = debug.noclip;
     if (toggle_row(menu, "Noclip", "Fly with the normal player camera. Includes No Bail; uses the Freecam flight speed.", noclip,
             (debug.noclip_available || debug.noclip) && callbacks.queue_debug))
@@ -154,53 +184,75 @@ void movement_controls(SkateMenu& menu, const Model& model, const CallbacksV3& c
     if (toggle_row(menu, "No Bail", bail_help, no_bail,
             (debug.no_bail_available || debug.no_bail) && callbacks.queue_debug))
         debug_request(menu, callbacks, {DebugAction::set_no_bail, no_bail});
-    bool hall_of_meat = model.hall_of_meat.enabled;
-    // No Bail (and noclip, which includes it) stops the bails Hall of Meat scores.
-    const bool bails_off = debug.no_bail || debug.no_bail_active;
-    const char* meat_help = hall_of_meat && bails_off
-        ? "On, but No Bail is stopping your bails, so nothing shows. Turn No Bail (and noclip) off to use it."
-        : bails_off
-        ? "Your bails show the bones they hurt and score a Meat card. Needs No Bail (and noclip) off."
-        : "Your bails show the bones they hurt and score a Meat card. A break slows the game in single player.";
-    if (toggle_row(menu, "Hall of Meat", meat_help, hall_of_meat, model.hall_of_meat.available && callbacks.queue_console_command))
-        send_console(menu, callbacks, hall_of_meat ? "hallofmeat 1" : "hallofmeat 0");
-    bool road_rash = model.road_rash.enabled;
-    const bool rash_console = model.road_rash.available && callbacks.queue_console_command;
-    if (toggle_row(menu, "Road Rash", "Bails leave marks that build up: dust, scrapes, bruises, wounds. Needs the Road Rash item pack.",
-            road_rash, rash_console))
-        send_console(menu, callbacks, road_rash ? "roadrash 1" : "roadrash 0");
-    bool rash_blood = model.road_rash.blood;
-    if (toggle_row(menu, "Road Rash blood", "Fresh blood on the worst wounds. Off, they are dry and scabbed.", rash_blood,
-            rash_console && model.road_rash.enabled))
-        send_console(menu, callbacks, rash_blood ? "roadrashblood 1" : "roadrashblood 0");
     end_card();
 
-    begin_card(menu, "boosts", "BOOSTS", "Buttons are set in Settings > Controls");
+    // The sliders cover the usual range; the number box beside each takes more (up to 10000, Revert Boost x100).
+    const auto boost_speed_ok = [](float speed) { return std::isfinite(speed) && speed >= 0.0f && speed <= 10000.0f; };
+    begin_card(menu, "boosts", "BOOSTS", "Buttons are set in Settings > Controls. 0 is off. Type a number past the slider's end for more.");
     ImGui::BeginDisabled(!callbacks.queue_debug);
     field(menu, "Forward boost");
     float forward_velocity = debug.forward_velocity_speed;
-    if (ImGui::SliderFloat("##forward-velocity", &forward_velocity, 1.0f, 300.0f, "+%.1f", ImGuiSliderFlags_AlwaysClamp))
+    if (slider_float("##forward-velocity", &forward_velocity, 0.0f, 300.0f, "+%.1f") && boost_speed_ok(forward_velocity))
         debug_request(menu, callbacks, {DebugAction::set_forward_velocity_speed, false, forward_velocity});
     field(menu, "Up boost");
     float up_velocity = debug.up_velocity_speed;
-    if (ImGui::SliderFloat("##up-velocity", &up_velocity, 1.0f, 25.0f, "+%.1f", ImGuiSliderFlags_AlwaysClamp))
+    if (slider_float("##up-velocity", &up_velocity, 0.0f, 25.0f, "+%.1f") && boost_speed_ok(up_velocity))
         debug_request(menu, callbacks, {DebugAction::set_up_velocity_speed, false, up_velocity});
     field(menu, "Off-board up boost");
     float offboard_up_velocity = debug.offboard_up_velocity_speed;
-    if (ImGui::SliderFloat("##offboard-up-velocity", &offboard_up_velocity, 1.0f, 25.0f, "+%.1f", ImGuiSliderFlags_AlwaysClamp))
+    if (slider_float("##offboard-up-velocity", &offboard_up_velocity, 0.0f, 25.0f, "+%.1f") && boost_speed_ok(offboard_up_velocity))
         debug_request(menu, callbacks, {DebugAction::set_offboard_up_velocity_speed, false, offboard_up_velocity});
     ImGui::EndDisabled();
+    bool revert_boost = debug.revert_boost;
+    if (toggle_row(menu, "Revert Boost", "Speed boost when you land an auto revert or a board bend. Clean 180s get nothing.",
+            revert_boost, callbacks.queue_debug != nullptr))
+        debug_request(menu, callbacks, {DebugAction::set_revert_boost_enabled, revert_boost});
+    ImGui::BeginDisabled(!callbacks.queue_debug || !debug.revert_boost);
+    field(menu, "Revert Boost strength", "Auto reverts add 1.5 m/s and board bends 2 to 2.6 m/s, times this. Type up to x100 in the box.");
+    float revert_speed = debug.revert_boost_speed;
+    if (slider_float("##revert-boost-speed", &revert_speed, 0.5f, 5.0f, "x%.1f") && revert_speed >= 0.5f && revert_speed <= 100.0f)
+        debug_request(menu, callbacks, {DebugAction::set_revert_boost_speed, false, revert_speed});
+    ImGui::EndDisabled();
+    note("Dark Pop is on SANDBOX > TUNE > TRICKLINING.");
     note("Controller: left stick moves, right stick looks, RT / LT rise and fall, click the left stick to boost.");
     note("Keyboard: WASD / Q E, Shift to boost. Close the menu to fly.");
     end_card();
 }
 
+// Dark Pop (Extension/Skater/no_bail.cpp): shown with the tricklining tools on SANDBOX > TUNE > TRICKLINING.
+// Dark Pop 3.0 (Sivaes/darkpop): the pre-0.32.0 dark pop put back through the game's own sink-and-pop state. One switch;
+// everything that tested out is on by default. Not the auto-release version 0.5.0 shipped (which timed a D-pad Right
+// release through XInput and could not act when another XInput hook, such as Steam's overlay, answered first).
+void dark_pop_controls(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks) {
+    const auto& debug = model.debug;
+    if (fold_card(menu, "dark-pop", "DARK POP", "Catch a flip dark, press a D-pad direction in the air, land it dark")) {
+    bool dark_pop = debug.dark_pop;
+    if (toggle_row(menu, "Dark Pop", "The pre-0.32.0 dark pop, back: catch a flip trick dark (board upside down), press D-pad Left, Down or Right in the air and land it still dark. The body sinks into the ground and is thrown back up, about 8 m/s, and the flight is a normal one: tricks, camera, landing. Any trick, any height, 180s included. Turn the board back over before landing and you land normally. Play with Dark Catch Assist off, Legacy Dark Catches on; No Bail can stay off. Known: a landing caught exactly flat (board up -1.00 in the log) sometimes stays dark in the air and bails.",
+            dark_pop, callbacks.queue_debug != nullptr))
+        debug_request(menu, callbacks, {DebugAction::set_dark_pop_enabled, dark_pop});
+    bool hide_dpad = debug.dark_pop_hide_dpad;
+    if (toggle_row(menu, "Hide the D-pad from the game in the air", "While you are in the air the game's own controller reads see D-pad Left, Down and Right let go (Dark Pop still sees them), and a press held through the landing stays hidden until you let go. So D-pad Right never opens the Quick Drop radial, and in keyboard/mouse mode the radial's release can't pick the object browser. On the ground the D-pad works as normal.",
+            hide_dpad, callbacks.queue_debug != nullptr))
+        debug_request(menu, callbacks, {DebugAction::set_dark_pop_hide_dpad, hide_dpad});
+    bool probe = debug.probe;
+    if (toggle_row(menu, "Dark pop probe", "Records what the game does to two files in the logs folder named dark-pop-probe-<time>.csv and dark-pop-fast-<time>.csv. A new pair is made each time you switch it on. Turn it on, do your attempts, turn it off, and send both files.",
+            probe, callbacks.queue_debug != nullptr))
+        debug_request(menu, callbacks, {DebugAction::set_probe_enabled, probe});
+    note("Each dark landing and each pop's landing are written to logs\\ReSkate.log (lines starting \"Dark Pop:\").");
+    note("Works with any controller the game reads (Xbox or PlayStation): nothing is sent through XInput.");
+    }
+    end_card();
+}
+
 void skater_page(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks) {
-    category_tabs(menu, menu.skater_tab, {"CAMERA", "GAMEPLAY"}, "skater-tabs");
+    category_tabs(menu, menu.skater_tab, {"FREECAM", "FIRST PERSON", "CHEATS"}, "skater-tabs");
     ImGui::PushID(menu.skater_tab);
-    ImGui::BeginChild("skater-tab", ImVec2(0, page_body_height(menu)));
-    if (menu.skater_tab == 0) camera_controls(menu, model, callbacks);
-    else movement_controls(menu, model, callbacks);
+    ImGui::BeginChild("skater-tab", ImVec2(0, page_body_height(menu)), ImGuiChildFlags_NavFlattened);
+    switch (menu.skater_tab) {
+    case 0: camera_controls(menu, model, callbacks); break;
+    case 1: first_person_controls(menu, model, callbacks); break;
+    default: cheats_tab(menu, model, callbacks); break;
+    }
     ImGui::EndChild();
     ImGui::PopID();
 }

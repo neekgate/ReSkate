@@ -1,5 +1,9 @@
 #include "gui_internal.h"
 
+#include "Engine/Game/World/world_names.h"
+#include "Engine/Core/Log/logging.h"
+#include "Engine/Vfs/initfs.h"
+
 #include <cmath>
 #include <format>
 
@@ -314,6 +318,54 @@ bool key_bindings(const Fonts& fonts, Settings& settings, Ui& ui) {
     return changed;
 }
 
+// Settings > GAME: the map the game starts in. Returns true when it changed, so the caller can
+// save straight away.
+bool start_map_choice(Settings& settings, const launcher_app::Session& session, Ui& ui) {
+    if (!ui.start_maps) {
+        try {
+            ui.start_maps = launcher_start_maps::start_maps(session.paths.directory);
+        } catch (const std::exception&) {
+            ui.start_maps.emplace();
+        }
+    }
+    const auto& maps = *ui.start_maps;
+    const auto* chosen = settings.start_map.empty() ? nullptr : launcher_start_maps::find_start_map(maps, settings.start_map);
+    std::string preview = settings.start_map.empty() ? world_level_name(launcher_start_maps::san_vansterdam)
+                        : chosen ? chosen->name : world_level_short_name(settings.start_map) + " (not installed)";
+    bool changed = false;
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted("Start map");
+    ImGui::SameLine(S(200));
+    ImGui::SetNextItemWidth(-1);
+    if (ImGui::BeginCombo("##start_map", preview.c_str())) {
+        bool mods_shown = false;
+        for (std::size_t index = 0; index < maps.size(); ++index) {
+            const auto& map = maps[index];
+            if (!map.mod.empty() && !mods_shown) {
+                mods_shown = true;
+                ImGui::SeparatorText("MAP MODS");
+            }
+            const bool san_vansterdam = map.asset == launcher_start_maps::san_vansterdam;
+            const bool selected = san_vansterdam ? settings.start_map.empty() : &map == chosen;
+            ImGui::PushID(static_cast<int>(index));
+            if (ImGui::Selectable(map.name.c_str(), selected) && !selected) {
+                settings.start_map = san_vansterdam ? std::string() : map.asset;
+                changed = true;
+            }
+            if (!map.mod.empty() && ImGui::IsItemHovered()) ImGui::SetTooltip("%s", map.mod.c_str());
+            if (selected) ImGui::SetItemDefaultFocus();
+            ImGui::PopID();
+        }
+        ImGui::EndCombo();
+    }
+    setting_note(!settings.start_map.empty() && !chosen ?
+        "This map's mod is not installed, is switched off, or could not be merged: Skate starts in San Vansterdam "
+        "until it is back." :
+        "skate. always opens in San Vansterdam; another map loads as soon as the game is up. A map mod that is "
+        "switched off or removed later falls back to San Vansterdam.");
+    return changed;
+}
+
 } // namespace
 
 void settings_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui, HWND window) {
@@ -387,6 +439,19 @@ void settings_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui
                       settings.loose_files);
         setting_check("Discord status", "Show on your Discord profile where you are skating: the map, the server or lobby "
                       "and how many are in it. Off, the game does not talk to Discord at all.", settings.discord_status);
+        if (start_map_choice(settings, launcher.session(), ui)) launcher.save();
+        if (!ui.plugin_developer) {
+            try { ui.plugin_developer = initfs::plugin_developer_mode(paths.directory); } catch (const std::exception&) { ui.plugin_developer = false; }
+        }
+        bool developer = *ui.plugin_developer;
+        setting_check("Plugin developer mode", "Updates to plugins you already approved won't ask again while this is on. "
+                      "A plugin you have not approved is still held until you answer.", developer);
+        if (developer != *ui.plugin_developer) {
+            try { initfs::set_plugin_developer_mode(paths.directory, developer); } catch (const std::exception& error) {
+                logging::log(logging::Level::warning, logging::Channel::launcher, "Plugin developer mode was not saved: {}", error.what());
+            }
+            ui.plugin_developer = developer;
+        }
         ImGui::Spacing();
         section_caption(fonts, "EXTRA GAME ARGUMENTS");
         std::array<char, 1024> arguments{};
@@ -431,10 +496,25 @@ void settings_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui
         setting_check("Keep the launcher open after launch",
                       "Hide while you play and return when Skate closes. Turn off to close after a successful launch.",
                       settings.keep_open_after_launch);
-        setting_check("Install ReSkate updates",
-                      "Turn off to keep the ReSkate.dll and launcher you have, such as a test build someone gave you. "
-                      "Skate's own Steam updates are not affected.",
-                      settings.updates);
+        {
+            const bool updates_were = settings.updates, prereleases_were = settings.prereleases;
+            setting_check("Install ReSkate updates",
+                          "Turn off to keep the ReSkate.dll and launcher you have, such as a test build someone gave you. "
+                          "Skate's own Steam updates are not affected.",
+                          settings.updates);
+            // Only while there is a pre-release to test (one newer than the latest release), or while
+            // it is on, so it can always be turned off.
+            if (settings.prereleases || launcher.prerelease_available())
+                setting_check("Test pre-releases",
+                              "Update to the newest pre-release on GitHub, to try what is coming before it is released. "
+                              "Pre-releases are less tested. Turn off to go back to the latest release.",
+                              settings.prereleases);
+            // Either flipped: checked again now, so PLAY or the update button changes to match.
+            if (settings.updates != updates_were || settings.prereleases != prereleases_were) {
+                launcher.save();
+                launcher.check_again_if_update_choices_changed();
+            }
+        }
         ImGui::Spacing();
         section_caption(fonts, "TROUBLESHOOTING");
         ImGui::AlignTextToFramePadding();
@@ -452,6 +532,17 @@ void settings_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui
                       "When the launcher or Skate crashes, upload a crash dump and that session's log so the ReSkate "
                       "developers can fix it. The launcher picks a change up when it next starts.",
                       settings.crash_reports);
+        setting_check("Send performance timings",
+                      "Send how long downloads, mod installs, the mod merge, level loads and joining a "
+                      "session took, and each level's average frame rate, so slow spots can be found and fixed. Nothing "
+                      "about your account is included. Needs crash reports on; the launcher picks a change up when it "
+                      "next starts.",
+                      settings.performance_timings);
+        ImGui::Spacing();
+        if (ImGui::Button("Privacy Policy")) ui.legal.open = Legal::privacy;
+        ImGui::SameLine();
+        if (ImGui::Button("Terms of Service")) ui.legal.open = Legal::terms;
+        setting_note("What ReSkate collects and sends, and the rules for using it and its servers.");
         break;
     }
     ImGui::EndChild();
@@ -470,8 +561,11 @@ void settings_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui
     ImGui::End();
     if (!open) {
         launcher.save();
-        // Read again the next time: the game may have run in between.
+        launcher.check_again_if_update_choices_changed();
+        // Read again the next time: the game may have run in between, and mods may have changed.
         ui.game.loaded = false;
+        ui.start_maps.reset();
+        ui.plugin_developer.reset();
     }
 }
 

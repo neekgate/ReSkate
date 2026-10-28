@@ -1,10 +1,13 @@
 #include "mod_list.h"
+#include "resident_assets.h"
 #include "Engine/Game/Build/supported_build.h"
 
 #include "Engine/Core/Json/json.h"
 #include "Engine/Core/Platform/path_text.h"
 
+#ifdef _WIN32
 #include <Windows.h>
+#endif
 
 #include <algorithm>
 #include <cstdint>
@@ -20,6 +23,8 @@ namespace fs = std::filesystem;
 
 constexpr char layout_name[] = "layout.toc";
 constexpr char levels_name[] = "reskate-levels.json";
+constexpr char objects_name[] = "reskate-objects.json"; // content_catalogs.h's mod_objects_file
+constexpr char music_name[] = "reskate-music.json";     // mod_music.h
 // Written by the tool that built the mod (Studio, since 2026-09-24): who made
 // it and when. Purely informational, so it is read loosely and never rejected.
 constexpr char build_name[] = "reskate-build.json";
@@ -29,6 +34,7 @@ constexpr std::size_t maximum_order_bytes = 4 * 1024 * 1024;
 constexpr std::size_t maximum_build_bytes = 16 * 1024;
 constexpr std::size_t maximum_info_bytes = 32 * 1024;
 constexpr std::size_t maximum_levels_bytes = 64 * 1024;
+constexpr std::size_t maximum_plugin_bytes = 64 * 1024;
 
 std::string lower(std::string_view text) {
     std::string result(text);
@@ -139,6 +145,111 @@ void read_levels(Mod& mod) {
     }
 }
 
+// reskate-plugin.json's "resident" list (ResidentAssets). A malformed list is a note, and the mod
+// keeps nothing resident; the plugin host reports the rest of the file.
+void read_resident(Mod& mod, std::vector<std::string>& notes) {
+    const auto path = mod.directory / plugin_manifest_file;
+    std::error_code error;
+    if (!fs::is_regular_file(path, error) || error) return;
+    try {
+        const auto root = parse(path, maximum_plugin_bytes);
+        if (!root.is_object() || !root.contains("resident")) return;
+        mod.resident = parse_resident_assets(root.at("resident"));
+    } catch (const std::exception& failure) {
+        notes.push_back("Mod " + mod.name + ": " + plugin_manifest_file + "'s resident list could not be read (" + failure.what() + ")");
+    }
+}
+
+// reskate-plugin.json's "variants" (Variants). A malformed one is a note, and the mod has no variants:
+// it loads as any other mod.
+void read_variants(Mod& mod, std::vector<std::string>& notes) {
+    const auto path = mod.directory / plugin_manifest_file;
+    std::error_code error;
+    if (!fs::is_regular_file(path, error) || error) return;
+    try {
+        const auto root = parse(path, maximum_plugin_bytes);
+        if (!root.is_object() || !root.contains("variants")) return;
+        const auto& declared = root.at("variants");
+        if (!declared.is_object() || !declared.contains("folder")) throw std::runtime_error("variants names its folder");
+        const auto text = [](const Json& value, std::size_t most, bool name) {
+            if (!value.is_string() || value.string().empty() || value.string().size() > most)
+                throw std::runtime_error("a name is 1 to " + std::to_string(most) + " characters");
+            auto out = lower(value.string());
+            for (const auto c : out)
+                if (name ? !((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' || c == '-')
+                         : static_cast<unsigned char>(c) < 0x20 || static_cast<unsigned char>(c) > 0x7e || c == '\\')
+                    throw std::runtime_error(name ? "a folder or variant name is letters, digits, '_' and '-'"
+                                                  : "a bundle name is printable ASCII with / between folders");
+            return out;
+        };
+        const auto list = [&](const char* field, std::size_t most, bool name) {
+            std::vector<std::string> out;
+            if (!declared.contains(field)) return out;
+            const auto& items = declared.at(field);
+            if (!items.is_array() || items.size() > most) throw std::runtime_error(std::string(field) + " is a list of at most " + std::to_string(most));
+            for (const auto& item : items) out.push_back(text(item, name ? maximum_mod_name : 260, name));
+            return out;
+        };
+        Variants result;
+        result.folder = text(declared.at("folder"), maximum_mod_name, true);
+        result.order = list("order", 64, true);
+        result.displaces = list("displaces", 16, false);
+        mod.variants = std::move(result);
+    } catch (const std::exception& failure) {
+        notes.push_back("Mod " + mod.name + ": " + plugin_manifest_file + "'s variants could not be read (" + failure.what() + ")");
+    }
+}
+
+// Invalid cooperation never removes an existing displacement rule. Read this
+// independently of variants, and publish neither side of a partial declaration.
+void read_variant_additions(Mod& mod, std::vector<std::string>& notes) {
+    const auto path = mod.directory / plugin_manifest_file;
+    std::error_code error;
+    if (!fs::is_regular_file(path, error) || error) return;
+    try {
+        const auto root = parse(path, maximum_plugin_bytes);
+        if (!root.is_object() || !root.contains("variant_additions")) return;
+        const auto& policy = root.at("variant_additions");
+        if (!policy.is_object()) throw std::runtime_error("variant_additions is an object");
+        const auto list = [&](const char* field) {
+            std::vector<std::string> result;
+            if (!policy.contains(field)) return result;
+            const auto& values = policy.at(field);
+            if (!values.is_array() || values.size() > 16) throw std::runtime_error("at most 16 exact bundle names per side");
+            for (const auto& value : values) {
+                if (!value.is_string() || value.string().size() > 260) throw std::runtime_error("bundle name must be a string of at most 260 characters");
+                auto name = lower(value.string());
+                if (!name.starts_with("win32/") || name.find("..") != std::string::npos ||
+                    name.find("//") != std::string::npos || name.back() == '/' ||
+                    std::ranges::any_of(name, [](unsigned char c) { return c <= 0x20 || c >= 0x7f || c == '\\' || c == '*' || c == '?'; }))
+                    throw std::runtime_error("an exact win32 bundle name is required");
+                if (std::ranges::find(result, name) != result.end()) throw std::runtime_error("repeated bundle permission");
+                result.push_back(std::move(name));
+            }
+            return result;
+        };
+        VariantAdditions parsed;
+        parsed.accept = list("accept");
+        parsed.contribute = list("contribute");
+        mod.variant_additions = std::move(parsed);
+    } catch (const std::exception& failure) {
+        notes.push_back("Mod " + mod.name + ": private variant additions refused (" + failure.what() + ")");
+    }
+}
+
+// Whether reskate-plugin.json names code to run. A file with only "resident" or "variants" serves
+// the mod's game data and is no plugin. The plugin host reports what else is wrong with it.
+void read_plugin_entry(Mod& mod) {
+    const auto path = mod.directory / plugin_manifest_file;
+    std::error_code error;
+    if (!fs::is_regular_file(path, error) || error) return;
+    try {
+        const auto root = parse(path, maximum_plugin_bytes);
+        mod.provides_plugin = root.is_object() && root.contains("entry") && root.at("entry").is_string();
+    } catch (...) {
+    }
+}
+
 // .reskate-studio-patch: the stamp line, then key=value lines. A mod that ships game data must
 // record the Skate.exe it was built for, and it must be this one (supported_build).
 void read_studio_marker(Mod& mod) {
@@ -183,6 +294,14 @@ std::vector<std::string> folders_on_disk(const fs::path& root) {
         if (error) break;
         if (!entry.is_directory(error) || error) { error.clear(); continue; }
         const auto name = ascii_path(entry.path().filename());
+        // A folder with no file of its own and no parks (only other folders, such as saved data a
+        // tool keeps beside the mods) holds no mod: every other mod has its manifest or layout at its
+        // top, and a park editor mod its parks folder.
+        bool content{};
+        for (fs::directory_iterator inner(entry.path(), error), end; !error && inner != end && !content; inner.increment(error))
+            content = inner->is_regular_file(error) || (inner->is_directory(error) && lower(ascii_path(inner->path().filename())) == "parks");
+        error.clear();
+        if (!content) continue;
         if (valid_mod_name(name)) names.push_back(name);
     }
     std::sort(names.begin(), names.end(), [](const std::string& a, const std::string& b) {
@@ -221,6 +340,33 @@ std::vector<std::pair<std::string, bool>> read_order(const fs::path& path) {
 
 } // namespace
 
+std::vector<std::string> keep_plugin_data(const std::filesystem::path& mods_root) noexcept {
+    std::vector<std::string> moved;
+    try {
+        std::error_code error;
+        const auto old = mods_root / generated_folder / "data";
+        if (!fs::is_directory(old, error)) return moved;
+        const auto kept = mods_root / plugin_data_folder;
+        std::vector<fs::path> plugins; // listed first: the folder changes as they move
+        for (fs::directory_iterator it(old, error), end; !error && it != end; it.increment(error))
+            if (it->is_directory(error)) plugins.push_back(it->path());
+        for (const auto& from : plugins) {
+            const auto target = kept / from.filename();
+            std::error_code step;
+            fs::create_directories(kept, step);
+            if (!fs::exists(target, step)) fs::rename(from, target, step);
+            if (step || fs::exists(from, step)) {
+                // Another volume, a file in use, or the plugin has a folder there already: copy what
+                // it lacks, leaving its own files as they are.
+                step.clear();
+                fs::copy(from, target, fs::copy_options::recursive | fs::copy_options::skip_existing, step);
+            }
+            moved.push_back(path_utf8(from.filename()) + (step ? " (partly: " + step.message() + ")" : std::string{}));
+        }
+    } catch (...) {}
+    return moved;
+}
+
 std::string mod_fingerprint(const std::filesystem::path& directory) {
     std::vector<std::string> files;
     std::error_code error;
@@ -229,7 +375,7 @@ std::string mod_fingerprint(const std::filesystem::path& directory) {
         const auto size = it->file_size(error);
         const auto written = it->last_write_time(error).time_since_epoch().count();
         // Wide, so any file name counts; ASCII names give the same text as before.
-        const auto relative = fs::relative(it->path(), directory, error).generic_wstring();
+        const auto relative = it->path().lexically_relative(directory).generic_wstring();  // as laid out, not through links
         std::string name;
         for (const auto ch : relative) {
             if (ch < 0x80) name.push_back(static_cast<char>(ch));
@@ -261,6 +407,8 @@ std::map<std::string, Exclusion, std::less<>> read_exclusions(const std::filesys
             Exclusion exclusion;
             exclusion.fingerprint = row.value("fingerprint", std::string{});
             exclusion.sdk = row.value("sdk", std::string{});
+            exclusion.conflictWith = row.value("conflict_with", std::string{});
+            exclusion.conflictFingerprint = row.value("conflict_fingerprint", std::string{});
             if (row.contains("problems") && row.at("problems").is_array())
                 for (const auto& problem : row.at("problems"))
                     if (problem.is_string() && exclusion.problems.size() < 16)
@@ -282,6 +430,10 @@ void write_exclusions(const std::filesystem::path& mods_root,
             auto row = Json::object();
             row["fingerprint"] = exclusion.fingerprint;
             row["sdk"] = exclusion.sdk;
+            if (!exclusion.conflictWith.empty()) {
+                row["conflict_with"] = exclusion.conflictWith;
+                row["conflict_fingerprint"] = exclusion.conflictFingerprint;
+            }
             auto problems = Json::array();
             for (std::size_t i = 0; i < exclusion.problems.size() && i < 16; ++i)
                 problems.push_back(exclusion.problems[i].substr(0, 600));
@@ -299,7 +451,13 @@ void write_exclusions(const std::filesystem::path& mods_root,
             output.write(text.data(), static_cast<std::streamsize>(text.size()));
             if (!output.flush()) return;
         }
+#ifdef _WIN32
         MoveFileExW(temporary.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
+#else
+        // rename replaces the old file in one step on POSIX, as MoveFileExW does on Windows.
+        std::error_code ignored;
+        fs::rename(temporary, path, ignored);
+#endif
     } catch (...) {}
 }
 
@@ -321,6 +479,79 @@ bool valid_mod_name(std::string_view name) {
         return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
             (ch >= '0' && ch <= '9') || value == '_' || value == '-' || value == '.' || value == ' ';
     });
+}
+
+Mod describe_mod(const std::filesystem::path& directory, std::string name, std::vector<std::string>& notes) {
+    std::error_code error;
+    Mod mod;
+    mod.name = std::move(name);
+    mod.title = mod.name;
+    mod.directory = directory;
+    mod.provides_layout = fs::is_regular_file(mod.directory / layout_name, error);
+    mod.provides_levels = fs::is_regular_file(mod.directory / levels_name, error);
+    mod.provides_objects = fs::is_regular_file(mod.directory / objects_name, error);
+    mod.provides_music = fs::is_regular_file(mod.directory / music_name, error);
+    for (fs::directory_iterator it(mod.directory / "parks", error), end; !error && it != end; it.increment(error)) {
+        auto file = ascii_path(it->path().filename());
+        if (!file.ends_with(".park.json") || mod.park_maps.size() >= 16) continue;
+        file.resize(file.size() - 10);
+        mod.park_maps.push_back(std::move(file));
+    }
+    std::sort(mod.park_maps.begin(), mod.park_maps.end());
+    read_build_info(mod, notes);
+    read_mod_info(mod, notes);
+    read_levels(mod);
+    read_resident(mod, notes);
+    read_variants(mod, notes);
+    read_variant_additions(mod, notes);
+    read_plugin_entry(mod);
+    read_studio_marker(mod);
+    return mod;
+}
+
+std::vector<std::string> mod_contents(const Mod& mod) {
+    std::vector<std::string> parts;
+    if (mod.provides_levels)
+        parts.push_back(mod.levels.size() > 1 ? std::to_string(mod.levels.size()) + " maps" : "Map");
+    if (!mod.park_maps.empty()) parts.push_back(mod.park_maps.size() == 1 ? "Park" : "Parks");
+    if (mod.provides_plugin) parts.push_back("Plugin");
+    // A map's own game data is part of the map.
+    if (mod.provides_layout && !mod.provides_levels) parts.push_back("Game data");
+    if (mod.provides_objects) parts.push_back("Objects");
+    if (mod.provides_music) parts.push_back("Music");
+    return parts;
+}
+
+bool plugin_only(const Mod& mod) {
+    return mod.provides_plugin && !mod.provides_layout && !mod.provides_levels && mod.park_maps.empty() && !mod.provides_objects &&
+           !mod.provides_music && !mod.variants.has_value();
+}
+
+bool has_content(const Mod& mod) {
+    return !mod_contents(mod).empty() || mod.variants.has_value();
+}
+
+bool resident_root(const Mod& mod, std::string_view bundle, std::string_view name) noexcept {
+    try {
+        const auto b = lower(bundle), n = lower(name);
+        for (const auto& entry : mod.resident) {
+            if (entry.bundle != b) continue;
+            for (const auto& root : entry.roots)
+                if (root.ends_with('/') ? n.starts_with(root) : n == root) return true;
+        }
+    } catch (...) {}
+    return false;
+}
+const ResidentAssets::Shader* resident_shader(const Mod& mod, std::string_view bundle, std::string_view name) noexcept {
+    try {
+        const auto b = lower(bundle), n = lower(name);
+        for (const auto& entry : mod.resident) {
+            if (entry.bundle != b) continue;
+            for (const auto& shader : entry.shaders)
+                if (shader.name == n) return &shader;
+        }
+    } catch (...) {}
+    return nullptr;
 }
 
 ModList scan_mods(const std::filesystem::path& data_root) noexcept {
@@ -364,24 +595,7 @@ ModList scan_mods(const std::filesystem::path& data_root) noexcept {
             }
             ModEntry entry;
             entry.enabled = enabled;
-            auto& mod = entry.mod;
-            mod.name = found->second;
-            mod.title = mod.name;
-            mod.directory = result.root / mod.name;
-            mod.provides_layout = fs::is_regular_file(mod.directory / layout_name, error);
-            mod.provides_levels = fs::is_regular_file(mod.directory / levels_name, error);
-            for (fs::directory_iterator it(mod.directory / "parks", error), end; !error && it != end; it.increment(error)) {
-                auto file = ascii_path(it->path().filename());
-                if (!file.ends_with(".park.json") || mod.park_maps.size() >= 16) continue;
-                file.resize(file.size() - 10);
-                mod.park_maps.push_back(std::move(file));
-            }
-            error.clear();
-            std::sort(mod.park_maps.begin(), mod.park_maps.end());
-            read_build_info(mod, result.notes);
-            read_mod_info(mod, result.notes);
-            read_levels(mod);
-            read_studio_marker(mod);
+            entry.mod = describe_mod(result.root / found->second, found->second, result.notes);
             result.entries.push_back(std::move(entry));
         }
         // Only mods named in the exclusions file are fingerprinted.
@@ -395,6 +609,40 @@ ModList scan_mods(const std::filesystem::path& data_root) noexcept {
         if (result.issue.empty()) result.issue = "The Mods folder could not be read";
     }
     return result;
+}
+
+bool mod_disabled(const std::filesystem::path& mods_root, std::string_view name) noexcept {
+    try {
+        std::error_code error;
+        const auto path = mods_root / order_file;
+        if (!fs::is_regular_file(path, error)) return false;
+        for (const auto& [listed, enabled] : read_order(path))
+            if (lower(listed) == lower(name)) return !enabled;
+    } catch (...) {}
+    return false;
+}
+
+bool set_mod_enabled(const std::filesystem::path& mods_root, std::string_view name, bool enabled) noexcept {
+    try {
+        if (!valid_mod_name(name)) return false;
+        std::error_code error;
+        const auto path = mods_root / order_file;
+        auto order = fs::is_regular_file(path, error) ? read_order(path) : std::vector<std::pair<std::string, bool>>{};
+        const auto found = std::ranges::find_if(order, [&](const auto& row) { return lower(row.first) == lower(name); });
+        if (found != order.end()) found->second = enabled;
+        else order.emplace_back(std::string(name), enabled);
+        std::vector<ModEntry> entries;
+        for (const auto& [listed, on] : order) {
+            ModEntry entry;
+            entry.mod.name = listed;
+            entry.enabled = on;
+            entries.push_back(std::move(entry));
+        }
+        save_mod_order(mods_root, entries);
+        return true;
+    } catch (...) {
+        return false;
+    }
 }
 
 void save_mod_order(const std::filesystem::path& mods_root, const std::vector<ModEntry>& entries) {
@@ -421,12 +669,23 @@ void save_mod_order(const std::filesystem::path& mods_root, const std::vector<Mo
         if (!output || !output.write(text.data(), static_cast<std::streamsize>(text.size())) || !output.flush())
             throw std::runtime_error("Cannot write " + path_utf8(temporary));
     }
+#ifdef _WIN32
     if (!MoveFileExW(temporary.c_str(), target.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
         std::error_code ignored;
         fs::remove(temporary, ignored);
         throw std::runtime_error("Cannot replace " + path_utf8(target) + " (Windows error " +
             std::to_string(GetLastError()) + ")");
     }
+#else
+    // Elsewhere (the plugin tests on Linux) rename replaces the old file in one step.
+    std::error_code renamed;
+    fs::rename(temporary, target, renamed);
+    if (renamed) {
+        std::error_code ignored;
+        fs::remove(temporary, ignored);
+        throw std::runtime_error("Cannot replace " + path_utf8(target) + " (" + renamed.message() + ")");
+    }
+#endif
 }
 
 } // namespace dingosdk::mods

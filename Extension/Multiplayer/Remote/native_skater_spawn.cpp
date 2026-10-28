@@ -5,6 +5,7 @@
 #include "native_audio.h"
 #include "puppet_cost.h"
 #include "remote_collision.h"
+#include "stand_ins.h"
 #include "Engine/Core/Log/logging.h"
 #include "Engine/Game/Build/supported_build.h"
 #include "Engine/Game/Build/20260929/engine.h"
@@ -20,6 +21,66 @@ using namespace native_skater_detail;
 namespace {
 bool code(std::uintptr_t base, std::uintptr_t address) {
     return address >= base && address < base + supported_build::game_image_size;
+}
+// Whether the game's destroy of `entity` (engine::destroy_entity, 0x2b689f0) reaches code: it
+// calls its owner's bus (owner + 8) through slot 3 (0x2b94c50), which, for the bus's root entity
+// (bus + 0x28, which a remote actor always is), calls the parent bus (bus + 0x20) through slot 3.
+// In 2.1.1's crash reports (Skate.exe+0x2b94cd0, 573 of them) that parent pointer had been made
+// one less than the parent's address while the actor lived (the same parent is at bus + 0x48),
+// so the game read a vtable out of the middle of one and faulted; what writes it is not known
+// (2026-10-21).
+// An actor left alive for that only crashed later: when the level went, the game released the
+// parent through the same pointer, took one off the byte below the parent's vtable pointer, and
+// called through it (Skate.exe+0x2b8092f, +0x2b7fcfb, every one after the warning below with the
+// same bus; 2026-10-25). One less than the parent at bus + 0x48 is put right instead, and the actor
+// destroyed as the game would.
+void note_repaired_link(std::uintptr_t bus, std::uintptr_t parent) {
+    static std::atomic<unsigned> said{};
+    if (said.fetch_add(1, std::memory_order_relaxed) >= 8) return;
+    try {
+        logging::log(logging::Level::warning, logging::Channel::network,
+                     "Multiplayer: a remote actor's link to its parent in the game's entity tree was one byte short (bus {:#x}, "
+                     "parent {:#x}); it is put right before the actor is destroyed.",
+                     bus, parent);
+    } catch (...) {
+    }
+}
+bool destroy_reaches_code(std::uintptr_t base, std::uintptr_t entity, std::uintptr_t owner, std::string &damage) {
+    try {
+        const auto bus = ptr(owner, 8);
+        if (!code(base, ptr(ptr(bus), 0x18))) {
+            damage = std::format("owner {:#x}, bus {:#x}", owner, bus);
+            return false;
+        }
+        if (ptr(bus, 0x28) != entity) return true;
+        const auto up = ptr(bus, 0x20);
+        if (const auto parent = ptr(bus, 0x48); up % 8 == 7 && up + 1 == parent && code(base, ptr(ptr(parent), 0x18))) {
+            *reinterpret_cast<std::uintptr_t *>(bus + 0x20) = parent;
+            note_repaired_link(bus, parent);
+            return true;
+        }
+        if (up % 8 || !code(base, ptr(ptr(up), 0x18))) {
+            damage = std::format("bus {:#x}, parent {:#x}, root bus {:#x}", bus, up, ptr(bus, 0x48));
+            return false;
+        }
+        return true;
+    } catch (const Unavailable &) {
+        damage = std::format("owner {:#x} unreadable", owner);
+        return false;
+    }
+}
+// A remote actor whose destroy would crash the game is left where it is, forgotten: a stray actor
+// for the rest of the level, where the game would have closed.
+void note_damaged_destroy(const char *what, std::uintptr_t entity, const std::string &damage) {
+    static std::atomic<unsigned> said{};
+    if (said.fetch_add(1, std::memory_order_relaxed) >= 8) return;
+    try {
+        logging::log(logging::Level::warning, logging::Channel::network,
+                     "Multiplayer: a remote {}'s link to the game's entity tree is damaged ({}; entity {:#x}), where the game "
+                     "would have crashed destroying it; it is left alive and forgotten.",
+                     what, damage, entity);
+    } catch (...) {
+    }
 }
 // Entity+0x628 is a cache written by the post-construction callback
 // (native::component_cache_callback). The factory's component collection is available before that cache.
@@ -243,8 +304,12 @@ void remove_board(std::uintptr_t base) {
     }
     if (entity && shared().hooks && GetCurrentThreadId() == shared().engine_thread &&
         ptr(entity) == base + addr::engine::board_entity_vtable && ptr(entity, 0x20) == r.context &&
-        ptr(entity, 0x40) == parent)
-        shared().original_destroy(entity, parent);
+        ptr(entity, 0x40) == parent) {
+        if (std::string damage; destroy_reaches_code(base, entity, parent, damage))
+            shared().original_destroy(entity, parent);
+        else
+            note_damaged_destroy("board", entity, damage);
+    }
 }
 std::string show_board(std::uintptr_t base, const NativeFrame &local, const Pose &pose) {
     auto &r = remote();
@@ -432,8 +497,12 @@ void remove_remote(std::uintptr_t base) noexcept {
         if (entity && shared().hooks && GetCurrentThreadId() == shared().engine_thread &&
             ptr(entity) == base + addr::engine::skater_entity_vtable && ptr(entity, 0x20) == context &&
             ptr(entity, 0x40) == parent &&
-            !ptr(entity, 0xf8))
-            shared().original_destroy(entity, ptr(entity, 0x40));
+            !ptr(entity, 0xf8)) {
+            if (std::string damage; destroy_reaches_code(base, entity, ptr(entity, 0x40), damage))
+                shared().original_destroy(entity, ptr(entity, 0x40));
+            else
+                note_damaged_destroy("skater", entity, damage);
+        }
     } catch (...) { /* Level teardown may have already invalidated the entity. */
     }
 }
@@ -452,6 +521,19 @@ void update_remote_cosmetics(std::uintptr_t base, const NativeFrame &local, cons
         const auto now = GetTickCount64();
         if (r.rejected_appearance && *r.rejected_appearance == appearance && now < r.next_appearance_retry)
             return;
+        // A plugin changed what stands in for missing items: dress this player again. Dressing is
+        // a heavy native pass, so players already shown take turns, one every 100 ms, rather than
+        // the whole server in one frame.
+        const auto stand_ins_now = stand_ins::generation();
+        if (r.stand_ins_applied != stand_ins_now && r.skater_appearance) {
+            static ULONGLONG next_restyle{}; // client thread only
+            if (now >= next_restyle) {
+                next_restyle = now + 100;
+                r.skater_appearance.reset();
+                r.board_appearance.reset();
+            }
+        }
+        if (!r.skater_appearance) r.stand_ins_applied = stand_ins_now;
         try {
             if (!r.skater_appearance || *r.skater_appearance != appearance.skater) {
                 apply_cosmetic_recipe(base, r.entity, local.entity, appearance.skater);

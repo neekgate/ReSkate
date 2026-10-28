@@ -30,13 +30,7 @@ add_library(dingosdk_console_core STATIC
 add_library(dingosdk_json STATIC
     Engine/Core/Json/json.cpp)
 
-# The bad-word filter (Engine/Core/Text/word_filter.h) with its list built in: editing
-# bad_words.txt re-runs the configure step.
-set(bad_words_path "${PROJECT_SOURCE_DIR}/Engine/Core/Text/bad_words.txt")
-set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${bad_words_path}")
-file(READ "${bad_words_path}" bad_words_source)
-configure_file(cmake/templates/bad_words.h.in
-    "${CMAKE_CURRENT_BINARY_DIR}/generated/embedded_bad_words.h" @ONLY)
+# The bad-word filter (Engine/Core/Text/word_filter.h); its words come from the backend.
 add_library(dingosdk_word_filter STATIC Engine/Core/Text/word_filter.cpp)
 
 target_include_directories(dingosdk_json SYSTEM PRIVATE External)
@@ -69,6 +63,7 @@ add_library(dingosdk_frostbite STATIC
     Engine/Resource/binary_bundle.cpp
     Engine/Resource/cas_codec.cpp
     Engine/Resource/ebx_document.cpp
+    Engine/Resource/ebx_fixup_repair.cpp
     Engine/Resource/ebx_merge.cpp
     Engine/Resource/material_grid.cpp
     Engine/Resource/shader_lookup.cpp
@@ -101,18 +96,25 @@ target_link_libraries(dingosdk_game_archives PUBLIC dingosdk_native_db dingosdk_
 if(WIN32)
     add_library(dingosdk_mods STATIC
         Engine/Vfs/mod_catalog.cpp
+        Engine/Vfs/variant_additions_native.cpp
         Engine/Vfs/mod_merge.cpp
         Engine/Vfs/mod_merge_files.cpp
         Engine/Vfs/mod_merge_stamp.cpp
         Engine/Vfs/mod_merge_cas_store.cpp
         Engine/Vfs/mod_merge_combine.cpp
         Engine/Vfs/mod_merge_overrides.cpp
+        Engine/Vfs/mod_merge_conflicts.cpp
+        Engine/Vfs/mod_merge_scan_cache.cpp
+        Engine/Vfs/mod_merge_textures.cpp
         Engine/Vfs/mod_merge_grid.cpp
         Engine/Vfs/mod_merge_load_screens.cpp
         Engine/Vfs/mod_music.cpp
+        Engine/Vfs/mod_materials.cpp
         Engine/Vfs/mod_scoring.cpp
-        Engine/Vfs/mod_store_copies.cpp)
-    target_link_libraries(dingosdk_mods PUBLIC dingosdk_json dingosdk_mod_list PRIVATE dingosdk_game_archives dingosdk_native_db dingosdk_frostbite dingosdk_content_cache shell32 bcrypt)
+        Engine/Vfs/mod_store_copies.cpp
+        Engine/Vfs/mod_item_sources.cpp
+        Engine/Vfs/builtin_packs.cpp)
+    target_link_libraries(dingosdk_mods PUBLIC dingosdk_json dingosdk_mod_list PRIVATE dingosdk_game_archives dingosdk_native_db dingosdk_frostbite dingosdk_content_cache dingosdk_miniz dingosdk_zstd shell32 bcrypt)
 
     add_library(dingosdk_custom_scripts STATIC Engine/Scripting/custom_scripts.cpp)
     target_link_libraries(dingosdk_custom_scripts PUBLIC dingosdk_json PRIVATE dingosdk_initfs)
@@ -134,3 +136,37 @@ endif()
 # World layers read from the installed level data, cached per game build.
 add_library(dingosdk_world_layer_scan STATIC Engine/Vfs/world_layer_scan.cpp)
 target_link_libraries(dingosdk_world_layer_scan PUBLIC dingosdk_json PRIVATE dingosdk_game_archives dingosdk_content_cache)
+
+# Plugins (Extension/Plugins): Luau scripts in mods, each in its own sandboxed VM. The host, its
+# VMs and the API; finding plugins among the mods needs the mod list, so it is Windows only for now.
+add_library(dingosdk_plugins STATIC
+    Extension/Plugins/plugin_manifest.cpp
+    Extension/Plugins/plugin_approval.cpp
+    Extension/Plugins/plugin_listing.cpp
+    Extension/Plugins/plugin_vm.cpp
+    Extension/Plugins/plugin_api.cpp
+    Extension/Plugins/plugin_api_ui.cpp
+    Extension/Plugins/plugin_api_more.cpp
+    Extension/Plugins/plugin_api_world.cpp
+    Extension/Plugins/plugin_api_physics.cpp
+    Extension/Plugins/plugin_api_services.cpp
+    Extension/Plugins/plugin_api_throwdowns.cpp
+    Extension/Plugins/plugin_api_capture.cpp
+    Extension/Plugins/plugin_content.cpp
+    Extension/Plugins/plugin_api_effects.cpp
+    Extension/Plugins/plugin_api_viewmodel.cpp
+    Extension/Plugins/plugin_effects.cpp
+    # The throwdown kit's store and the plugins' modes, which the plugin host and the game's
+    # native UI share (kit::flag is the game's: Extension/Throwdowns/native_flag_session.cpp).
+    Extension/Throwdowns/throwdown_kit.cpp
+    Extension/Throwdowns/custom_modes.cpp
+    Extension/Throwdowns/challenge_registry.cpp
+    Extension/Plugins/plugin_host.cpp
+    Extension/AnimationStudio/anim_core.cpp
+    Extension/Skater/pose_place.cpp
+    Extension/Plugins/plugin_wave.cpp)
+target_link_libraries(dingosdk_plugins PUBLIC dingosdk_json dingosdk_console_core PRIVATE dingosdk_luau dingosdk_launcher_support)
+if(WIN32)
+    target_sources(dingosdk_plugins PRIVATE Extension/Plugins/plugin_discovery.cpp)
+    target_link_libraries(dingosdk_plugins PUBLIC dingosdk_mod_list)
+endif()

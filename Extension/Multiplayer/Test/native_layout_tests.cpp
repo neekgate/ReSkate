@@ -3,6 +3,7 @@
 #include "Extension/Multiplayer/Hud/native_indicator_slots.h"
 #include "Extension/Multiplayer/Hud/native_nametag_context.h"
 #include "Extension/Multiplayer/Remote/native_cosmetics_layout.h"
+#include "Extension/Multiplayer/Remote/stand_ins.h"
 #include "Extension/Multiplayer/Remote/native_audio_layout.h"
 #include "Extension/Multiplayer/Remote/native_audio_binding.h"
 #include "Extension/Multiplayer/Net/protocol.h"
@@ -10,10 +11,12 @@
 #include "Engine/Game/Build/20260929/engine.h"
 #include "Engine/Game/Build/20260929/native_indicators.h"
 #include <Windows.h>
+#include <algorithm>
 #include <array>
 #include <cstring>
 #include <iostream>
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -635,6 +638,124 @@ void cosmetic_layout_regression() {
     check(fake.fit_slots(res, modded, own) == std::pair<std::size_t, std::size_t>{} &&
               modded.items[0] == CosmeticSlot{11, "Own_Shirt", {7}} && !reject(m, modded),
           "An item whose slot takes other parameters here must keep its place");
+    {
+        // A plugin's stand-ins (stand_ins.h): the whole catalog walked, the items that fit the slot
+        // tried in the policy's order, a blocked (paid) item never taken.
+        auto cat = m;
+        constexpr std::uintptr_t node2 = 0x220000, asset2 = 0x230000, name2 = 0x240000, node3 = 0x250000,
+                                 asset3 = 0x260000, name3 = 0x270000, categories3 = 0x280000, category3 = 0x290000;
+        const auto add = [&](std::uintptr_t n, std::uintptr_t a, std::uintptr_t t, std::uintptr_t cats, std::uintptr_t next,
+                             const std::string &key) {
+            cat.put(n, cosmetic_asset_hash(key));
+            cat.put(n + 8, a | 4);
+            cat.put(n + 0x10, next);
+            cat.put(a + 0x38, t);
+            cat.put(a + 0x48, cosmetic_asset_hash(key));
+            cat.put(a + 0x20, cats);
+            for (std::size_t i = 0; i <= key.size(); ++i) cat.put(t + i, key.c_str()[i]);
+        };
+        cat.put(manager + 0x3c, std::uint32_t{3});
+        cat.put(node + 0x10, node2);
+        add(node2, asset2, name2, categories, node3, "Own_Hoodie"); // the shirt's category (77)
+        cat.put(categories3 - 4, std::uint32_t{1});
+        cat.put(categories3, category3 | 4);
+        cat.put(category3 + 0x38, std::uint32_t{78});
+        add(node3, asset3, name3, categories3, 0, "Own_Cap"); // another category
+        const CosmeticMemory memory{std::cref(cat), fixture_base};
+        const auto items = memory.catalog();
+        check(items.size() == 3 && items[1].name == "Own_Hoodie" && items[2].categories == std::vector<std::uint32_t>{78},
+              "The catalog walk must find every installed item and its categories");
+        check(memory.slot_category(res, 0) == 77, "A slot's category must be read");
+        std::vector<std::string> fits;
+        for (const auto &item : items)
+            if (std::find(item.categories.begin(), item.categories.end(), 77U) != item.categories.end()) fits.push_back(item.name);
+        check(fits == std::vector<std::string>{"Own_Shirt", "Own_Hoodie"}, "Only the slot's items are candidates");
+        const auto dress = [&](const stand_ins::Policy &policy, std::uint64_t outfit, auto blocked) {
+            auto r = wrong; // wears "Unknown", which is not installed
+            memory.substitute_missing_each(
+                res, r,
+                [&](std::size_t, const CosmeticSlot &missing) {
+                    auto c = stand_ins::order(policy, fits, outfit, missing.slot, missing.asset);
+                    c.push_back("Own_Shirt"); // the game's default after them
+                    return c;
+                },
+                blocked);
+            check(!reject(cat, r), "A stand-in must pass native validation");
+            return r.items[0].asset;
+        };
+        const auto none = [](const std::string &) { return false; };
+        stand_ins::Policy first;
+        check(dress(first, 1, none) == "Own_Shirt", "\"first\" takes the first that fits");
+        stand_ins::Policy random;
+        random.pick = stand_ins::Pick::random;
+        std::set<std::string> seen;
+        for (std::uint32_t seed = 0; seed < 64; ++seed) {
+            random.seed = seed;
+            const auto picked = dress(random, 42, none);
+            check(picked == dress(random, 42, none), "One outfit must get the same stand-in every time");
+            seen.insert(picked);
+        }
+        check(seen == std::set<std::string>{"Own_Shirt", "Own_Hoodie"}, "\"random\" must pick among every item that fits");
+        const auto paid = [](const std::string &asset) { return asset == "Own_Hoodie"; };
+        for (std::uint32_t seed = 0; seed < 64; ++seed) {
+            random.seed = seed;
+            check(dress(random, 42, paid) == "Own_Shirt", "A paid store item must never stand in");
+        }
+        std::vector<std::string> many;
+        for (int i = 0; i < 50; ++i) many.push_back("Item" + std::to_string(i));
+        auto shuffled = stand_ins::order(random, many, 7, 11, "Unknown");
+        check(shuffled != many, "\"random\" must change the order");
+        std::sort(shuffled.begin(), shuffled.end());
+        auto sorted = many;
+        std::sort(sorted.begin(), sorted.end());
+        check(shuffled == sorted, "\"random\" must keep every candidate once");
+        check(stand_ins::order(first, many, 7, 11, "Unknown") == many, "\"first\" must keep the order given");
+        // Excluded items: whole names or a start and "*", any case, taken out after the shuffle.
+        stand_ins::Policy blocked;
+        blocked.exclude = {"own_hoodie", "item1*"}; // set() keeps them lower case
+        check(stand_ins::excluded(blocked, "Own_Hoodie") && stand_ins::excluded(blocked, "ITEM12") &&
+                  !stand_ins::excluded(blocked, "Own_Shirt") && !stand_ins::excluded(blocked, "Item2") && !stand_ins::excluded(blocked, ""),
+              "An exclude list matches whole names and starts, in any case");
+        blocked.pick = stand_ins::Pick::random;
+        for (std::uint32_t seed = 0; seed < 64; ++seed) {
+            blocked.seed = random.seed = seed;
+            auto full = stand_ins::order(random, many, 7, 11, "Unknown");
+            auto kept = stand_ins::order(blocked, many, 7, 11, "Unknown");
+            std::erase_if(full, [&](const std::string &c) { return stand_ins::excluded(blocked, c); });
+            std::erase_if(kept, [&](const std::string &c) { return stand_ins::excluded(blocked, c); });
+            check(full == kept && full.size() == 39, "Blocking items must not move the others' order");
+        }
+        // The store: one owner at a time, the exclude list kept lower case, the recent stand-ins listed
+        // newest first and without what was excluded since.
+        stand_ins::Policy mine;
+        mine.owner = "mine";
+        const auto before = stand_ins::generation();
+        check(stand_ins::set(mine).empty() && stand_ins::generation() > before, "A policy is set and counted");
+        stand_ins::Policy theirs;
+        theirs.owner = "theirs";
+        check(!stand_ins::set(theirs).empty(), "Another plugin's is refused while one holds it");
+        stand_ins::note_shown("Own_Hoodie", "Mod_Jacket");
+        stand_ins::note_shown("Own_Cap", "Mod_Hat");
+        stand_ins::note_shown("Own_Hoodie", "Mod_Jacket2");
+        auto listed = stand_ins::shown();
+        check(listed.size() == 2 && listed[0].item == "Own_Hoodie" && listed[0].replacing == "Mod_Jacket2" && listed[1].item == "Own_Cap",
+              "Recent stand-ins are listed once each, newest first");
+        mine.exclude = {"OWN_HOODIE"};
+        check(stand_ins::set(mine).empty() && stand_ins::current()->exclude == std::vector<std::string>{"own_hoodie"},
+              "The exclude list is kept lower case");
+        listed = stand_ins::shown();
+        check(listed.size() == 1 && listed[0].item == "Own_Cap", "An excluded item is no longer listed as shown");
+        stand_ins::clear("theirs");
+        check(stand_ins::current() != nullptr, "Only the owner clears it");
+        stand_ins::clear("mine");
+        check(!stand_ins::current() && stand_ins::shown().empty(), "Cleared, the defaults are back and nothing is listed");
+        stand_ins::note_shown("Own_Cap", "Mod_Hat");
+        check(stand_ins::shown().empty(), "Nothing is listed while no plugin's stand-ins are set");
+        stand_ins::Policy board_only;
+        board_only.parts = stand_ins::Parts::board;
+        check(!stand_ins::covers(board_only, false) && stand_ins::covers(board_only, true) && stand_ins::covers(first, false),
+              "A policy covers the parts it names");
+    }
     auto bad = m;
     bad.put(categories, category + 0x100);
     bad.put(category + 0x138, std::uint32_t{88});
@@ -710,8 +831,9 @@ void sound_layout_regression() {
     AudioState s;
     for (std::size_t i = 0; i < s.values.size(); ++i)
         s.values[i] = static_cast<float>(i) * .125f;
+    // Material words whose slots the root level's grid has (base_material_slots), so they cross unchanged.
     for (std::size_t i = 0; i < s.selectors.size(); ++i)
-        s.selectors[i] = 0xf0000000U + static_cast<std::uint32_t>(i);
+        s.selectors[i] = 0x20U | static_cast<std::uint32_t>(i) << 6 | static_cast<std::uint32_t>(i + 1) << 19;
     for (std::size_t i = 1; i < s.flags.size(); ++i)
         s.flags[i] = i % 2;
     Pose p;
@@ -742,6 +864,25 @@ void sound_layout_regression() {
         mark(off, 4);
     mark(0, 0xb0);
     mark(0x1ec, 43);
+    for (const auto off : audio_material_offsets)
+        check(std::find(audio_selector_offsets.begin(), audio_selector_offsets.end(), off) != audio_selector_offsets.end(),
+              "A sound material word is not one of the selectors");
+    // A Studio map's surface (slot 116 on) is numbered by each install's own map mods: it reaches the
+    // other side as the default surface, whichever side sent or received it, and other selectors as they are.
+    const auto material_at = static_cast<std::size_t>(
+        std::find(audio_selector_offsets.begin(), audio_selector_offsets.end(), audio_material_offsets[0]) - audio_selector_offsets.begin());
+    const auto other_at = static_cast<std::size_t>(
+        std::find(audio_selector_offsets.begin(), audio_selector_offsets.end(), std::uint16_t{0xbc}) - audio_selector_offsets.begin());
+    auto custom = s;
+    custom.selectors[material_at] = 0x20U | 341U << 6 | 342U << 19;
+    custom.selectors[other_at] = 0xf0000000U;
+    const auto received = audio_frame(custom, p);
+    check(audio_value<std::uint32_t>(received, audio_material_offsets[0]) == 0 &&
+              audio_value<std::uint32_t>(received, 0xbc) == 0xf0000000U,
+          "A map's own surface slot reached the native sound frame");
+    auto sent_frame = f;
+    audio_put(sent_frame, audio_material_offsets[0], 0x20U | 115U << 6 | 116U << 19);
+    check(audio_state(sent_frame).selectors[material_at] == 0, "A map's own surface slot was sent to the other players");
     auto invalid = s;
     invalid.values[0] = std::numeric_limits<float>::infinity();
     bool rejected = false;

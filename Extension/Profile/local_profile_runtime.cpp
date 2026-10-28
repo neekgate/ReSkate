@@ -6,6 +6,7 @@
 #include "Extension/Customization/local_player_card_runtime.h"
 #include "Extension/Music/local_music_ui.h"
 #include "Extension/Music/local_music_shelf.h"
+#include "Extension/UI/NativeMenu/native_menu_data.h"
 #include "Extension/Customization/item_browser.h"
 #include "Extension/Music/local_music_playback.h"
 #include "Extension/News/local_news_runtime.h"
@@ -293,6 +294,15 @@ using namespace profile_runtime;
 void set_local_location_travel_queue(LocalLocationTravelQueue queue) noexcept {
     location_travel_queue.store(queue, std::memory_order_release);
 }
+void update_local_item_browser() noexcept {
+    PreserveError preserve;
+    auto& s = local_runtime();
+    if (!s.active.load(std::memory_order_acquire)) return;
+    std::lock_guard lock(s.native_mutex);
+    if (cosmetic_runtime().update_thread != GetCurrentThreadId()) return;
+    item_browser::update(s.base);
+}
+
 void update_local_customization() noexcept {
     PreserveError preserve;
     auto& s = local_runtime();
@@ -307,6 +317,11 @@ void update_local_customization() noexcept {
             publish_cosmetic_catalog();
             publish_cosmetic_inventory();
         }
+    } catch (const std::exception& failure) {
+        // (Why, in the log: a bare "failed" left a player with no items and nothing to go on.)
+        cosmetic_runtime().catalog_failed = true;
+        const dingosdk::Json event{{"event", "local_cosmetic_catalog_failed"}, {"reason", failure.what()}};
+        dingosdk::logging::event(dingosdk::logging::Channel::profile, event.dump().c_str());
     } catch (...) {
         cosmetic_runtime().catalog_failed = true;
         dingosdk::logging::event(dingosdk::logging::Channel::profile, "{\"event\":\"local_cosmetic_catalog_failed\"}");
@@ -328,8 +343,9 @@ void update_local_customization() noexcept {
     try { update_object_categories(); }
     catch (...) { dingosdk::logging::event(dingosdk::logging::Channel::profile, "{\"event\":\"local_object_categories_failed\",\"operation\":\"update\"}"); }
     update_music_catalog();
+    try { update_music_catalog_refresh(); } catch (...) {}
+    try { update_spotify_cover(); } catch (...) {}
     update_music_shelf();
-    item_browser::update(s.base);
     try {
         if (cosmetic_runtime().update_thread == GetCurrentThreadId() && !cosmetic_runtime().items.empty())
             update_player_card();
@@ -386,18 +402,23 @@ void observe_local_customization_selection(std::int32_t index) noexcept {
 }
 
 bool initialize_local_profile(std::uintptr_t base, bool authored_offline,
-    const std::filesystem::path& path) {
+    const std::filesystem::path& path, std::string& failure) {
+    const auto refuse = [&failure](std::string_view why) {
+        failure = "Profile initialization failed: " + std::string(why);
+        dingosdk::logging::write(dingosdk::logging::Level::error, dingosdk::logging::Channel::profile, failure);
+        return false;
+    };
     auto& s = local_runtime();
-    if (!authored_offline) return false;
-    if (s.attempted) return s.active.load() && s.base == base;
+    if (!authored_offline) return refuse("the offline runtime is not active");
+    if (s.attempted) return s.active.load() && s.base == base ? true : refuse("an earlier attempt in this game did not finish");
     s.attempted = true;
     std::vector<void*> created;
     bool enable_attempted{};
     try {
-        if (reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr)) != base) return false;
+        if (reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr)) != base) return refuse("the game image moved");
         std::array<wchar_t, 32768> exe{};
         const auto n = GetModuleFileNameW(nullptr, exe.data(), static_cast<DWORD>(exe.size()));
-        if (!n || n >= exe.size()) return false;
+        if (!n || n >= exe.size()) return refuse("cannot locate Skate.exe");
         launcher::validate_game_file(exe.data());
         for (const auto& f : {load_contract, ready_contract, send_contract, get_bool_contract,
             user_get_bool_contract, user_get_number_contract, user_get_integer_contract, user_get_string_contract,
@@ -434,12 +455,12 @@ bool initialize_local_profile(std::uintptr_t base, bool authored_offline,
             object_subscribe_contract, object_allocate_contract, object_ctor_contract,
             object_register_contract, object_parse_contract, object_release_contract,
             challenge_begin_contract, challenge_end_contract, challenge_available_contract, challenge_select_contract, challenge_lookup_contract, challenge_end_invoke_contract, challenge_error_contract, challenge_counts_contract, challenge_index_insert_contract, challenge_index_append_contract, challenge_insert_contract, challenge_dispatch_contract, challenge_request_create_contract,
-            rip_score_context_contract})
-            if (!matches(base, f)) return false;
+            rip_score_context_contract, multiplayer::menu_data::model_record_load_contract})
+            if (!matches(base, f)) return refuse(std::format("the game code at {:#x} is not what this build expects", f.rva));
         if (!neighborhood_type_contract(base) || !rip_score_type_contract(base) ||
-            !challenge_map_type_contract(base)) return false;
-        if (!prepare_main_mission_override(base)) return false;
-        if (!game::initialize_native_data(base)) return false;
+            !challenge_map_type_contract(base)) return refuse("the game's profile data types are not what this build expects");
+        if (!prepare_main_mission_override(base)) return refuse("the main mission override could not be prepared");
+        if (!game::initialize_native_data(base)) return refuse("the game's data model could not be reached");
         s.base = base;
         s.store = std::make_unique<profile::Store>(path);
         dingosdk::logging::write(dingosdk::logging::Level::info, dingosdk::logging::Channel::profile,
@@ -530,6 +551,8 @@ bool initialize_local_profile(std::uintptr_t base, bool authored_offline,
         hook(news_list_contract, &news_list_hook, news_runtime().functions.list);
         hook(news_subscribe_contract, &news_subscribe_hook, news_runtime().functions.subscribe);
         hook(object_subscribe_contract, &object_categories_hook, object_runtime().functions.subscribe);
+        hook(multiplayer::menu_data::model_record_load_contract,
+            &multiplayer::menu_data::model_record_load_hook,multiplayer::menu_data::model_record_load_original);
         if (music_ready) {
             hook(music_ui_initialize_contract, &music_ui_initialize_hook, music_ui_runtime().functions.initialize);
             if (music_ui_runtime().functions.favorite_apply)
@@ -544,10 +567,20 @@ bool initialize_local_profile(std::uintptr_t base, bool authored_offline,
         }
         const bool playback_ready = initialize_music_playback(base,
             local_preference("MusicShuffle").value_or(false));
-        if (playback_ready)
+        if (playback_ready) {
+            std::array<unsigned char, 32> channel_bind_bytes{};
+            if (read(base + addr::local_music::playback_channel_playlist_bind_contract.rva,
+                    channel_bind_bytes) &&
+                channel_bind_bytes == addr::local_music::playback_channel_playlist_bind_contract.bytes)
+                hook(addr::local_music::playback_channel_playlist_bind_contract,
+                    &music_channel_playlist_bind_hook, music_channel_playlist_bind_original());
+            else dingosdk::logging::event(dingosdk::logging::Channel::music,
+                "{\"event\":\"music_channel_playlist_binding_contract_mismatch\"}");
             hook(addr::local_music::playback_select_next_contract,
                 &music_select_next_hook, music_select_next_original());
-        else dingosdk::logging::event(dingosdk::logging::Channel::music,
+            hook(addr::local_music::playback_song_score_contract,
+                &music_song_score_hook, music_song_score_original());
+        } else dingosdk::logging::event(dingosdk::logging::Channel::music,
             "{\"event\":\"music_playback_order_contract_mismatch\"}");
         hook(buildkit_text_exists_contract, &buildkit_text_exists, buildkit_text_functions().exists);
         hook(buildkit_text_translate_contract, &buildkit_text_translate, buildkit_text_functions().translate);
@@ -610,8 +643,7 @@ bool initialize_local_profile(std::uintptr_t base, bool authored_offline,
         // Retain attempted trampolines/store for any already-entered detours.
         if (!enable_attempted) s.store.reset();
         dingosdk::logging::event(dingosdk::logging::Channel::profile, "{\"event\":\"local_profile_initialized\",\"active\":false}");
-        dingosdk::logging::log(dingosdk::logging::Level::error, dingosdk::logging::Channel::profile, "Profile initialization failed: {}", e.what());
-        return false;
+        return refuse(e.what());
     }
 }
 

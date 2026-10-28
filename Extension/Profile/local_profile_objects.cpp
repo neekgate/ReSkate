@@ -1,4 +1,5 @@
 #include "runtime_internal.h"
+#include "Engine/Game/Build/20260929/local_placements.h"
 #include "Extension/Objects/local_placements_runtime.h"
 #include "Extension/Objects/ParkEditor/park_editor_runtime.h"
 #include "Extension/Objects/ParkEditor/park_editor_surface.h"
@@ -50,15 +51,34 @@ bool delete_local_placed_object(std::string_view map, std::uint64_t token) {
     return begin_placement_delete({token});
 }
 bool teleport_local_skater(const std::array<float, 3>& position) {
+    return teleport_local_skater_transform({1,0,0,0,0,1,0,0,0,0,1,0,position[0],position[1],position[2],1});
+}
+bool teleport_local_skater_transform(const std::array<float,16>& transform) {
     std::lock_guard lock(local_runtime().native_mutex);
     auto& r = placements_runtime();
     if (!local_runtime().active || !r.teleport || !r.transition_ctor || !r.transition_destroy) return false;
-    for (const auto v : position)
+    for (const auto v : transform)
         if (!std::isfinite(v) || std::abs(v) > 1e6f) return false;
-    r.position_teleport = position;
+    r.position_teleport = transform;
     r.position_teleport_at = GetTickCount64();
     return true;
 }
+// Upright at the spot, facing `heading` (radians about world up): the root's rows are right
+// (cos h, 0, -sin h), up, forward (sin h, 0, cos h); h = 0 faces +Z.
+bool teleport_local_skater_heading(const std::array<float, 3>& position, float heading) {
+    if (!std::isfinite(heading)) return false;
+    const float sh = std::sin(heading), ch = std::cos(heading);
+    return teleport_local_skater_transform({ch, 0, -sh, 0, 0, 1, 0, 0, sh, 0, ch, 0, position[0], position[1], position[2], 1});
+}
+bool local_skater_teleport_pending() {
+    std::lock_guard lock(local_runtime().native_mutex);
+    const auto& r = placements_runtime();
+    if (r.position_teleport) return true;
+    std::uintptr_t manager{}; std::uint32_t phase{};
+    return read(local_runtime().base + addr::local_placements::teleport_manager, manager) && manager &&
+        read(manager, phase) && phase != 0;
+}
+
 std::optional<float> local_ground_height(float x, float z, float top, float bottom) {
     std::lock_guard lock(local_runtime().native_mutex);
     auto& r = placements_runtime();
@@ -100,6 +120,47 @@ std::optional<std::array<float, 3>> local_surface_hit(const std::array<float, 3>
     const auto hit = editor::cast_surface(api, world, {from[0], from[1], from[2]}, {to[0], to[1], to[2]});
     if (!hit) return {};
     return std::array<float, 3>{(*hit)[0], (*hit)[1], (*hit)[2]};
+}
+LocalSurfaceProbe probe_local_surface_counted(const std::array<float, 3>& from, const std::array<float, 3>& to,
+                                              const LocalSurfaceQuery& query) {
+    LocalSurfaceProbe result;
+    if (!editor::surface_query_filter(query.preset)) return result;
+    std::lock_guard lock(local_runtime().native_mutex);
+    auto& r = placements_runtime();
+    if (!local_runtime().active || !r.context) return result;
+    for (const auto v : {from[0], from[1], from[2], to[0], to[1], to[2]})
+        if (!std::isfinite(v) || std::abs(v) > 1e5f) return result;
+    static std::uintptr_t api_base{};
+    static editor::NativeSurfaceApi api;
+    static bool api_contact{};
+    // The contact readers' bytes are compared only once a caller asks to measure contact, and
+    // a changed image base clears that choice.
+    if (api_base != local_runtime().base || (query.measure_contact && !api_contact)) {
+        api = editor::surface_api(local_runtime().base, query.measure_contact);
+        api_base = local_runtime().base;
+        api_contact = query.measure_contact;
+    }
+    if (!api.ready) return result;
+    // The authoritative server context's world is null in this client query path. Resolve the
+    // current client TLS context instead of keeping an address across unloads.
+    std::array<std::uintptr_t, 2> context{};
+    r.context(context.data());
+    result.context = context[0];
+    if (!context[0]) return result;
+    result.world = api.world(context[0]);
+    if (!result.world) return result;
+    // The park editor's picking reader, for a caller that qualifies the shape it hit.
+    const auto shape_reader = query.read_shape ? &local_surface_hit_body : nullptr;
+    const auto cast = editor::cast_surface_counted(api, result.world, from, to, shape_reader, query.measure_contact, query.preset);
+    result.native_casts = cast.native_casts;
+    result.available = cast.surface.available;
+    result.hit = cast.surface.hit;
+    result.position = cast.surface.position;
+    result.fraction = cast.surface.fraction;
+    result.hit_shape = cast.surface.body;
+    result.normal = cast.surface.normal;
+    result.normal_available = cast.surface.normal_available;
+    return result;
 }
 bool teleport_to_local_placed_object(std::string_view map, std::uint64_t token) {
     std::lock_guard lock(local_runtime().native_mutex);

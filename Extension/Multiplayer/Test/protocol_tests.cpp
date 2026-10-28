@@ -675,6 +675,39 @@ void chat_codec() {
     check(clean_chat_text(std::string(199, 'a') + "\xC3\xA9").size() == 199, "Chat cleaning cut a character in half");
     check(clean_chat_text("\x01\x02").empty(), "Chat cleaning left only controls");
     check(valid_chat_text(clean_chat_text("  typed \xE2\x80\x94 text  ")), "Cleaned chat text is not valid");
+    Packet typing;
+    typing.kind = PacketKind::typing; typing.session = 9; typing.epoch = 10; typing.map = 11;
+    typing.source = 76561198000000001ULL; typing.typing = true;
+    const auto typed = decode(encode(typing));
+    check(typed && typed->kind == PacketKind::typing && typed->typing && typed->source == typing.source,
+          "Typing notice failed to round-trip");
+    check(decode_wire(encode_wire(typing))->typing, "Typing notice failed the wire codec");
+    typing.typing = false;
+    const auto stopped = decode(encode(typing));
+    check(stopped && !stopped->typing, "A stopped typing notice stayed on");
+    typing.source = 0;
+    check(reject(typing), "A typing notice without a sender was encoded");
+    typing.source = 76561198000000001ULL;
+    typing.typing = true;
+    auto bad = encode(typing);
+    bad.back() = 2; // the on/off byte; anything but 0 or 1 is refused
+    check(!decode(bad), "A typing notice with a bad flag decoded");
+    // At the game: nothing but the header, from a sender.
+    Packet present;
+    present.kind = PacketKind::present; present.session = 9; present.epoch = 10; present.map = 11;
+    present.source = 76561198000000001ULL;
+    const auto bytes_present = encode(present);
+    const auto here = decode(bytes_present);
+    check(here && here->kind == PacketKind::present && here->source == present.source && bytes_present.size() == packet_header_size,
+          "A presence notice failed to round-trip, or carried more than its header");
+    check(decode_wire(encode_wire(present)) && decode_wire(encode_wire(present))->kind == PacketKind::present,
+          "A presence notice failed the wire codec");
+    auto longer = bytes_present;
+    longer.push_back(0);
+    longer[8] = 1; // its payload length
+    check(!decode(longer), "A presence notice with a payload decoded");
+    present.source = 0;
+    check(reject(present), "A presence notice without a sender was encoded");
 }
 // Linked throwdowns: the packet carries one opaque message; the message codec is strict.
 void throwdown_codec() {
@@ -708,6 +741,19 @@ void throwdown_codec() {
         ThrowdownMessage m; m.kind = kind; m.leader = leader; m.id = 5;
         check(decode_throwdown(encode_throwdown(m)) == m, "Throwdown control message failed to round-trip");
     }
+    // An older client's plugin mode tag (still decoded, never sent).
+    ThrowdownMessage mode;
+    mode.kind = ThrowdownMessage::Kind::mode; mode.leader = leader; mode.id = 0x7c8bf0b2;
+    mode.challenge = "demo/duel"; mode.series = "duel"; mode.value = 6;
+    check(decode_throwdown(encode_throwdown(mode)) == mode, "Throwdown mode failed to round-trip");
+    auto stock_flag = mode; stock_flag.series.clear();
+    check(decode_throwdown(encode_throwdown(stock_flag)) == stock_flag, "A mode on Spot Battle's flag failed to round-trip");
+    auto no_plugin = mode; no_plugin.challenge = "duel";
+    check(!valid_throwdown(no_plugin), "A mode without its plugin was valid");
+    auto crowded = mode; crowded.value = 11;
+    check(!valid_throwdown(crowded), "A mode for 11 players was valid");
+    auto spaced_flag = mode; spaced_flag.series = "du el";
+    check(!valid_throwdown(spaced_flag), "A flag name with a space was valid");
     // Coop challenges.
     ThrowdownMessage challenge;
     challenge.kind = ThrowdownMessage::Kind::challenge_start; challenge.leader = leader; challenge.id = 3;
@@ -911,6 +957,13 @@ void dedicated_server_codec() {
     auto no_boosts = roster;
     no_boosts.guest_boosts = false;
     check(decode(encode(no_boosts)) && !decode(encode(no_boosts))->guest_boosts, "Guest boosts permission lost");
+    auto no_ollies = voting;
+    no_ollies.guest_ollies = false;
+    const auto ollies_decoded = decode(encode(no_ollies));
+    check(ollies_decoded && !ollies_decoded->guest_ollies && ollies_decoded->enforce_tuning &&
+              ollies_decoded->server_votes == (server_vote_map | server_vote_time),
+          "Guest ollies permission lost, or it spilled into the other roster bits");
+    check(decoded && decoded->guest_ollies, "Guest ollies should be allowed by default");
     check(decoded && decoded->enforce_tuning, "Physics tuning enforcement lost");
     auto own_tuning = voting;
     own_tuning.enforce_tuning = false;
@@ -965,25 +1018,13 @@ void dedicated_server_codec() {
         try { encode(fx); } catch (const std::invalid_argument &) { refused = true; }
         check(refused, "A material past the game's table was encoded");
     }
-    // A player's FPV drone position, for the marker others see.
+    // 36 was the FPV drone's marker: no game sends it now, and none is made.
     {
         Packet d;
-        d.kind = PacketKind::drone; d.session = 9; d.epoch = 10; d.map = 11; d.source = 12;
-        d.drone_active = true; d.drone_position = {594.5f, 199.15f, -1070.1f};
-        const auto back = decode(encode(d));
-        check(back && back->kind == PacketKind::drone && back->drone_active && back->drone_position == d.drone_position,
-              "A drone position failed to round-trip");
-        d.drone_active = false;
-        const auto stopped = decode(encode(d));
-        check(stopped && !stopped->drone_active, "A drone stop notice failed to round-trip");
-        d.drone_position = {std::numeric_limits<float>::quiet_NaN(), 0.f, 0.f};
+        d.kind = static_cast<PacketKind>(36); d.session = 9; d.epoch = 10; d.map = 11; d.source = 12;
         bool refused{};
         try { encode(d); } catch (const std::invalid_argument &) { refused = true; }
-        check(refused, "A non-finite drone position was encoded");
-        d.drone_position = {2.0e6f, 0.f, 0.f};
-        refused = false;
-        try { encode(d); } catch (const std::invalid_argument &) { refused = true; }
-        check(refused, "A drone position outside the world was encoded");
+        check(refused, "The old drone packet was encoded");
     }
     extras.kind = PacketKind::physics_extras; extras.session = 9; extras.epoch = 10; extras.map = 11; extras.source = player;
     check(decode(encode(extras)) && decode(encode(extras))->kind == PacketKind::physics_extras && decode(encode(extras))->extras.empty(),
@@ -1003,6 +1044,74 @@ void dedicated_server_codec() {
     auto crowned = roster;
     crowned.members[0].admin = true;
     check(reject(crowned), "A host marked as an admin");
+    {
+        // A dedicated server's roles: the tags its players wear, and what one player may do.
+        auto tagged = roster;
+        tagged.members[1].tag = "Mod";
+        tagged.members[1].tag_color = 0xffffc85eU;
+        const auto worn = decode(encode(tagged));
+        check(worn && worn->members[1].tag == "Mod" && worn->members[1].tag_color == 0xffffc85eU && worn->members[2].tag.empty(),
+              "A role's tag failed to round-trip");
+        auto self = tagged;
+        self.members[0].tag = "Boss";
+        check(reject(self), "A server wearing a tag was accepted");
+        auto lobby = roster;
+        lobby.members.erase(lobby.members.begin());
+        lobby.source = player;
+        lobby.members[0].admin = false;
+        check(!reject(lobby), "A lobby roster was refused");
+        lobby.members[1].tag = "Mod";
+        check(reject(lobby), "A lobby's host gave out a tag");
+        auto wide = tagged;
+        wide.members[1].tag = std::string(max_role_tag + 1, 'a');
+        check(reject(wide), "A tag past its length was accepted");
+        wide.members[1].tag = " Mod";
+        check(reject(wide), "A tag starting with a blank was accepted");
+        Packet rights;
+        rights.kind = PacketKind::permissions; rights.session = 9; rights.epoch = 10; rights.map = 11; rights.source = server;
+        rights.role = "moderator";
+        rights.role_commands = {"kick", "ban", "msg-admins"};
+        rights.role_permissions = role_alerts | role_chat | role_votes;
+        const auto given = decode(encode(rights));
+        check(given && given->role == "moderator" && !given->role_all_commands && given->role_commands == rights.role_commands &&
+                  given->role_permissions == rights.role_permissions, "A player's permissions failed to round-trip");
+        Packet filter;
+        filter.kind = PacketKind::words; filter.session = 9; filter.epoch = 10; filter.map = 11; filter.source = server;
+        filter.words = {"florp", "gl0rp", "two words"};
+        const auto sent = decode(encode(filter));
+        check(sent && sent->kind == PacketKind::words && sent->words == filter.words, "A server's filtered words failed to round-trip");
+        auto long_word = filter;
+        long_word.words = {std::string(max_server_word + 1, 'a')};
+        check(reject(long_word), "A filtered word past its length was accepted");
+        long_word.words.assign(max_server_words + 1, "a");
+        check(reject(long_word), "More filtered words than a server may send were accepted");
+        Packet coming;
+        coming.kind = PacketKind::next_maps; coming.session = 9; coming.epoch = 10; coming.map = 11; coming.source = server;
+        coming.next_maps = {{"Vancouver Plaza", "Sandos-Vancouver_Plaza-2.0.0"}, {"Isle of Grom", ""}};
+        const auto told = decode(encode(coming));
+        check(told && told->kind == PacketKind::next_maps && told->next_maps == coming.next_maps, "The next maps failed to round-trip");
+        auto wrong_maps = coming;
+        wrong_maps.next_maps[0].package = "not a package";
+        check(reject(wrong_maps), "A next map with a bad package was accepted");
+        wrong_maps = coming;
+        wrong_maps.next_maps.assign(max_next_maps + 1, {"A map", ""});
+        check(reject(wrong_maps), "More next maps than a vote has answers were accepted");
+        coming.next_maps.clear();
+        check(decode(encode(coming)) && decode(encode(coming))->next_maps.empty(), "No next maps failed to round-trip");
+        auto none = rights;
+        none.role.clear(); none.role_commands.clear(); none.role_permissions = 0; none.role_all_commands = true;
+        const auto bare = decode(encode(none));
+        check(bare && bare->role.empty() && bare->role_all_commands && bare->role_commands.empty(), "Permissions with no role failed to round-trip");
+        auto bad = rights;
+        bad.role_commands = {"Kick"};
+        check(reject(bad), "A command that is not a command's name was accepted");
+        bad = rights;
+        bad.role_permissions = role_permission_bits + 1;
+        check(reject(bad), "An unknown permission was accepted");
+        bad = rights;
+        bad.source = 0;
+        check(reject(bad), "Permissions from nobody were accepted");
+    }
     auto far = roster;
     far.voice_range = 5;
     check(reject(far), "Invalid voice range encoded");
@@ -1076,6 +1185,28 @@ void dedicated_server_codec() {
     const auto offer_arrived = decode_wire(encode_wire(offered));
     check(offer_arrived && offer_arrived->map_package == "Sandos-Vancouver_Plaza" && offer_arrived->destination == offered.destination,
           "The map's package lost from a map offer");
+    // A dedicated server's required plugins ride on its map offer.
+    check(offer_arrived && offer_arrived->required_plugins.empty(), "A map offer without plugins arrived with some");
+    auto requiring = offered;
+    requiring.required_plugins = {"neekgate-FPV_Drone", "Team-Filmer-1.2.0"};
+    const auto required_arrived = decode_wire(encode_wire(requiring));
+    check(required_arrived && required_arrived->required_plugins == requiring.required_plugins &&
+              required_arrived->map_package == "Sandos-Vancouver_Plaza",
+          "The required plugins lost from a map offer");
+    for (const auto &bad : std::vector<std::vector<std::string>>{{""}, {"Filmer"}, {"Team-Filmer", "team-filmer-1.0.0"},
+                                                                 {"Team-A/B"}, std::vector<std::string>(max_required_plugins + 1, "Team-X")}) {
+        auto wrong = offered;
+        wrong.required_plugins = bad;
+        check(reject(wrong) && !valid_required_plugins(bad), "A required plugin list that is not one encoded");
+    }
+    {
+        std::vector<std::string> sixteen;
+        for (std::size_t i = 0; i < max_required_plugins; ++i) sixteen.push_back("Team-Plugin_" + std::to_string(i));
+        check(valid_required_plugins(sixteen) && valid_required_plugins({}), "A full required plugin list refused");
+    }
+    auto wrong_kind = packaged;
+    wrong_kind.required_plugins = {"Team-Filmer"};
+    check(reject(wrong_kind), "Required plugins encoded on something other than a map offer");
     for (const char *bad : {"Sandos", "Sandos-", "-Plaza", "San dos-Plaza", "Sandos-Plaza-2.0", "Sandos-Plaza-2.0.0.1", "../x-y",
                             "Sandos-Pla/za", "Sandos-Plaza-1.2.3-4", "https://thunderstore.io/x-y"}) {
         auto wrong = packaged;
@@ -1115,6 +1246,24 @@ void dedicated_server_codec() {
         elsewhere.map_fetching = true;
         check(reject(elsewhere), "A map fetch notice on a map change encoded");
     }
+    // A map installed at another version than the host's is fetched at the host's: only when
+    // both name a version of the same package.
+    check(other_map_version("Sandos-Vancouver_Plaza-2.0.0", "Sandos-Vancouver_Plaza-1.9.0") == "1.9.0" &&
+              other_map_version("Sandos-Vancouver_Plaza-2.0.0", "sandos-vancouver_plaza-1.9.0") == "1.9.0" &&
+              other_map_version("Sandos-Vancouver_Plaza-2.0.0", "Sandos-Vancouver_Plaza-2.0.0").empty() &&
+              other_map_version("Sandos-Vancouver_Plaza", "Sandos-Vancouver_Plaza-1.9.0").empty() &&
+              other_map_version("Sandos-Vancouver_Plaza-2.0.0", "Sandos-Vancouver_Plaza").empty() &&
+              other_map_version("Sandos-Vancouver_Plaza-2.0.0", "Other-Vancouver_Plaza-1.9.0").empty() &&
+              other_map_version("Sandos-Vancouver_Plaza-2.0.0", "").empty() && other_map_version("", "").empty() &&
+              // (A player ahead of the host keeps their version.)
+              other_map_version("Sandos-Vancouver_Plaza-1.9.0", "Sandos-Vancouver_Plaza-2.0.0").empty() &&
+              other_map_version("Sandos-Vancouver_Plaza-1.9.2", "Sandos-Vancouver_Plaza-1.10.0").empty() &&
+              other_map_version("Sandos-Vancouver_Plaza-1.10.0", "Sandos-Vancouver_Plaza-1.9.2") == "1.9.2" &&
+              map_version_newer("1.10.0", "1.9.2") && map_version_newer("2.0", "1.9.9") && map_version_newer("1.0.1", "1.0") &&
+              !map_version_newer("1.0.0", "1.0.0") && !map_version_newer("1.0", "1.0.0") && !map_version_newer("1.9.2", "1.10.0") &&
+              !map_version_newer("", "1.0.0") && !map_version_newer("1.0.0-beta", "0.9.0") && !map_version_newer("abc", "1.0.0") &&
+              map_package_version("Sandos-Vancouver_Plaza-2.0.0") == "2.0.0" && map_package_version("Sandos-Vancouver_Plaza").empty(),
+          "A map's version is not compared with the host's as it should be");
     check(map_package_name("Sandos-Vancouver_Plaza", "2.0.0") == "Sandos-Vancouver_Plaza-2.0.0" &&
           map_package_name("Sandos-Vancouver_Plaza", "") == "Sandos-Vancouver_Plaza" &&
           map_package_name("Sandos-Vancouver_Plaza", "two") == "Sandos-Vancouver_Plaza" &&

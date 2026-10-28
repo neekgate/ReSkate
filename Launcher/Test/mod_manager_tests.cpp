@@ -1,6 +1,9 @@
 // Launcher mod manager: install from .zip and folders, the Mods list and mods.json.
 #include "Launcher/mod_manager.h"
 
+#include "Engine/Vfs/builtin_pack_format.h"
+#include "Engine/Vfs/builtin_packs.h"
+#include <zstd.h>
 #include "Engine/Vfs/mod_list.h"
 
 #include <Windows.h>
@@ -117,8 +120,41 @@ int main() {
     }
     check(conflict, "Installing over an installed mod asks first");
     make_zip(sources / L"v2.zip", {{"Cool Park/layout.toc", "toc v2"}});
+    // A file of the installed copy held open: the replacement is refused and the copy stays whole.
+    {
+        const auto held = CreateFileW((mods / L"Cool Park" / L"layout.toc").c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+                                      OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        bool refused = false;
+        try { install(mods, sources / L"v2.zip", true); } catch (const std::exception&) { refused = true; }
+        CloseHandle(held);
+        check(refused && read(mods / L"Cool Park" / L"layout.toc") == "toc" && !fs::exists(mods / L".reskate-install"),
+              "A copy in use is not replaced, and stays as it was");
+    }
     check(install(mods, sources / L"v2.zip", true) == "Cool Park" && read(mods / L"Cool Park" / L"layout.toc") == "toc v2",
           "Replacing installs the new copy");
+    check(!fs::exists(mods / L".reskate-install"), "The replaced copy is deleted, not left beside the mods");
+    {
+        std::atomic<bool> cancel{};
+        unsigned callbacks{};
+        make_zip(sources / L"cancelled.zip", {{"Cool Park/layout.toc", "must not replace"}});
+        const auto issue = error_of([&] {
+            launcher_mods::install(mods, sources / L"cancelled.zip", true,
+                [&](float) { if (++callbacks == 2) cancel.store(true); }, cancel);
+        });
+        check(issue == "Install cancelled." && callbacks == 2,
+              "Cancellation at the final safe installation boundary was ignored");
+        check(read(mods / L"Cool Park" / L"layout.toc") == "toc v2" &&
+                  !fs::exists(mods / L".reskate-install"),
+              "Cancelled replacement damaged the existing mod or left staging files");
+        write(sources / L"cancelled folder" / L"Cool Park" / L"layout.toc", "must not replace");
+        cancel.store(false);
+        callbacks = 0;
+        check(error_of([&] {
+            launcher_mods::install(mods, sources / L"cancelled folder", true,
+                [&](float) { if (++callbacks == 2) cancel.store(true); }, cancel);
+        }) == "Install cancelled." && read(mods / L"Cool Park" / L"layout.toc") == "toc v2",
+              "Cancelled folder replacement did not preserve the installed mod");
+    }
 
     // Hostile or unrelated archives.
     make_zip(sources / L"evil.zip", {{"../evil.txt", "x"}, {"layout.toc", "toc"}});
@@ -135,6 +171,53 @@ int main() {
     write(sources / L"Loose" / L"My Folder Mod" / L"layout.toc", "toc");
     check(install(mods, sources / L"Loose") == "My Folder Mod", "Folders install like zips");
     check(fs::exists(sources / L"Loose" / L"My Folder Mod" / L"layout.toc"), "Installing a folder copies it");
+
+    // Links in a mod folder (issue #265): one inside it refuses the install and nothing outside is
+    // written; links on the way to the folder or to the Mods folder are fine. Junctions need no
+    // rights to make; a file symbolic link needs Developer Mode, so that case is skipped without it.
+    {
+        const auto place = root / L"links";
+        const auto junction = [](const fs::path& link, const fs::path& target) {
+            fs::create_directories(target);
+            return _wsystem((L"mklink /J \"" + link.wstring() + L"\" \"" + target.wstring() + L"\" >nul").c_str()) == 0;
+        };
+        const auto real_game = place / L"real game";
+        fs::create_directories(real_game);
+        const bool made = junction(place / L"linked game", real_game);
+        const auto linked_mods = launcher_mods::mods_root(place / L"linked game");
+        write(place / L"outside" / L"sentinel.txt", "untouched");
+
+        write(place / L"Junction Mod" / L"layout.toc", "toc");
+        const bool inner = junction(place / L"Junction Mod" / L"stuff", place / L"outside");
+        check(made && inner, "links: junctions could be made for the checks");
+        const auto refused = error_of([&] { install(linked_mods, place / L"Junction Mod"); });
+        check(refused.find("holds a link (stuff)") != std::string::npos && !fs::exists(linked_mods / L"Junction Mod") &&
+                  read(place / L"outside" / L"sentinel.txt") == "untouched",
+              ("A junction inside a mod folder refuses the install: " + refused).c_str());
+        check(!fs::exists(linked_mods / L".reskate-install"), "A refused folder leaves no staging behind");
+
+        write(place / L"Plain Mod" / L"layout.toc", "toc");
+        check(install(linked_mods, place / L"Plain Mod") == "Plain Mod" && read(real_game / L"Mods" / L"Plain Mod" / L"layout.toc") == "toc",
+              "A Mods folder reached through a junction still installs");
+        junction(place / L"picked", place / L"Picked Mod");
+        write(place / L"Picked Mod" / L"layout.toc", "toc");
+        check(install(linked_mods, place / L"picked") == "picked", "A mod folder picked through a junction still installs");
+
+        write(place / L"File Link Mod" / L"layout.toc", "toc");
+        const auto link = place / L"File Link Mod" / L"linked.txt";
+        if (CreateSymbolicLinkW(link.c_str(), (place / L"outside" / L"sentinel.txt").c_str(),
+                                SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE)) {
+            const auto file_refused = error_of([&] { install(linked_mods, place / L"File Link Mod"); });
+            check(file_refused.find("holds a link (linked.txt)") != std::string::npos &&
+                      read(place / L"outside" / L"sentinel.txt") == "untouched" && !fs::exists(linked_mods / L"File Link Mod"),
+                  ("A file link inside a mod folder refuses the install: " + file_refused).c_str());
+        } else {
+            std::cout << "SKIP: file symbolic link (Windows error " << GetLastError() << "; needs Developer Mode)\n";
+        }
+        // Junctions first, so nothing below follows one.
+        for (const auto* name : {L"linked game", L"picked", L"Junction Mod\\stuff"})
+            RemoveDirectoryW((place / name).c_str());
+    }
 
     // The list: unlisted folders load after listed ones, by name.
     auto list = mods::scan_mods(game);
@@ -178,6 +261,39 @@ int main() {
     for (const auto& entry : mods::scan_mods(game).entries)
         if (entry.mod.name == "Deep_Mod")
             check(entry.mod.park_maps == std::vector<std::string>{"bam", "grom"}, "Park maps are listed");
+
+    // What a mod holds, for the Type column: a plugin is one only when its manifest names code.
+    write(mods / L"Deep_Mod" / L"reskate-plugin.json", R"({"variants":{"folder":"decks"}})");
+    for (const auto& entry : mods::scan_mods(game).entries)
+        if (entry.mod.name == "Deep_Mod")
+            check(!entry.mod.provides_plugin && mods::mod_contents(entry.mod) == std::vector<std::string>{"Parks", "Game data"},
+                  "A reskate-plugin.json without an entry is no plugin");
+    write(mods / L"Deep_Mod" / L"reskate-plugin.json", R"({"entry":"plugin/main.lua","permissions":[]})");
+    write(mods / L"Deep_Mod" / L"reskate-music.json", "{}");
+    write(mods / L"Deep_Mod" / L"reskate-objects.json", "{}");
+    for (const auto& entry : mods::scan_mods(game).entries)
+        if (entry.mod.name == "Deep_Mod")
+            check(entry.mod.provides_plugin &&
+                      mods::mod_contents(entry.mod) == std::vector<std::string>{"Parks", "Plugin", "Game data", "Objects", "Music"},
+                  "Plugins, objects and music are listed with what else the mod holds");
+    std::filesystem::remove(mods / L"Deep_Mod" / L"reskate-plugin.json");
+    std::filesystem::remove(mods / L"Deep_Mod" / L"reskate-music.json");
+    std::filesystem::remove(mods / L"Deep_Mod" / L"reskate-objects.json");
+    // A plugin-only mod has something to load (the Mods page does not warn about it); an empty one has not.
+    write(mods / L"Plugin_Only" / L"reskate-plugin.json", R"({"entry":"plugin/main.lua","permissions":[]})");
+    write(mods / L"Nothing_Here" / L"manifest.json", R"({"name":"Nothing_Here"})");
+    bool plugin_has_content = false, empty_has_content = true, only_plugin = false, deep_only_plugin = true;
+    for (const auto& entry : mods::scan_mods(game).entries) {
+        if (entry.mod.name == "Plugin_Only") plugin_has_content = mods::has_content(entry.mod), only_plugin = mods::plugin_only(entry.mod);
+        if (entry.mod.name == "Nothing_Here") empty_has_content = mods::has_content(entry.mod);
+        if (entry.mod.name == "Deep_Mod") deep_only_plugin = mods::plugin_only(entry.mod);
+    }
+    check(plugin_has_content && !empty_has_content, "A plugin-only mod has content, an empty folder has none");
+    // A mod that is only a plugin is switched on and off live, without applying the mods; one with
+    // anything a merge puts in the game (Deep_Mod's game data and parks) is not.
+    check(only_plugin && !deep_only_plugin, "Only a mod with a plugin and nothing to merge is plugin-only");
+    std::filesystem::remove_all(mods / L"Plugin_Only");
+    std::filesystem::remove_all(mods / L"Nothing_Here");
     make_zip(sources / L"parkmod.zip", {{"My Park/manifest.json", R"({"name":"My Park"})"},
                                         {"My Park/parks/bam.park.json", "{}"}});
     check(install(mods, sources / L"parkmod.zip") == "My Park", "A park mod (manifest.json only) installs");
@@ -320,6 +436,214 @@ int main() {
                   !fs::exists(store / L"Team-Empty"),
               "Thunderstore installs refuse a package with nothing to load");
         check(install(store, sources / L"empty.zip") == "empty", "A plain install still takes a description-only mod");
+        make_zip(sources / L"empty-list.zip", {{"manifest.json", R"({"name":"Nothing","dependencies":[]})"}});
+        options.folder = "Team-Empty_List";
+        check(error_of([&] { launcher_mods::install(store, sources / L"empty-list.zip", true, {}, cancel, options); })
+                      .find("plugins and mod packs") != std::string::npos &&
+                  !fs::exists(store / L"Team-Empty_List"),
+              "An empty dependencies list is not a mod pack, and the refusal names plugins and packs");
+
+        // A plugin-only package: reskate-plugin.json is something to load, at the top or one folder down.
+        make_zip(sources / L"plugin.zip", {{"manifest.json", manifest}, {"icon.png", "png"}, {"README.md", "readme"},
+            {"reskate-plugin.json", R"({"api":1})"}, {"main.luau", "-- plugin"}});
+        options.folder = "Team-Plugin";
+        check(launcher_mods::install(store, sources / L"plugin.zip", true, {}, cancel, options) == "Team-Plugin" &&
+                  read(store / L"Team-Plugin" / L"main.luau") == "-- plugin" &&
+                  read(store / L"Team-Plugin" / L"icon.png") == "png",
+              "Thunderstore installs take a plugin-only package");
+        make_zip(sources / L"nested-plugin.zip", {{"manifest.json", manifest}, {"icon.png", "png"}, {"README.md", "readme"},
+            {"Plugin/reskate-plugin.json", R"({"api":1})"}, {"Plugin/main.luau", "-- nested"}});
+        options.folder = "Team-Nested_Plugin";
+        check(launcher_mods::install(store, sources / L"nested-plugin.zip", true, {}, cancel, options) == "Team-Nested_Plugin" &&
+                  read(store / L"Team-Nested_Plugin" / L"reskate-plugin.json") == R"({"api":1})" &&
+                  read(store / L"Team-Nested_Plugin" / L"main.luau") == "-- nested" &&
+                  read(store / L"Team-Nested_Plugin" / L"icon.png") == "png" &&
+                  read(store / L"Team-Nested_Plugin" / L"README.md") == "readme" &&
+                  !fs::exists(store / L"Team-Nested_Plugin" / L"Plugin"),
+              "A plugin one folder down is the mod, and the package files follow it in");
+        const auto plugin_manifest = read(store / L"Team-Nested_Plugin" / L"manifest.json");
+        check(plugin_manifest.find("Desert_Springs") != std::string::npos && plugin_manifest.find(R"("Zee")") != std::string::npos,
+              "The carried manifest.json gets the team as author");
+
+        // A mod pack: nothing of its own to load, only dependencies the launcher installs first.
+        make_zip(sources / L"modpack.zip", {
+            {"manifest.json", R"({"name":"Pack","version_number":"1.0.0","dependencies":["Zee-Desert_Springs-1.2.3"]})"},
+            {"icon.png", "png"}, {"README.md", "readme"}});
+        options.folder = "Team-Pack";
+        check(launcher_mods::install(store, sources / L"modpack.zip", true, {}, cancel, options) == "Team-Pack" &&
+                  read(store / L"Team-Pack" / L"icon.png") == "png",
+              "Thunderstore installs take a mod pack that only lists dependencies");
+        const auto pack = installed("Team-Pack");
+        check(pack && pack->author == "Zee" && pack->version == "1.0.0", "A mod pack is listed with its team as author");
+    }
+
+    // A built-in pack in ReSkate's own format unpacks to exactly its files (a name with spaces
+    // included), and one with a path that leaves its folder unpacks nothing.
+    {
+        const auto pack = [](const std::vector<std::pair<std::string, std::string>>& files) {
+            std::string plain(mods::builtin_pack::magic.begin(), mods::builtin_pack::magic.end());
+            const auto put = [&](auto value) { plain.append(reinterpret_cast<const char*>(&value), sizeof(value)); };
+            put(static_cast<std::uint32_t>(files.size()));
+            for (const auto& [name, bytes] : files) {
+                put(static_cast<std::uint16_t>(name.size()));
+                plain += name;
+                put(static_cast<std::uint64_t>(bytes.size()));
+            }
+            for (const auto& file : files) plain += file.second;
+            std::vector<unsigned char> packed(ZSTD_compressBound(plain.size()));
+            packed.resize(ZSTD_compress(packed.data(), packed.size(), plain.data(), plain.size(), 19));
+            return packed;
+        };
+        const auto target = root / L"builtin" / L"good";
+        std::string issue;
+        const auto good = pack({{"layout.toc", "toc"}, {"sounds/body/Body Impact 1.wav", "RIFF"}, {"decks/wide/layout.toc", "deck"}});
+        check(mods::unpack_builtin_pack(good, target, issue) && issue.empty() && read(target / L"layout.toc") == "toc" &&
+                  read(target / L"sounds" / L"body" / L"Body Impact 1.wav") == "RIFF" && read(target / L"decks" / L"wide" / L"layout.toc") == "deck",
+              "A built-in pack unpacks to its files");
+        const auto bad_target = root / L"builtin" / L"bad";
+        check(!mods::unpack_builtin_pack(pack({{"../escape.txt", "x"}}), bad_target, issue) && !issue.empty() &&
+                  !fs::exists(root / L"builtin" / L"escape.txt"),
+              "A built-in pack may not write outside its folder");
+        auto cut = good;
+        cut.resize(cut.size() / 2);
+        check(!mods::unpack_builtin_pack(cut, root / L"builtin" / L"cut", issue), "A cut-short built-in pack is refused");
+        // The packs this build made (RESKATE_BUILTIN_PACKS: their folder), each unpacked whole.
+        std::wstring built(32768, L'\0');
+        built.resize(GetEnvironmentVariableW(L"RESKATE_BUILTIN_PACKS", built.data(), static_cast<DWORD>(built.size())));
+        if (!built.empty()) {
+            for (const auto& file : fs::directory_iterator(fs::path(built))) {
+                if (file.path().extension() != L".rskpack") continue;
+                std::ifstream in(file.path(), std::ios::binary);
+                const std::vector<unsigned char> bytes{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+                const auto out = root / L"builtin" / file.path().stem();
+                std::size_t count{};
+                std::uintmax_t size{};
+                const bool ok = mods::unpack_builtin_pack(bytes, out, issue);
+                for (const auto& entry : fs::recursive_directory_iterator(out))
+                    if (entry.is_regular_file()) { ++count; size += entry.file_size(); }
+                std::cout << "  " << file.path().filename().string() << ": " << (ok ? "unpacked " : "FAILED ") << count << " files, "
+                          << size << " bytes" << (ok ? "" : " (" + issue + ")") << '\n';
+                check(ok, "A built-in pack this build made unpacks");
+            }
+        }
+    }
+
+    // A retired mod (the deprecated first Board Break) is left out by ReSkate; every other mod is the player's.
+    {
+        const auto store = root / L"retired" / L"Mods";
+        fs::create_directories(store);
+        check(mods::kept_by_reskate(store, "fourth_studio-board_break") && mods::kept_by_reskate(store, "Fourth_Studio-Board_Break") &&
+                  !mods::kept_by_reskate(store, "Fourth_Studio-Road_Rash") && !mods::kept_by_reskate(store, "Someone-Other_Mod") &&
+                  !mods::kept_by_reskate(store, ""),
+              "Only a retired mod is left out");
+    }
+
+    // A mod pack's dependencies: only what its install brought in (brought-in.json), and nothing another mod needs.
+    {
+        const auto packs = root / L"pack-mods";
+        const auto manifest = [&](const char* folder, const char* dependencies) {
+            write(packs / folder / "manifest.json",
+                  std::string(R"({"name":"x","version_number":"1.0.0","dependencies":)") + dependencies + "}");
+        };
+        manifest("Me-Pack", R"(["Team-A-1.0.0","Team-B-2.0.0","Team-Had-1.0.0"])");
+        manifest("Team-A", R"(["Team-C-1.0.0"])");
+        manifest("Team-B", "[]");
+        manifest("Team-C", "[]");
+        manifest("Team-Had", "[]");
+        manifest("Me-Other", R"(["team-b-2.0.0"])");
+        manifest("Team-D", "[]");
+        const std::vector<std::string> all{"Team-D", "Team-Had", "Team-C", "Me-Other", "Team-B", "Team-A", "Me-Pack"};
+        check(launcher_mods::orphaned_dependencies(packs, {"Me-Pack"}, all).empty(), "A pack with no record offered mods");
+        // Team-Had was installed before the pack: its install brought in A, B and C only.
+        launcher_mods::record_brought_in(packs, "Me-Pack", {"Team-A", "Team-C"});
+        launcher_mods::record_brought_in(packs, "me-pack", {"Team-B", "Team-A"});
+        check(launcher_mods::brought_in(packs, "Me-Pack") == std::vector<std::string>{"Team-A", "Team-C", "Team-B"},
+              "What a pack brought in was not kept, or kept twice");
+        check(launcher_mods::orphaned_dependencies(packs, {"Me-Pack"}, all) == std::vector<std::string>{"Team-C", "Team-A"},
+              "A pack's brought-in mods were not offered, or one another mod needs (or the player had) was");
+        check(launcher_mods::orphaned_dependencies(packs, {"Me-Pack", "Me-Other"}, all) ==
+                  std::vector<std::string>{"Team-C", "Team-B", "Team-A"},
+              "A brought-in mod only removed mods need was not offered");
+        check(launcher_mods::orphaned_dependencies(packs, {"Team-D"}, all).empty(), "A mod that brought nothing in offered some");
+        check(launcher_mods::orphaned_dependencies(packs, {"Me-Pack", "Team-A"}, all) == std::vector<std::string>{"Team-C"},
+              "A brought-in mod removed already was offered again");
+        launcher_mods::forget_brought_in(packs, {"me-pack"});
+        check(launcher_mods::brought_in(packs, "Me-Pack").empty(), "An uninstalled pack's record was kept");
+        // A dependency with a name longer than a folder's is installed cut, as thunderstore::folder_for has it.
+        const std::string long_name = "Team-" + std::string(70, 'x');
+        manifest("Me-Long", (R"([")" + long_name + R"(-1.0.0"])").c_str());
+        launcher_mods::record_brought_in(packs, "Me-Long", {long_name.substr(0, 64)});
+        check(launcher_mods::orphaned_dependencies(packs, {"Me-Long"}, {"Me-Long", long_name.substr(0, 64)}) ==
+                  std::vector<std::string>{long_name.substr(0, 64)},
+              "A dependency with a long name was not matched to its cut folder");
+    }
+
+    {
+        // What the mods give the game's data, for emptying the game's shader cache when it changes: the mods
+        // with a layout, in load order, with their files, and the variants in play.
+        const auto park = root / L"signature" / L"Park", skin = root / L"signature" / L"Skin";
+        write(park / L"layout.toc", "toc");
+        write(skin / L"layout.toc", "toc");
+        const std::vector<launcher_mods::DataMod> both{{"Park", park}, {"Skin", skin}}, swapped{{"Skin", skin}, {"Park", park}};
+        const auto before = launcher_mods::game_data_signature(both, {});
+        check(before == launcher_mods::game_data_signature(both, {}), "The same mods give the same signature");
+        check(before != launcher_mods::game_data_signature(swapped, {}), "Another load order is another signature");
+        check(before != launcher_mods::game_data_signature({{"Park", park}}, {}), "A mod taken out is another");
+        check(before != launcher_mods::game_data_signature(both, {{"Skin", "red"}}), "Another variant is another");
+        write(skin / L"Win32" / L"skin.sb", "bundle");
+        check(before != launcher_mods::game_data_signature(both, {}), "A mod's files changing is another");
+        // Emptying the cache: everything in it goes, the folder stays.
+        const auto cache = root / L"cache";
+        write(cache / L"6803938.PcDx12", "shaders");
+        write(cache / L"nested" / L"cache.manifest", "manifest");
+        check(launcher_mods::empty_folder(cache).empty() && fs::is_directory(cache) && fs::is_empty(cache), "The shader cache is emptied, its folder kept");
+        check(launcher_mods::empty_folder(root / L"no such folder").empty(), "No cache folder is nothing to do");
+        check(launcher_mods::game_shader_cache().filename() == L"cache" &&
+                  launcher_mods::game_shader_cache().parent_path().filename() == L"Skate",
+              "The game's shader cache is ReSkate's own, under Game/Skate");
+    }
+
+    // Changes the game cannot make while it holds a mod's files: they wait for the next start.
+    {
+        const auto waiting_mods = root / L"waiting" / L"Mods";
+        make_zip(sources / L"held-v1.zip", {{"Held Mod/layout.toc", "v1"}});
+        make_zip(sources / L"held-v2.zip", {{"Held Mod/layout.toc", "v2"}});
+        check(install(waiting_mods, sources / L"held-v1.zip") == "Held Mod", "pending: the first copy installs");
+        auto held = CreateFileW((waiting_mods / L"Held Mod" / L"layout.toc").c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+                                OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        check(!error_of([&] { install(waiting_mods, sources / L"held-v2.zip", true); }).empty(), "pending: a copy in use cannot be replaced now");
+        std::atomic<bool> cancel{};
+        check(launcher_mods::install_later(waiting_mods, sources / L"held-v2.zip", {}, cancel) == "Held Mod", "pending: the update is kept for later");
+        auto waiting = launcher_mods::pending(waiting_mods);
+        check(waiting.updates == std::vector<std::string>{"Held Mod"} && waiting.removals.empty(), "pending: the update is what waits");
+        check(read(waiting_mods / L"Held Mod" / L"layout.toc") == "v1", "pending: the copy in use is untouched");
+        check(dingosdk::mods::scan_mods(waiting_mods.parent_path()).entries.size() == 1, "pending: the waiting copy is not a mod of its own");
+        const auto still_held = launcher_mods::apply_pending(waiting_mods);
+        check(still_held.size() == 1 && still_held.front().find("waits") != std::string::npos &&
+                  read(waiting_mods / L"Held Mod" / L"layout.toc") == "v1" && launcher_mods::pending(waiting_mods).updates.size() == 1,
+              "pending: while the game still holds it, the update keeps waiting and the old copy stays");
+        CloseHandle(held);
+        const auto applied = launcher_mods::apply_pending(waiting_mods);
+        check(applied.size() == 1 && read(waiting_mods / L"Held Mod" / L"layout.toc") == "v2", "pending: at the next start the update goes in");
+        check(!fs::exists(waiting_mods / launcher_mods::pending_folder), "pending: nothing is left behind once it is all done");
+        check(launcher_mods::apply_pending(waiting_mods).empty(), "pending: nothing waiting is nothing to do");
+
+        launcher_mods::remove_later(waiting_mods, "Held Mod");
+        launcher_mods::remove_later(waiting_mods, "Held Mod");
+        waiting = launcher_mods::pending(waiting_mods);
+        check(waiting.removals == std::vector<std::string>{"Held Mod"} && waiting.updates.empty(), "pending: an uninstall waits, once");
+        check(launcher_mods::install_later(waiting_mods, sources / L"held-v1.zip", {}, cancel) == "Held Mod" &&
+                  launcher_mods::pending(waiting_mods).removals.empty(),
+              "pending: installing it again takes back the uninstall");
+        launcher_mods::remove_later(waiting_mods, "Held Mod");
+        waiting = launcher_mods::pending(waiting_mods);
+        check(waiting.updates.empty() && waiting.removals.size() == 1, "pending: uninstalling it takes back the update");
+        check(!error_of([&] { launcher_mods::remove_later(waiting_mods, "..\\elsewhere"); }).empty(), "pending: only mod folder names are uninstalled");
+        // (A mod to uninstall that is gone already is simply dropped; the Recycle Bin is not tried here.)
+        launcher_mods::remove_later(waiting_mods, "Never Installed");
+        fs::remove_all(waiting_mods / L"Held Mod");
+        launcher_mods::apply_pending(waiting_mods);
+        check(!fs::exists(waiting_mods / launcher_mods::pending_folder), "pending: uninstalls of mods already gone are dropped");
     }
 
     std::error_code ignored;

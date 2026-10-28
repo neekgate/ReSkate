@@ -3,6 +3,8 @@
 #include "path_text.h"
 
 #ifdef _WIN32
+#include <mutex>
+#include <map>
 #include <Windows.h>
 #include <bcrypt.h>
 #else
@@ -258,6 +260,25 @@ std::string sha256_file(const fs::path& path) {
 #endif
 }
 
+std::string sha256_bytes(std::string_view data) {
+    std::array<unsigned char, 32> digest{};
+#ifdef _WIN32
+    if (BCryptHash(BCRYPT_SHA256_ALG_HANDLE, nullptr, 0, reinterpret_cast<PUCHAR>(const_cast<char*>(data.data())),
+            static_cast<ULONG>(data.size()), digest.data(), static_cast<ULONG>(digest.size())) < 0)
+        detail::fail("Cannot compute SHA-256");
+#else
+    SHA256(reinterpret_cast<const unsigned char*>(data.data()), data.size(), digest.data());
+#endif
+    constexpr char digits[] = "0123456789abcdef";
+    std::string output;
+    output.reserve(digest.size() * 2);
+    for (const auto byte : digest) {
+        output.push_back(digits[byte >> 4]);
+        output.push_back(digits[byte & 15]);
+    }
+    return output;
+}
+
 #ifdef _WIN32
 
 PeFileInfo inspect_pe_file(const fs::path& path) {
@@ -265,7 +286,11 @@ PeFileInfo inspect_pe_file(const fs::path& path) {
     return parse_pe(file.data(), file.size()).info;
 }
 
-std::uint32_t exported_function_rva(const fs::path& path, std::string_view export_name) {
+namespace {
+enum class ExportLookup { found, unnamed, forwarded };
+struct ExportEntry { ExportLookup lookup{}; std::uint32_t rva{}; };
+
+ExportEntry find_export(const fs::path& path, std::string_view export_name) {
     const MappedFile file(path);
     const auto pe = parse_pe(file.data(), file.size());
     const auto& directory = pe.nt.OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
@@ -281,14 +306,27 @@ std::uint32_t exported_function_rva(const fs::path& path, std::string_view expor
         const auto ordinal = rva_object<std::uint16_t>(file, pe,
             exports.AddressOfNameOrdinals + index * sizeof(std::uint16_t));
         if (ordinal >= exports.NumberOfFunctions) fail("Invalid PE export ordinal");
-        const auto function = rva_object<std::uint32_t>(file, pe,
+        const auto rva = rva_object<std::uint32_t>(file, pe,
             exports.AddressOfFunctions + ordinal * sizeof(std::uint32_t));
         const std::uint64_t export_end = static_cast<std::uint64_t>(directory.VirtualAddress) + directory.Size;
-        if (!function || (function >= directory.VirtualAddress && function < export_end))
-            fail("Initializer export is missing or forwarded");
-        return function;
+        if (!rva || (rva >= directory.VirtualAddress && rva < export_end)) return {ExportLookup::forwarded, rva};
+        return {ExportLookup::found, rva};
     }
-    fail("Required initializer export is missing");
+    return {ExportLookup::unnamed, 0};
+}
+}
+
+std::uint32_t exported_function_rva(const fs::path& path, std::string_view export_name) {
+    const auto entry = find_export(path, export_name);
+    if (entry.lookup == ExportLookup::forwarded) fail("Initializer export is missing or forwarded");
+    if (entry.lookup == ExportLookup::unnamed) fail("Required initializer export is missing");
+    return entry.rva;
+}
+
+std::optional<std::uint32_t> exported_rva(const fs::path& path, std::string_view export_name) {
+    const auto entry = find_export(path, export_name);
+    if (entry.lookup != ExportLookup::found) return std::nullopt;
+    return entry.rva;
 }
 
 void validate_game_file(const fs::path& path) {
@@ -304,7 +342,8 @@ void validate_game_file(const fs::path& path) {
         detail::fail("Skate.exe SHA-256 does not match the supported build");
 }
 
-void validate_steam_api_file(const fs::path& path) {
+namespace {
+void check_steam_api_file(const fs::path& path) {
     std::error_code error;
     const auto size = fs::file_size(path, error);
     if (error || size != expected_steam_api_file_size)
@@ -316,6 +355,35 @@ void validate_steam_api_file(const fs::path& path) {
         detail::fail("steam_api64.dll is not an x64 Windows DLL");
     if (sha256_file(path) != expected_steam_api_sha256)
         detail::fail("steam_api64.dll is not the supported original Steam library (SHA-256 mismatch)");
+}
+} // namespace
+
+// Checked once a file for the process: the file is read and hashed, and the game's Steam
+// features each ask on first use, some again every few seconds while Steam is not ready, on the
+// client thread (2026-10-15). What it found, either way, is the answer after that.
+void validate_steam_api_file(const fs::path& path) {
+    static std::mutex mutex;
+    static std::map<std::wstring, std::string> checked; // path -> the failure, empty when it passed
+    const auto key = path.wstring();
+    {
+        std::lock_guard lock(mutex);
+        if (const auto found = checked.find(key); found != checked.end()) {
+            if (!found->second.empty()) detail::fail(found->second.c_str());
+            return;
+        }
+    }
+    std::string failure;
+    try {
+        check_steam_api_file(path);
+    } catch (const std::exception& error) {
+        failure = error.what();
+        if (failure.empty()) failure = "steam_api64.dll could not be checked";
+    }
+    {
+        std::lock_guard lock(mutex);
+        checked.emplace(key, failure);
+    }
+    if (!failure.empty()) detail::fail(failure.c_str());
 }
 
 #else // _WIN32

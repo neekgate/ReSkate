@@ -64,8 +64,9 @@ inline bool can_load(const State& s, const overlay::Model& m, const overlay::Cal
 }
 // Layers and parks the host controls are locked, except for a dedicated
 // server's admins: their changes go to the server, which applies them to everyone.
-inline bool layers_locked(const overlay::Model& m) { return m.world.controlled_by_host && !m.multiplayer.server_admin; }
-inline bool parks_locked(const overlay::Model& m) { return m.parks.controlled_by_host && !m.multiplayer.server_admin; }
+// (On a dedicated server: unless the player's role has the command that changes them for everyone.)
+inline bool layers_locked(const overlay::Model& m) { return m.world.controlled_by_host && !server_can(m.multiplayer, "layers"); }
+inline bool parks_locked(const overlay::Model& m) { return m.parks.controlled_by_host && !server_can(m.multiplayer, "park"); }
 inline bool can_park(const overlay::Model& m, const overlay::CallbacksV3& cb) {
     return m.world.map == WorldMap::bam && m.parks.available && !parks_locked(m) && cb.queue_console_command;
 }
@@ -113,7 +114,7 @@ inline std::vector<std::string> time_of_day_commands(const overlay::Model& m, un
         if (slot + 1 == next) { commands.push_back(line); pairs.push_back(std::string(key) + "=" + mode); }
         else { commands.insert(commands.begin(), line); pairs.insert(pairs.begin(), std::string(key) + "=" + mode); }
     }
-    if (m.multiplayer.server_admin && m.world.controlled_by_host) {
+    if (server_can(m.multiplayer, "layers") && m.world.controlled_by_host) {
         std::string batch = "mp server layers";
         for (const auto& pair : pairs) batch += " " + pair;
         return {batch};
@@ -180,12 +181,13 @@ inline void activate(State& s, const overlay::Model& m, const overlay::Callbacks
         // This is a personal preference, including while following a host.
         console(m.parks.randomize_on_launch ? "park random-on-launch 0" : "park random-on-launch 1",
             m.parks.available);
-    } else if (command == "noclip" || command == "no-bail" || command == "freecam" || command == "speed") {
+    } else if (command == "noclip" || command == "no-bail" || command == "revert-boost" || command == "freecam" || command == "speed") {
         const auto& d = m.debug;
         overlay::DebugRequest request;
         bool enabled = false;
         if (command == "noclip") { request = {overlay::DebugAction::set_noclip, !d.noclip}; enabled = d.noclip_available || d.noclip; }
         if (command == "no-bail") { request = {overlay::DebugAction::set_no_bail, !d.no_bail}; enabled = d.no_bail_available || d.no_bail; }
+        if (command == "revert-boost") { request = {overlay::DebugAction::set_revert_boost_enabled, !d.revert_boost}; enabled = true; }
         if (command == "freecam") { request = {overlay::DebugAction::set_free_camera, !d.free_camera}; enabled = d.available && d.camera_available; }
         if (command == "speed") {
             constexpr std::array<float, 7> speeds{.6f, 3.f, 5.f, 15.f, 60.f, 300.f, 1500.f};
@@ -199,14 +201,14 @@ inline void activate(State& s, const overlay::Model& m, const overlay::Callbacks
         const overlay::OfflineFeatureRequest request{overlay::OfflineFeatureGroup::board_wear, !wear.effective};
         report(wear.available && cb.queue_offline_feature &&
                cb.queue_offline_feature(cb.user, request, result.data(), result.size()));
-    } else if (command == "hall-of-meat") {
-        console(m.hall_of_meat.enabled ? "hallofmeat 0" : "hallofmeat 1", m.hall_of_meat.available);
-    } else if (command == "road-rash") {
-        console(m.road_rash.enabled ? "roadrash 0" : "roadrash 1", m.road_rash.available);
-    } else if (command == "road-rash-blood") {
-        console(m.road_rash.blood ? "roadrashblood 0" : "roadrashblood 1", m.road_rash.available && m.road_rash.enabled);
-    } else if (command == "road-rash-heal") {
-        console("roadrash heal", m.road_rash.available && m.road_rash.enabled);
+    } else if (command == "keyframe-smoothing") {
+        console(m.keyframe_smoothing.enabled ? "keysmooth off" : "keysmooth on", m.keyframe_smoothing.available);
+    } else if (command == "keyframe-smoothness") {
+        // 100 -> 75 -> 50 -> 25 -> 100 (the ReSkate menu's slider sets any value from 0 to 100).
+        const int percent = overlay::keyframe_smoothness_percent(m.keyframe_smoothing);
+        const int next = percent > 75 ? 75 : percent > 50 ? 50 : percent > 25 ? 25 : 100;
+        console("keysmooth amount " + std::string(next == 100 ? "1" : next == 75 ? "0.75" : next == 50 ? "0.5" : "0.25"),
+                m.keyframe_smoothing.available && m.keyframe_smoothing.enabled);
     } else if (command == "board-wear-reset") {
         console("boardwear reset", m.offline.board_wear.available && m.offline.board_wear.effective);
     } else if (command == "challenges") {
@@ -263,7 +265,7 @@ inline Page render(State& s, const overlay::Model& m, const overlay::CallbacksV3
         button(p.side, "time-of-day", std::string("Time of day: ") + time_of_day_labels[time_of_day(m)],
             "time-of-day", time_of_day_available(m, cb));
         if (m.world.controlled_by_host)
-            text(p.side, "time-status", m.multiplayer.server_admin ? "You are an admin: time of day changes for the whole server."
+            text(p.side, "time-status", server_can(m.multiplayer, "tod") ? "Your role sets it: time of day changes for the whole server."
                                                                    : "The lobby host controls world layers, including time of day.");
         load_status("load-status");
     } else if (section == custom_section) {
@@ -300,13 +302,8 @@ inline Page render(State& s, const overlay::Model& m, const overlay::CallbacksV3
         text(p.main, "player-title", "SKATE YOUR WAY");
         toggle(p.main, "noclip", "Noclip", m.debug.noclip, (m.debug.noclip_available || m.debug.noclip) && cb.queue_debug);
         toggle(p.main, "no-bail", "No bail", m.debug.no_bail, (m.debug.no_bail_available || m.debug.no_bail) && cb.queue_debug);
+        toggle(p.main, "revert-boost", "Revert Boost", m.debug.revert_boost, cb.queue_debug != nullptr);
         toggle(p.main, "freecam", "Freecam", m.debug.free_camera, m.debug.available && m.debug.camera_available && cb.queue_debug);
-        toggle(p.main, "hall-of-meat", "Hall of Meat", m.hall_of_meat.enabled, m.hall_of_meat.available && cb.queue_console_command);
-        toggle(p.main, "road-rash", "Road Rash", m.road_rash.enabled, m.road_rash.available && cb.queue_console_command);
-        toggle(p.main, "road-rash-blood", "Road Rash blood", m.road_rash.blood,
-            m.road_rash.available && m.road_rash.enabled && cb.queue_console_command);
-        button(p.main, "road-rash-heal", "Heal Road Rash", "road-rash-heal",
-            m.road_rash.available && m.road_rash.enabled && cb.queue_console_command);
         toggle(p.main, "board-wear", "Board wear", m.offline.board_wear.effective,
             m.offline.board_wear.available && cb.queue_offline_feature);
         button(p.main, "board-wear-reset", "Reset board wear", "board-wear-reset",
@@ -333,6 +330,12 @@ inline Page render(State& s, const overlay::Model& m, const overlay::CallbacksV3
                 "graphics", m.graphics.available && cb.queue_console_command, graphics_keys[i]);
         }
         button(p.main, "graphics-reset", "Restore default effects", "graphics-reset", m.graphics.available && cb.queue_console_command);
+        text(p.main, "replay-title", "REPLAY EDITOR");
+        toggle(p.main, "keyframe-smoothing", "Keyframe smoothing", m.keyframe_smoothing.enabled,
+            m.keyframe_smoothing.available && cb.queue_console_command);
+        button(p.main, "keyframe-smoothness",
+            "Keyframe smoothness: " + std::to_string(overlay::keyframe_smoothness_percent(m.keyframe_smoothing)) + "%",
+            "keyframe-smoothness", m.keyframe_smoothing.available && m.keyframe_smoothing.enabled && cb.queue_console_command);
         text(p.side, "hud-title", "CHALLENGES");
         button(p.side, "challenges", m.progression.challenges_hidden ? "Challenges: Hidden" : "Challenges: Shown", "challenges",
             m.progression.challenges_enabled && cb.queue_console_command);

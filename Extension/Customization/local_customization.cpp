@@ -77,7 +77,7 @@ void validate_customization(const Json& value) {
     require(value.is_object(), "Customization must be an object");
     if (value.contains("catalog")) {
         const auto& catalog = value.at("catalog");
-        require(catalog.is_object() && catalog.size() <= 8192, "Invalid cosmetic metadata catalog");
+        require(catalog.is_object() && catalog.size() <= saved_item_limit, "Invalid cosmetic metadata catalog");
         for (const auto& [key, metadata] : catalog.items()) {
             require(text(key) && metadata.is_object(), "Invalid cosmetic metadata record");
             for (const auto* field : {"title", "description", "rarity_id"})
@@ -99,7 +99,7 @@ void validate_customization(const Json& value) {
     }
     if (value.contains("inventory")) {
         const auto& inventory = value.at("inventory");
-        require(inventory.is_object() && inventory.size() <= 8192, "Invalid cosmetic inventory");
+        require(inventory.is_object() && inventory.size() <= saved_item_limit, "Invalid cosmetic inventory");
         for (const auto& [key, owned] : inventory.items())
             require(text(key) && owned.is_boolean(), "Invalid cosmetic ownership record");
     }
@@ -115,11 +115,12 @@ void validate_player_card(const CosmeticLoadout& value) {
             "Invalid RIP Card slot");
 }
 dingosdk::Json item_display_metadata(const std::string& asset, const dingosdk::Json& overrides) {
-    // Titles, descriptions and rarities come from the installed content cache.
-    const auto& items = content_cache::catalogs().items;
+    // Titles, descriptions and rarities come from the installed content cache. A mod's own
+    // object takes the title its reskate-objects.json gives it (content_catalogs.h).
+    const auto& catalogs = content_cache::catalogs();
     std::string key = asset;
     for (auto& c : key) if (c >= 'A' && c <= 'Z') c = static_cast<char>(c + ('a' - 'A'));
-    Json result = items.value(key, Json::object());
+    Json result = catalogs.items.contains(key) ? catalogs.items.at(key) : catalogs.mod_objects.value(key, Json::object());
     // User metadata takes precedence field by field, including explicit empty
     // descriptions. Do not copy unrelated saved inventory data into the catalog.
     for (const auto* field : {"title", "description", "rarity_id"})

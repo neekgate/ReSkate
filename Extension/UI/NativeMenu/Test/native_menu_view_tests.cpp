@@ -42,20 +42,26 @@ void map_names() {
     result = browse(model, options, levels);
     check(result.lobbies[0]->id == 2 && result.lobbies[1]->id == 1 && result.lobbies[2]->id == 3,
           "Map sorting follows visible names instead of asset paths");
+    options.reverse = true;
+    result = browse(model, options, levels);
+    check(result.lobbies[0]->id == 3 && result.lobbies[1]->id == 1 && result.lobbies[2]->id == 2,
+          "Reversed map sorting follows visible names the other way");
 }
 int main() {
     try {
         map_names();
-        check(missing_tabs({1, 2, 3, 4}, 8, true) == std::vector<unsigned>{0, 1},
+        check(missing_tabs({1, 2, 3, 4}, 8, true) == std::vector<unsigned>{0, 1, 2},
             "All pages insert in canonical order together");
-        check(missing_tabs({1, 2, 3, 4, 8, 264}, 8, true).empty(),
+        check(missing_tabs({1, 2, 3, 4, 8, 264, 520}, 8, true).empty(),
             "Existing tabs are never reordered or reinserted");
-        check(missing_tabs({1, 2, 3, 4, 8}, 8, true) == std::vector<unsigned>{1},
-            "A missing tools page appends without moving existing indices");
-        check(missing_tabs({1, 2, 3, 4}, 8, true, false) == std::vector<unsigned>{1},
+        check(missing_tabs({1, 2, 3, 4, 8}, 8, true) == std::vector<unsigned>{1, 2},
+            "A missing tools page appends without moving existing indices, the Mod Manager after it");
+        check(missing_tabs({1, 2, 3, 4, 8, 264}, 8, true) == std::vector<unsigned>{2},
+            "A missing Mod Manager appends after Mod Options");
+        check(missing_tabs({1, 2, 3, 4}, 8, true, false) == std::vector<unsigned>{1, 2},
               "offline mode leaves the Multiplayer tab out");
         check(missing_tabs({1, 2, 3, 4}, 8, false) == std::vector<unsigned>{0},
-            "The Multiplayer page does not wait for the overlay's tool callbacks");
+            "The Multiplayer page does not wait for the overlay's tool callbacks; the Mod Manager waits for Mod Options");
         MultiplayerModel model;
         const BrowserOptions by_name{{}, false, Sort::name};
         model.local_id = 77; model.map = "Levels/San_Vansterdam";
@@ -71,6 +77,11 @@ int main() {
         check(result.total == 14 && result.lobbies.size() == 14, "All matching lobbies remain scrollable");
         check(result.lobbies.front()->id == 100 && result.lobbies[6]->id == 112 && result.lobbies.back()->id == 113,
               "Stable ordering of duplicate names across the full list");
+        auto by_name_reversed = by_name;
+        by_name_reversed.reverse = true;
+        result = browse(model, by_name_reversed);
+        check(result.lobbies.front()->id == 101 && result.lobbies.back()->id == 112,
+              "Reversed names put Downtown first and keep equal names in id order");
         BrowserOptions options;
         options.query = "SAN VAN";
         result = browse(model, options);
@@ -79,6 +90,10 @@ int main() {
         check(browse(model, options).total == 5, "Combine name and current-map filters");
         options = {}; options.sort = Sort::players;
         check(browse(model, options).lobbies.front()->players == 14, "Most populated first");
+        options.reverse = true;
+        check(browse(model, options).lobbies.front()->id == 100 && browse(model, options).lobbies.front()->players == 1,
+              "Fewest skaters first when the column is reversed");
+        options.reverse = false;
         // The team's own servers lead the list under every sort, in that sort's order among themselves.
         model.lobbies[2].dedicated = model.lobbies[2].official = true;
         model.lobbies[5].dedicated = model.lobbies[5].official = true;

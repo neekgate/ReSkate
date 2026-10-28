@@ -1,12 +1,16 @@
 #include "Engine/Core/Log/logging.h"
+#include "Engine/Core/Debug/trace.h"
 #include "Engine/Core/Platform/launcher_support.h"
+#include "Engine/Core/Platform/startup_failure.h"
 #include "Engine/Vfs/initfs.h"
 #include "Engine/Vfs/content_cache_install.h"
 #include "Engine/Vfs/world_layer_scan.h"
 #include "launch.h"
+#include "mod_manager.h"
 #include "text_encoding.h"
 #include "Engine/Game/Build/addresses.h"
 #include "Engine/Game/Build/20260929/runtime.h"
+#include "Engine/Game/Build/20260929/game_data_files.h"
 
 #include <Windows.h>
 #include <Psapi.h>
@@ -14,11 +18,14 @@
 #include <shellapi.h>
 #include <winternl.h>
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <format>
+#include "Engine/Game/Build/supported_build.h"
+#include <algorithm>
 #include <fstream>
 #include <optional>
 #include <sstream>
@@ -229,6 +236,10 @@ constexpr std::uint64_t steam_id_base = 76561197960265728ull;
 // DOS one. Empty on Windows, and when Proton was not started by Steam.
 // Reported, with the cause and the fix, by BenjaminJAnderson in
 // https://github.com/Dingo-Shenanigans/ReSkate/issues/5.
+// Steam for Mac with a Wine-based compatibility tool (NotProton, CrossOver) passes the app
+// bundle's Steam.AppBundle/Steam/Contents/MacOS instead, below the directory that holds config/:
+// the nearest directory up from it that has config/loginusers.vdf is the client's. Found by
+// codejunky (https://github.com/Dingo-Shenanigans/ReSkate/pull/219).
 fs::path proton_steam_directory() {
     std::array<wchar_t, 32768> unix_path{};
     const auto length = GetEnvironmentVariableW(L"STEAM_COMPAT_CLIENT_INSTALL_PATH", unix_path.data(),
@@ -242,6 +253,11 @@ fs::path proton_steam_directory() {
     if (!dos_path) return {};
     fs::path directory(dos_path);
     HeapFree(GetProcessHeap(), 0, dos_path);
+    std::error_code ignored;
+    for (auto candidate = directory; !candidate.empty(); candidate = candidate.parent_path()) {
+        if (fs::exists(candidate / L"config" / L"loginusers.vdf", ignored)) return candidate;
+        if (candidate == candidate.root_path() || !candidate.has_parent_path()) break;
+    }
     return directory;
 }
 
@@ -447,6 +463,54 @@ RemoteModule inject_dll(HANDLE process, const fs::path& dll) {
     return module;
 }
 
+std::uint64_t file_size_or_zero(const fs::path& path) {
+    std::error_code error;
+    const auto size = fs::file_size(path, error);
+    return error ? 0 : size;
+}
+
+// Older runtimes have no reason to read out of the game, but they logged one.
+// Only what the child wrote after log_start counts, from the last few MiB.
+std::string logged_startup_failure(const fs::path& log, std::uint64_t log_start, DWORD process_id) {
+    namespace failure = dingosdk::startup_failure;
+    constexpr std::uint64_t window = 4 * 1024 * 1024;
+    const auto end = file_size_or_zero(log);
+    if (end <= log_start) return {};
+    const auto from = std::max(log_start, end > window ? end - window : 0);
+    std::ifstream input(log, std::ios::binary);
+    input.seekg(static_cast<std::streamoff>(from));
+    std::string text(static_cast<std::size_t>(end - from), '\0');
+    input.read(text.data(), static_cast<std::streamsize>(text.size()));
+    text.resize(static_cast<std::size_t>(input.gcount()));
+    std::string logged;
+    for (const auto& line : failure::logged_errors(text, process_id, 3)) {
+        if (!logged.empty()) logged += " | ";
+        logged += failure::printable(std::string_view(line).substr(0, failure::utf8_prefix(line, 300)));
+    }
+    return logged;
+}
+
+// DingoSDKDebugInitialize answered FALSE: the attach worked and the runtime
+// stopped on purpose. Say why in its own words, read before the child is
+// closed. problem.h keys on the opening words.
+std::string startup_failure_message(HANDLE process, std::uintptr_t reason_address, DWORD process_id,
+                                    const fs::path& log, std::uint64_t log_start) {
+    namespace failure = dingosdk::startup_failure;
+    if (reason_address) {
+        std::array<char, failure::capacity> reason{};
+        SIZE_T read{};
+        if (ReadProcessMemory(process, reinterpret_cast<const void*>(reason_address), reason.data(),
+                reason.size(), &read) && read == reason.size()) {
+            reason.back() = '\0';
+            if (auto text = failure::printable(reason.data()); !text.empty())
+                return "ReSkate stopped while starting: " + text;
+        }
+    }
+    if (auto logged = logged_startup_failure(log, log_start, process_id); !logged.empty())
+        return "ReSkate stopped while starting; ReSkate.log says: " + logged;
+    return "ReSkate stopped while starting without saying why (DingoSDKDebugInitialize returned FALSE)";
+}
+
 } // namespace
 
 namespace dingosdk::launcher_app {
@@ -467,6 +531,69 @@ Session open_session(const std::string& log_level) {
     return session;
 }
 
+std::string game_data_build(const launcher::SiblingPaths& paths) {
+    try {
+        std::ifstream file(paths.directory / L"Data" / L"layout.toc", std::ios::binary);
+        if (!file) return {};
+        const std::string bytes{std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
+        // The number follows its name as text, after a few bytes that say what kind of value it is.
+        constexpr std::string_view name = "pipelineCodeChangelists";
+        const auto at = bytes.find(name);
+        if (at == std::string::npos) return {};
+        const auto is_digit = [](char c) { return c >= '0' && c <= '9'; };
+        auto from = at + name.size();
+        const auto limit = std::min(bytes.size(), from + 16);
+        while (from < limit && !is_digit(bytes[from])) ++from;
+        auto to = from;
+        while (to < bytes.size() && to - from < 16 && is_digit(bytes[to])) ++to;
+        return to - from >= 6 ? bytes.substr(from, to - from) : std::string{};
+    } catch (...) {
+        return {};
+    }
+}
+std::string memory_advice() {
+    MEMORYSTATUSEX status{sizeof(status)};
+    if (!GlobalMemoryStatusEx(&status)) return {};
+    // skate. commits about 9 GB with no mods and 11 to 12 GB with many. 2.1.1's out-of-memory exits
+    // (3,300 reports) were nearly all PCs of 16 GB of RAM or less whose RAM and page file together
+    // were within a few GB of full (2026-10-21).
+    // (The game's 12 GB and Windows' own few.)
+    constexpr std::uint64_t gigabyte = 1ull << 30, enough_ram = 12 * gigabyte, enough_commit = 18 * gigabyte;
+    if (status.ullTotalPhys >= enough_ram && status.ullTotalPageFile >= enough_commit) return {};
+    return std::format("This PC has {} GB of RAM and room for {} GB with its page file; skate. needs about 12 GB with mods "
+                       "and may close when it runs out. Close other apps, let Windows manage the page file size, and use fewer mods.",
+                       (status.ullTotalPhys + gigabyte / 2) / gigabyte, (status.ullTotalPageFile + gigabyte / 2) / gigabyte);
+}
+std::string game_data_damage(const launcher::SiblingPaths& paths) {
+    // A file OneDrive (or another cloud folder) keeps only online: the game's read of it fails or
+    // stalls. The attributes Windows gives such a placeholder.
+    constexpr DWORD online_only = FILE_ATTRIBUTE_OFFLINE | FILE_ATTRIBUTE_RECALL_ON_OPEN | FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS;
+    for (const auto& file : addr::game_data_files::files) {
+        const auto path = paths.directory / fs::path(std::string(file.path)).make_preferred();
+        WIN32_FILE_ATTRIBUTE_DATA data{};
+        if (!GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &data) || (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY))
+            return std::format("{} is missing", file.path);
+        const auto size = (std::uint64_t{data.nFileSizeHigh} << 32) | data.nFileSizeLow;
+        if (size != file.size) return std::format("{} is {} bytes, not {}", file.path, size, file.size);
+        if (data.dwFileAttributes & online_only) return std::format("{} is kept online only (a cloud folder)", file.path);
+    }
+    return {};
+}
+bool game_data_mismatched(const launcher::SiblingPaths& paths) {
+    std::error_code error;
+    if (!fs::is_regular_file(paths.directory / L"Data" / L"layout.toc", error)) return true;
+    const auto build = game_data_build(paths);
+    if (!build.empty() && build != supported_build::game_data_changelist) return true;
+    // The supported build's data with a file missing or cut short: the game crashed on it as it
+    // started or loaded (Skate.exe+0x41e0f81, +0x3df03a0, "Truncated CAS block header"; about
+    // 1,000 of 2.1.1's reports, 2026-10-21), mostly a download that stopped or a OneDrive folder.
+    if (const auto damage = game_data_damage(paths); !damage.empty()) {
+        logging::log(logging::Level::warning, logging::Channel::launcher, "Game data is damaged: {}.", damage);
+        return true;
+    }
+    return false;
+}
+
 bool game_files_supported(const launcher::SiblingPaths& paths) {
     std::error_code error;
     if (!fs::is_regular_file(paths.game, error)) {
@@ -476,6 +603,14 @@ bool game_files_supported(const launcher::SiblingPaths& paths) {
     try {
         launcher::validate_game_file(paths.game);
         launcher::validate_steam_api_file(paths.steam_api);
+        // The right Skate.exe over another build's data is no supported game: its mods are
+        // left out and it may not load (seen 2026-10-13, after a Steam update of the game).
+        if (game_data_mismatched(paths)) {
+            const auto build = game_data_build(paths);
+            logging::log(logging::Level::warning, logging::Channel::launcher, "Game files are not the supported build: Skate.exe is, but the game's data is {} (supported: {}).",
+                build.empty() ? std::string("missing") : "build " + build, supported_build::game_data_changelist);
+            return false;
+        }
         return true;
     } catch (const std::exception& exception) {
         logging::log(logging::Level::warning, logging::Channel::launcher,
@@ -507,7 +642,44 @@ void relaunch(const fs::path& self, const std::vector<std::wstring>& arguments) 
     CloseHandle(process.hProcess);
 }
 
-std::wstring steam_offline_reason() {
+bool under_wine() {
+    const auto ntdll = GetModuleHandleW(L"ntdll.dll");
+    const auto kernel32 = GetModuleHandleW(L"kernel32.dll");
+    return (ntdll && GetProcAddress(ntdll, "wine_get_version")) ||
+           (kernel32 && GetProcAddress(kernel32, "wine_get_dos_file_name"));
+}
+
+// MangoHud's Vulkan layer draws into every swapchain of a process it is on for,
+// and the launcher's window crashes with it. The layer reads its switches from
+// the Linux environment, which Wine fixes when the process starts, so turning it
+// off takes a restart. start_game hands MangoHud back to the game.
+bool relaunch_without_mangohud(const fs::path& self, const std::vector<std::wstring>& arguments) {
+    if (!under_wine()) return false;
+    if (GetEnvironmentVariableW(L"RESKATE_MANGOHUD_HELD", nullptr, 0)) {
+        logging::write(logging::Level::info, logging::Channel::launcher,
+            "MangoHud is off for the launcher window; the game still gets it.");
+        return false;
+    }
+    wchar_t enabled[8]{};
+    const auto length = GetEnvironmentVariableW(L"MANGOHUD", enabled, 8);
+    if (length != 1 || enabled[0] != L'1' || GetEnvironmentVariableW(L"DISABLE_MANGOHUD", nullptr, 0)) return false;
+    set_environment(L"DISABLE_MANGOHUD", L"1");
+    set_environment(L"RESKATE_MANGOHUD_HELD", L"1");
+    relaunch(self, arguments);
+    return true;
+}
+
+// Steam started this process through a compatibility tool (Proton, or a Wine-based one on macOS):
+// the real client is a native process outside Wine, which the registry's ActiveProcess cannot show.
+bool started_by_native_steam() {
+    if (!under_wine()) return false;
+    wchar_t value[8]{};
+    return GetEnvironmentVariableW(L"STEAM_COMPAT_CLIENT_INSTALL_PATH", nullptr, 0) ||
+           (GetEnvironmentVariableW(L"SteamClientLaunch", value, 8) == 1 && value[0] == L'1');
+}
+
+// Why Steam's own client is not usable, by the registry Windows and Proton's stand-in keep up.
+std::wstring steam_process_reason() {
     const auto pid = registry_dword(steam_process_key, L"pid");
     if (!pid || !*pid) return L"no Steam client is registered as running (ActiveProcess pid is 0)";
     if (!active_steam_id()) return L"Steam reports no signed-in account (ActiveProcess ActiveUser is 0)";
@@ -527,6 +699,15 @@ std::wstring steam_offline_reason() {
     if (_wcsicmp(name.c_str(), L"steam.exe") != 0)
         return std::format(L"the registered Steam process {} is {}, not steam.exe", *pid, name);
     return {};
+}
+
+std::wstring steam_offline_reason() {
+    auto reason = steam_process_reason();
+    // A Wine-based tool on macOS keeps no stand-in Steam process up to date: started by the native
+    // client, its signed-in account (config/loginusers.vdf) is enough. Only where the checks above
+    // fail, so Windows and Proton, where they pass, stay as they were.
+    if (!reason.empty() && started_by_native_steam() && active_steam_id()) reason.clear();
+    return reason;
 }
 
 bool steam_signed_in() {
@@ -570,6 +751,17 @@ std::string steam_persona_name() {
     return name;
 }
 
+std::filesystem::path steam_avatar_path() {
+    if (!steam_signed_in()) return {};
+    const auto user = active_steam_id();
+    const auto steam = steam_directory();
+    if (!user || steam.empty()) return {};
+    // Steam keeps each account's picture it has shown as config/avatarcache/<SteamID64>.png.
+    auto path = steam / L"config" / L"avatarcache" / (std::to_wstring(*user) + L".png");
+    std::error_code error;
+    return fs::is_regular_file(path, error) ? path : std::filesystem::path{};
+}
+
 // Skate.exe hard-imports MiniDumpWriteDump from the Windows API set
 // api-ms-win-core-debug-minidump-l1-1-0.dll. Windows resolves that set through
 // its API set schema, so no such file exists on disk; Wine/Proton does not map
@@ -584,10 +776,7 @@ void ensure_minidump_apiset_shim(const fs::path& game_directory) noexcept {
         // Windows resolves this API set itself. Only Wine/Proton needs a file
         // beside Skate.exe; copying a system DLL under an API-set name on
         // Windows creates an unnecessary executable that looks suspicious.
-        const auto ntdll = GetModuleHandleW(L"ntdll.dll");
-        const auto kernel32 = GetModuleHandleW(L"kernel32.dll");
-        if (!(ntdll && GetProcAddress(ntdll, "wine_get_version")) &&
-            !(kernel32 && GetProcAddress(kernel32, "wine_get_dos_file_name"))) return;
+        if (!under_wine()) return;
         const auto shim = game_directory / L"api-ms-win-core-debug-minidump-l1-1-0.dll";
         std::error_code ec;
         if (fs::exists(shim, ec)) return;
@@ -608,6 +797,7 @@ void ensure_minidump_apiset_shim(const fs::path& game_directory) noexcept {
 
 DWORD start_game(const Session& session, const launcher::LaunchOptions& options,
                  const std::function<void(DWORD)>& created) {
+    trace::Scope timing("launcher.start_game", "app.start");
     const auto& self = session.self;
     auto paths = session.paths;
     paths.game = canonical_file(paths.game, L"Skate.exe");
@@ -639,6 +829,11 @@ DWORD start_game(const Session& session, const launcher::LaunchOptions& options,
         paths.dll, "DingoSDKDebugInitialize");
     if (initialize_rva >= dll_info.image_size)
         throw std::runtime_error("DingoSDKDebugInitialize is outside the DLL image");
+    // Runtimes before this export only answer FALSE; a misplaced one is ignored.
+    auto failure_rva = launcher::exported_rva(paths.dll, startup_failure::export_name);
+    if (failure_rva && (*failure_rva >= dll_info.image_size ||
+                        dll_info.image_size - *failure_rva < startup_failure::capacity))
+        failure_rva.reset();
 
     // Park thumbnails are read from the game's own data now; the pack older
     // launchers downloaded is no longer used.
@@ -712,14 +907,15 @@ DWORD start_game(const Session& session, const launcher::LaunchOptions& options,
     }
     set_environment(L"RESKATE_GPU_DIAGNOSTICS", options.gpu_diagnostics ? L"1" : L"0");
     // -map: the game loads it once it is up, as the console's "load" would (client_tick.cpp),
-    // ahead of any startup commands already asked for.
-    if (!options.map.empty()) {
-        std::wstring commands = L"load " + options.map;
-        std::wstring already(4096, L'\0');
-        const auto length = GetEnvironmentVariableW(L"RESKATE_STARTUP_COMMANDS", already.data(), 4096);
-        if (length && length < 4096) commands += L";" + already.substr(0, length);
-        set_environment(L"RESKATE_STARTUP_COMMANDS", commands.c_str());
-    }
+    // ahead of any startup commands already asked for. Those are the launcher's own, read once: a
+    // launcher kept open sets the variable again at each launch, and must not add to the last one.
+    static const std::wstring asked = [] {
+        std::wstring value(4096, L'\0');
+        const auto length = GetEnvironmentVariableW(L"RESKATE_STARTUP_COMMANDS", value.data(), 4096);
+        return length && length < 4096 ? value.substr(0, length) : std::wstring{};
+    }();
+    std::wstring commands = options.map.empty() ? asked : L"load " + options.map + (asked.empty() ? L"" : L";" + asked);
+    set_environment(L"RESKATE_STARTUP_COMMANDS", commands.empty() ? nullptr : commands.c_str());
     set_environment(L"RESKATE_DISCORD", options.discord ? L"1" : L"0");
     if (options.menu_key == options.console_key)
         throw std::runtime_error("The menu and console need different keys. Change one in Settings.");
@@ -745,6 +941,11 @@ DWORD start_game(const Session& session, const launcher::LaunchOptions& options,
     command += mod_arguments;
     if (!mod_arguments.empty()) logging::write(logging::Level::info, logging::Channel::launcher, L"ModData folder detected; loading ModData/Default");
     logging::write(logging::Level::info, logging::Channel::launcher, L"Child command: " + command);
+    if (GetEnvironmentVariableW(L"RESKATE_MANGOHUD_HELD", nullptr, 0)) {
+        // Held off for the launcher's own window only (relaunch_without_mangohud).
+        set_environment(L"DISABLE_MANGOHUD", nullptr);
+        set_environment(L"RESKATE_MANGOHUD_HELD", nullptr);
+    }
     std::vector<wchar_t> command_buffer(command.begin(), command.end());
     command_buffer.push_back(L'\0');
     STARTUPINFOW startup{sizeof(startup)};
@@ -778,9 +979,13 @@ DWORD start_game(const Session& session, const launcher::LaunchOptions& options,
     std::wostringstream initializing;
     initializing << L"Calling DingoSDKDebugInitialize at 0x" << std::hex << initialize_address;
     logging::write(logging::Level::info, logging::Channel::launcher, initializing.str());
+    const auto log = paths.logs / L"ReSkate.log";
+    const auto log_start = file_size_or_zero(log);
     const auto initialized = run_remote_thread(child.process(), initialize_address, nullptr,
         L"DingoSDKDebugInitialize", initialize_wait_ms);
-    if (!initialized) throw std::runtime_error("DingoSDKDebugInitialize returned FALSE");
+    if (!initialized)
+        throw std::runtime_error(startup_failure_message(child.process(),
+            failure_rva ? remote_dll.base + *failure_rva : 0, child.id(), log, log_start));
     logging::write(logging::Level::info, logging::Channel::launcher, L"ReSkate.dll initialization confirmed");
 
     loader_gate.resume();

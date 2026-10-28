@@ -63,11 +63,23 @@ struct PlacementsRuntime {
     std::map<std::uint64_t, std::uint64_t> tracked; // live entity -> layout ID
     std::vector<std::uint64_t> restore;
     std::vector<profile::PlacedObject> late_restores;
+    // Restored objects saved at another scale. The create recipe has no scale, so they spawn
+    // at 1x; the server tick resizes them, and the pose poll leaves them alone until then
+    // (`resized_at`, 0 while waiting) and for a moment after, so 1x is never saved over them.
+    struct PendingResize {
+        std::uint64_t entity{};
+        profile::PlacedObject object;
+        std::uint64_t resized_at{};
+        bool settled{}; // one server tick after the spawn, as the editor waits before moving
+    };
+    std::vector<PendingResize> resizes;
     std::vector<PlacementRow> rows;
     std::uint64_t next_token{1}, teleport_token{}, teleport_queued_at{};
     // A teleport of the local skater to a position (console tp, the host's tpall).
-    std::optional<std::array<float, 3>> position_teleport;
+    std::optional<std::array<float,16>> position_teleport;
     std::uint64_t position_teleport_at{};
+    // The heading the pending position teleport faces (teleport_local_skater_heading), radians about
+    // world up; unset means the identity rotation the other teleports use (facing +Z).
     std::optional<profile::PlacedObject> inflight;
     std::uint64_t sent_at{}, next_poll{}, map_since{}, map_generation{}, next_id{1};
     bool failed{}, restore_failed{};

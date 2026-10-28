@@ -48,6 +48,7 @@ static_assert(sizeof(NativeBone) == 0x30);
 using AnimationUpdate = void (*)(std::uintptr_t, std::uintptr_t);
 using DestroyEntity = void (*)(std::uintptr_t, std::uintptr_t);
 using RenderPose = bool (*)(std::uintptr_t, std::uintptr_t);
+using SubmitRenderPose = std::uintptr_t (*)(std::uintptr_t, std::uintptr_t);
 struct HookState {
     std::uintptr_t base{};
     DWORD engine_thread{};
@@ -55,8 +56,16 @@ struct HookState {
     AnimationUpdate original_animation{};
     DestroyEntity original_destroy{};
     RenderPose original_render_pose{};
+    SubmitRenderPose original_submit_render_pose{};
     std::atomic<EntityDestroyed> destroyed_listener{};
     std::atomic<AnimationEvaluated> evaluated_listener{};
+    std::atomic<LocalPoseFilter> pose_filter{};
+    std::atomic<LocalSentPoseFilter> sent_pose_filter{};
+    // A pose override of the local skater (Extension/Skater/skater_animation.cpp), after the one above.
+    std::atomic<AnimationEvaluated> override_listener{};
+    std::atomic<RenderPosePublished> override_render_listener{};
+    std::atomic<RenderPosePublished> override_drawn_listener{};
+    std::atomic<BoardPosePublished> override_board_listener{};
     std::atomic<RenderPosePublished> render_listener{};
 };
 // Keys the per-entity hooks match, one contiguous array per kind in slot order.
@@ -109,6 +118,8 @@ struct Remote {
     // next_appearance_retry instead of on every cosmetics pass. Client thread.
     std::optional<Appearance> rejected_appearance;
     ULONGLONG next_appearance_retry{};
+    // The stand-in policy (stand_ins.h) the outfit shown was dressed with. Client thread.
+    std::uint64_t stand_ins_applied{};
 };
 HookState &shared();
 Remote &remote();

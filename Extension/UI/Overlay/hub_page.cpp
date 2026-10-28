@@ -1,10 +1,15 @@
 #include "overlay_internal.h"
 #include "skate_style.h"
+#include "skate_menu_internal.h"
 #include "cursor.h"
 #include "input_capture.h"
+#include "scripted_pad.h"
+#include "Extension/UI/NativeMenu/native_menu.h"
 #include "Extension/UI/NativeMenu/native_menu_view.h"
 #include "Extension/UI/NativeMenu/native_tools_view.h"
 #include "Extension/Boot/discord_presence.h"
+#include "Extension/Assets/map_download.h"
+#include "Extension/Assets/mod_store.h"
 #include "Extension/Music/local_music_playback.h"
 #include "Extension/Profile/local_profile_runtime.h"
 #include "Engine/Game/Input/controller_bindings.h"
@@ -15,11 +20,13 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <map>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -45,6 +52,9 @@ CallbacksV3 hub_callbacks; // under the mutex
 } // namespace
 void set_hub_page_feed(HubPageFeed feed) noexcept { page_feed.store(feed); }
 void set_ui_sound(UiSound play) noexcept { ui_sound.store(play); }
+void play_ui_sound(std::uint32_t sound) noexcept {
+    if (const auto play = ui_sound.load()) play(sound);
+}
 void set_hub_callbacks(const CallbacksV3 &callbacks) noexcept {
     std::lock_guard lock(hub_callbacks_mutex);
     hub_callbacks = callbacks;
@@ -86,7 +96,7 @@ constexpr std::uint32_t hash(std::string_view text, std::uint64_t salt = 0) {
 struct Row {
     const MultiplayerLobby *lobby{};
     std::string map;
-    bool joinable{}, here{}, full{}, own{};
+    bool joinable{}, here{}, full{}, own{}, favorite{};
 };
 struct Item {
     std::uint32_t id{};
@@ -118,7 +128,11 @@ struct Hub {
     std::string search, password, code, code_password;
     Kind kind{Kind::all};
     bool friends_only{}, hide_full{}, same_map{}, code_mode{};
+    // Dedicated servers the player marked, by Steam ID: first in the list, saved with the profile.
+    std::set<std::uint64_t> favorites;
+    bool favorites_loaded{}, favorites_only{};
     view::Sort sort{view::Sort::players};
+    bool sort_reverse{}; // a second click on the active column
     std::uint64_t selected{};
     // Hosting.
     std::string host_name, host_password;
@@ -153,6 +167,8 @@ struct Hub {
     ULONGLONG join_asked{};
     std::string failed, failed_name; // why the last join did not get in, and where to; empty: nothing to say
     ULONGLONG notice_until{};
+    // The frame the ReSkate menu last drew these pages itself (draw_online_embedded).
+    int embedded_frame{-10};
 };
 Hub &hub() {
     static Hub value;
@@ -224,10 +240,13 @@ Hit item(Ui &ui, std::uint32_t id, ImVec2 a, ImVec2 b, const Item *clip = nullpt
     h.items.push_back({id, a, b, clip ? clip->id : 0});
     if (clip && h.focus == id) h.list_focus[clip->id] = id;
     Hit hit;
-    hit.hover = ui.input && inside(ui.mouse, a, b) && (!clip || inside(ui.mouse, clip->a, clip->b));
-    if (hit.hover && ui.moved && !h.typing) h.focus = id, h.ring = false;
+    const bool over = ui.input && inside(ui.mouse, a, b) && (!clip || inside(ui.mouse, clip->a, clip->b));
+    if (over && ui.moved && !h.typing) h.focus = id, h.ring = false;
+    // Lit by the pointer only while the pointer is in charge: once the D-pad or the keys have
+    // the focus, what the mouse was left resting on is not lit beside it. A click there still counts.
+    hit.hover = over && !h.ring;
     hit.focus = h.focus == id && (h.ring || hit.hover);
-    hit.press = ui.input && ((hit.hover && ui.clicked) || h.fire == id);
+    hit.press = ui.input && ((over && ui.clicked) || h.fire == id);
     if (hit.press) h.focus = id, h.sound = sound_select;
     return hit;
 }
@@ -335,12 +354,54 @@ struct Scroller {
 
 // ---------------------------------------------------------------- the server browser
 
+// Favourite servers. A dedicated server signed in with a login token keeps its Steam ID, so that
+// is what is kept: "ServerFavorites" in the profile, the IDs with commas between. A player's
+// lobby has a new ID each time and cannot be one.
+constexpr std::size_t most_favorites = 256;
+void load_favorites(Hub &h) {
+    if (h.favorites_loaded) return;
+    h.favorites_loaded = true;
+    const auto saved = dingosdk::profile_runtime::local_value("ServerFavorites");
+    if (!saved || !saved->is_string()) return;
+    std::uint64_t id{};
+    for (const char c : saved->string() + ",") {
+        if (c >= '0' && c <= '9') id = id * 10 + static_cast<std::uint64_t>(c - '0');
+        else {
+            if (id && h.favorites.size() < most_favorites) h.favorites.insert(id);
+            id = 0;
+        }
+    }
+}
+void toggle_favorite(Hub &h, const MultiplayerLobby &lobby) {
+    if (!lobby.dedicated) return;
+    if (!h.favorites.erase(lobby.id)) {
+        if (h.favorites.size() >= most_favorites) return say(h, "That is as many favorites as there is room for.");
+        h.favorites.insert(lobby.id);
+    }
+    std::string text;
+    for (const auto id : h.favorites) text += (text.empty() ? "" : ",") + std::to_string(id);
+    dingosdk::profile_runtime::set_local_values({{"ServerFavorites", dingosdk::Json(text)}});
+    h.rows_stale = true;
+}
+// A five-pointed star, for a favorite's row.
+void star(ImDrawList *draw, ImVec2 centre, float radius, ImU32 colour) {
+    ImVec2 points[10];
+    for (int i = 0; i < 10; ++i) {
+        const float angle = -1.5707963f + static_cast<float>(i) * .62831853f, r = i % 2 ? radius * .42f : radius;
+        points[i] = ImVec2(centre.x + std::cos(angle) * r, centre.y + std::sin(angle) * r);
+    }
+    for (int i = 0; i < 10; i += 2) draw->AddTriangleFilled(points[i], points[(i + 1) % 10], points[(i + 9) % 10], colour);
+    const ImVec2 inner[5]{points[1], points[3], points[5], points[7], points[9]};
+    draw->AddConvexPolyFilled(inner, 5, colour);
+}
+
 void rebuild(Hub &h) {
+    load_favorites(h);
     h.rows_stale = false;
     h.rows.clear();
     const auto &mp = h.model;
     const std::span<const Level> levels = h.full.levels;
-    const auto found = view::browse(mp, {h.search, h.same_map, h.sort}, levels);
+    const auto found = view::browse(mp, {h.search, h.same_map, h.sort, h.sort_reverse}, levels);
     h.listed = mp.lobbies.size();
     h.skaters = 0;
     for (const auto &lobby : mp.lobbies) h.skaters += std::max(0, lobby.players);
@@ -349,9 +410,13 @@ void rebuild(Hub &h) {
         if ((h.kind == Kind::servers && !lobby->dedicated) || (h.kind == Kind::lobbies && lobby->dedicated) ||
             (h.friends_only && lobby->friends.empty()) || (h.hide_full && full))
             continue;
+        const bool favorite = lobby->dedicated && h.favorites.contains(lobby->id);
+        if (h.favorites_only && !favorite) continue;
         h.rows.push_back({lobby, view::caption(view::map_name(lobby->map, levels), 40), view::can_join(mp, *lobby),
-                          mp.active && lobby->id == mp.public_lobby, full, lobby->owner == mp.local_id});
+                          mp.active && lobby->id == mp.public_lobby, full, lobby->owner == mp.local_id, favorite});
     }
+    // Favorites come first, in the order the rest are in.
+    std::stable_partition(h.rows.begin(), h.rows.end(), [](const Row &row) { return row.favorite; });
     if (std::none_of(h.rows.begin(), h.rows.end(), [&](const Row &row) { return row.lobby->id == h.selected; }))
         h.selected = h.rows.empty() ? 0 : h.rows.front().lobby->id;
 }
@@ -379,7 +444,9 @@ void browser_page(Ui &ui, ImVec2 a, ImVec2 z) {
     const auto &mp = ui.mp;
     const float u = ui.u, gap = 28 * u, bar = 96 * u, list_width = (z.x - a.x) * .62f;
     auto *draw = ui.draw;
-    if (!h.searched && !mp.lobby_searching) h.searched = true, queue_multiplayer_action("browse", "");
+    // Refreshing waits out the game-wide limit (multiplayer_browse_interval_us); the button counts it down.
+    const int wait = browse_wait(mp);
+    if (!h.searched && !wait) h.searched = true, queue_multiplayer_action("browse", "");
     bool changed{};
     // ---- the bar: search, filters, refresh
     {
@@ -402,15 +469,20 @@ void browser_page(Ui &ui, ImVec2 a, ImVec2 z) {
         if (chip("SERVERS", h.kind == Kind::servers)) h.kind = Kind::servers, changed = true;
         if (chip("LOBBIES", h.kind == Kind::lobbies)) h.kind = Kind::lobbies, changed = true;
         x += 16 * u;
+        if (chip("FAVORITES", h.favorites_only)) h.favorites_only = !h.favorites_only, changed = true;
         if (chip("FRIENDS", h.friends_only)) h.friends_only = !h.friends_only, changed = true;
         if (chip("HIDE FULL", h.hide_full)) h.hide_full = !h.hide_full, changed = true;
         if (chip("MY MAP", h.same_map)) h.same_map = !h.same_map, changed = true;
-        if (button(ui, hash("refresh"), ImVec2(z.x - 420 * u, a.y), ImVec2(z.x, a.y + bar), mp.lobby_searching ? "SEARCHING..." : "REFRESH",
-                   Look::sticky, !mp.lobby_searching))
+        const auto refresh = wait ? "REFRESH IN " + std::to_string(wait) : std::string(mp.lobby_searching ? "SEARCHING..." : "REFRESH");
+        if (button(ui, hash("refresh"), ImVec2(z.x - 420 * u, a.y), ImVec2(z.x, a.y + bar), refresh.c_str(), Look::sticky, !wait))
             queue_multiplayer_action("browse", "");
     }
-    if (ui.input && !h.typing && (ui.pad.buttons & ~h.pad_before & 0x4000) && !mp.lobby_searching) queue_multiplayer_action("browse", ""); // X / Square
-    if (ui.input && !h.typing && (ui.pad.buttons & ~h.pad_before & 0x8000)) h.sort = static_cast<view::Sort>((static_cast<int>(h.sort) + 1) % 3), changed = true; // Y / Triangle
+    if (ui.input && !h.typing && (ui.pad.buttons & ~h.pad_before & 0x4000) && !wait) queue_multiplayer_action("browse", ""); // X / Square
+    if (ui.input && !h.typing && (ui.pad.buttons & ~h.pad_before & 0x8000))
+        h.sort = static_cast<view::Sort>((static_cast<int>(h.sort) + 1) % 3), h.sort_reverse = false, changed = true; // Y / Triangle
+    // F marks the chosen server as a favorite, or takes the mark away.
+    if (ui.input && !h.typing && !h.code_mode && ImGui::IsKeyPressed(ImGuiKey_F, false))
+        if (const auto *row = selected_row(h); row && row->lobby->dedicated) toggle_favorite(h, *row->lobby), changed = true;
 
     // ---- the list
     const ImVec2 la(a.x, a.y + bar + gap), lz(a.x + list_width, z.y - 60 * u);
@@ -424,8 +496,17 @@ void browser_page(Ui &ui, ImVec2 a, ImVec2 z) {
             const bool on = h.sort == sort;
             const Hit hit = item(ui, hash(text, 9), c, d);
             draw->AddText(ui.bold, size, ImVec2(c.x, c.y + 8 * u), on || hit.focus || hit.hover ? theme::blue : theme::muted, text);
-            if (on) draw->AddTriangleFilled(ImVec2(c.x + w + 10 * u, c.y + 16 * u), ImVec2(c.x + w + 26 * u, c.y + 16 * u), ImVec2(c.x + w + 18 * u, c.y + 28 * u), theme::blue);
-            if (hit.press && !on) h.sort = sort, changed = true;
+            if (on) {
+                // Down is most-skaters-first, or Z to A. Up is the other way.
+                const bool down = (sort == view::Sort::players) != h.sort_reverse;
+                const float y0 = c.y + (down ? 16 * u : 28 * u), y1 = c.y + (down ? 28 * u : 16 * u);
+                draw->AddTriangleFilled(ImVec2(c.x + w + 10 * u, y0), ImVec2(c.x + w + 26 * u, y0), ImVec2(c.x + w + 18 * u, y1), theme::blue);
+            }
+            if (hit.press) {
+                if (on) h.sort_reverse = !h.sort_reverse;
+                else h.sort = sort, h.sort_reverse = false;
+                changed = true;
+            }
         };
         column("NAME", la.x + pad_x, view::Sort::name, false);
         column("MAP", map_x, view::Sort::map, false);
@@ -466,6 +547,10 @@ void browser_page(Ui &ui, ImVec2 a, ImVec2 z) {
                                 lit ? IM_COL32(0, 0, 0, 90) : lobby.official ? skate_theme::official : skate_theme::tile_light, 4 * u);
             draw->AddText(ui.bold, 24 * u, ImVec2(x + 10 * u, plate_top + 7 * u), lit || lobby.official ? theme::paper : theme::muted, plate);
             x += plate_width + 18 * u;
+            if (row.favorite) {
+                star(draw, ImVec2(x + 18 * u, top + row_height * .5f), 20 * u, lit ? theme::paper : skate_theme::warning);
+                x += 48 * u;
+            }
             const bool friends = !lobby.friends.empty();
             label(draw, ui.bold, name_size, ImVec2(x, top + (friends ? 14 * u : (row_height - name_size) * .5f)), map_x - 24 * u, ink, view::caption(lobby.name, 64));
             if (friends) label(draw, ui.body, 28 * u, ImVec2(x, top + 62 * u), map_x - 24 * u, lit ? theme::paper : skate_theme::friends_text, "with " + lobby_friends_text(lobby));
@@ -509,6 +594,7 @@ void browser_page(Ui &ui, ImVec2 a, ImVec2 z) {
         };
         hint(0x1000, "Enter", "Join");
         if (ui.pad.available) hint(0x4000, "", "Refresh"), hint(0x8000, "", "Sort");
+        else hint(0, "F", "Favorite");
     }
 
     // ---- beside the list: the chosen session, or joining with a code
@@ -574,6 +660,13 @@ void browser_page(Ui &ui, ImVec2 a, ImVec2 z) {
         const auto &status = !h.notice.empty() ? h.notice : mp.active && !mp.hosting && !mp.echo && row->joinable
                                  ? std::string("Joining leaves the session you are in.") : mp.browser_status;
         label(draw, ui.body, 30 * u, ImVec2(left, y), edge, theme::muted, view::caption(status, 96));
+        // A server can be kept as a favorite: it is listed first from then on.
+        if (lobby.dedicated &&
+            button(ui, hash("favorite"), ImVec2(left, foot.y - 100 * u), ImVec2(edge, foot.y - 16 * u),
+                   row->favorite ? "REMOVE FROM FAVORITES" : "ADD TO FAVORITES", Look::plain)) {
+            toggle_favorite(h, lobby);
+            rebuild(h); // `row` is gone from here on
+        }
     } else {
         draw->AddText(ui.body, 36 * u, ImVec2(left, da.y + inset), theme::muted, "Pick a session to see it here.");
         label(draw, ui.body, 30 * u, ImVec2(left, da.y + inset + 60 * u), edge, theme::muted, view::caption(!h.notice.empty() ? h.notice : mp.browser_status, 96));
@@ -985,55 +1078,98 @@ void tools_page(Ui &ui, ImVec2 a, ImVec2 z) {
         changed();
     };
     const auto on_off = [](bool on) { return std::string(on ? "On" : "Off"); };
-    const float list_width = std::min((z.x - a.x) * .56f, 2300 * u), column_width = std::min(z.x - a.x, 2100 * u);
-    // A list of levels: the one pointed at says LOAD, and pressing it travels there.
-    const auto levels = [&](bool custom, const char *title, const char *empty, const char *empty_help) {
+    const float column_width = std::min(z.x - a.x, 2100 * u);
+    // Every map as a grid of cards, each with its picture (an official map's loading screen, a custom
+    // map's mod icon: the same pictures as the ReSkate menu's map grid, menu_map_pictures.cpp) and its
+    // name under it: the game's maps, then the custom ones under their own heading. The one pointed at
+    // says LOAD, and pressing it travels there. (Not Tutorial Island: the game's first-time tutorial.)
+    const auto levels = [&](const char *title) {
         draw->AddText(ui.heading, 52 * u, a, theme::paper, title);
         std::vector<const Level *> listed;
-        for (const auto &entry : m.levels)
-            if (native_tools::listed(entry) && entry.custom == custom) listed.push_back(&entry);
-        std::sort(listed.begin(), listed.end(), [](const auto *x, const auto *y) { return native_tools::level_name(*x) < native_tools::level_name(*y); });
+        for (const bool custom : {false, true}) {
+            const auto first = listed.size();
+            for (const auto &entry : m.levels)
+                if (native_tools::listed(entry) && entry.custom == custom && world_level_name(entry.asset) != "Tutorial Island")
+                    listed.push_back(&entry);
+            std::sort(listed.begin() + static_cast<std::ptrdiff_t>(first), listed.end(),
+                      [](const auto *x, const auto *y) { return native_tools::level_name(*x) < native_tools::level_name(*y); });
+        }
+        {
+            std::vector<MenuMapWanted> wanted;
+            for (const auto *entry : listed) wanted.push_back({entry->asset, native_tools::level_name(*entry)});
+            want_menu_map_pictures(std::move(wanted));
+        }
+        // Why a level cannot be loaded now, or what loading one said: beside the title.
+        const std::string note = multiplayer_controls_level(mp) ? "Only the lobby host can change levels."
+                                 : !m.can_queue_load ? "Travel is unavailable right now. Wait for the game to finish loading." : h.notice;
+        if (!note.empty()) {
+            const float after = a.x + width_of(ui.heading, 52 * u, title) + 48 * u;
+            label(draw, ui.body, 30 * u, ImVec2(after, a.y + 14 * u), z.x - 20 * u, theme::muted, note);
+        }
         const auto *root = native_tools::level(m, native_tools::root_asset);
         const bool travel = root && root->native_registered && root->can_load && m.can_queue_load && !multiplayer_controls_level(mp) && cb.queue_load;
-        Scroller list(ui, hash(title, 30), ImVec2(a.x, a.y + 96 * u), ImVec2(a.x + list_width, z.y));
-        for (const auto *entry : listed) {
+        const float card_gap = 24 * u, room = z.x - a.x - 16 * u;
+        const int columns = std::max(1, static_cast<int>((room + card_gap) / (540 * u + card_gap)));
+        const float card = (room - card_gap * static_cast<float>(columns - 1)) / static_cast<float>(columns);
+        const float picture = card * 0.5625f, name_bar = 86 * u, card_tall = picture + name_bar;
+        Scroller list(ui, hash(title, 30), ImVec2(a.x, a.y + 96 * u), ImVec2(z.x, z.y));
+        float row_top{};
+        bool row_drawn{};
+        std::size_t in_section{};
+        bool any_custom{};
+        for (std::size_t i = 0; i < listed.size(); ++i) {
+            const auto *entry = listed[i];
+            // The custom maps start a new row under their own heading.
+            if (entry->custom && !any_custom) {
+                any_custom = true;
+                in_section = 0;
+                bool heading_drawn{};
+                const float heading_top = list.next(70 * u, 0, heading_drawn);
+                if (heading_drawn) draw->AddText(ui.heading, 40 * u, ImVec2(a.x, heading_top + 18 * u), theme::paper, "CUSTOM MAPS");
+            }
+            const auto column = static_cast<int>(in_section++ % static_cast<std::size_t>(columns));
+            if (!column) row_top = list.next(card_tall, card_gap, row_drawn);
             const auto id = hash("level", hash(entry->asset));
             const bool can = travel && entry->can_load && entry != root;
-            bool drawn{};
-            const float top = list.next(tall, between, drawn);
-            const ImVec2 p(a.x, top), q(a.x + list_width - 20 * u, top + tall);
+            const ImVec2 p(a.x + (card + card_gap) * static_cast<float>(column), row_top), q(p.x + card, row_top + card_tall);
             const Hit hit = item(ui, id, p, q, &list.box);
-            list.reveal(id, top, tall);
+            list.reveal(id, row_top, card_tall);
             if (hit.press && can) h.tools.destination = entry->asset, act("load-level");
-            if (!drawn) continue;
+            if (!row_drawn) continue;
             const bool lit = hit.focus || hit.hover;
             skate_theme::rough_rect(draw, p, q, lit ? theme::blue : skate_theme::tile, id & 0xfff, u * 2);
-            float name_right = q.x - 30 * u;
+            // The picture: the middle band of its square, to the card's shape.
+            const ImVec2 shot_a(p.x + 8 * u, p.y + 8 * u), shot_b(q.x - 8 * u, p.y + picture);
+            ImTextureID texture{};
+            ImVec2 uv0, uv1;
+            if (menu_map_picture(entry->asset, texture, uv0, uv1)) {
+                const float band = (uv1.y - uv0.y) * (1.0f - (shot_b.y - shot_a.y) / (shot_b.x - shot_a.x)) * 0.5f;
+                draw->AddImage(texture, shot_a, shot_b, ImVec2(uv0.x, uv0.y + band), ImVec2(uv1.x, uv1.y - band),
+                               can || lit ? IM_COL32_WHITE : IM_COL32(255, 255, 255, 110));
+            } else {
+                draw->AddRectFilled(shot_a, shot_b, IM_COL32(18, 18, 20, 255));
+            }
+            // The name under it, and on the one pointed at what pressing it does.
+            const float bar_top = p.y + picture, text_y = bar_top + (name_bar - 38 * u) * .5f;
+            float name_right = q.x - 24 * u;
             if (lit) {
                 const char *does = can ? "LOAD" : multiplayer_controls_level(mp) ? "HOST'S CHOICE" : "NOT NOW";
-                const float w = width_of(ui.bold, 30 * u, does) + 40 * u;
-                const ImVec2 c(q.x - w - 24 * u, top + 20 * u), d(q.x - 24 * u, top + tall - 20 * u);
+                const float w = width_of(ui.bold, 28 * u, does) + 36 * u;
+                const ImVec2 c(q.x - w - 18 * u, bar_top + 18 * u), d(q.x - 18 * u, q.y - 18 * u);
                 skate_theme::rough_rect(draw, c, d, can ? sticky : sticky_off, 0x52, u * 2);
-                draw->AddText(ui.bold, 30 * u, ImVec2(c.x + 20 * u, c.y + (d.y - c.y - 30 * u) * .5f), skate_theme::black, does);
-                name_right = c.x - 20 * u;
+                draw->AddText(ui.bold, 28 * u, ImVec2(c.x + 18 * u, c.y + (d.y - c.y - 28 * u) * .5f), skate_theme::black, does);
+                name_right = c.x - 16 * u;
             }
-            label(draw, ui.bold, 42 * u, ImVec2(p.x + 30 * u, top + (tall - 42 * u) * .5f), name_right, can || lit ? theme::paper : theme::muted,
+            label(draw, ui.bold, 38 * u, ImVec2(p.x + 24 * u, text_y), name_right, can || lit ? theme::paper : theme::muted,
                   native_tools::level_name(*entry));
         }
         list.end();
-        if (listed.empty()) {
-            draw->AddText(ui.body, 38 * u, ImVec2(a.x, a.y + 110 * u), theme::muted, empty);
-            if (*empty_help) draw->AddText(ui.body, 32 * u, ImVec2(a.x, a.y + 164 * u), theme::muted, empty_help);
-        }
-        const std::string note = multiplayer_controls_level(mp) ? "Only the lobby host can change levels."
-                                 : !m.can_queue_load ? "Travel is unavailable right now. Wait for the game to finish loading." : h.notice;
-        if (!note.empty())
-            draw->AddText(ui.body, 30 * u, ImVec2(a.x + list_width + gap, a.y + 110 * u), theme::muted, note.c_str(), nullptr, std::min(z.x - a.x - list_width - gap, 1500 * u));
+        if (listed.empty()) draw->AddText(ui.body, 38 * u, ImVec2(a.x, a.y + 110 * u), theme::muted, "Waiting for available levels...");
     };
 
     switch (h.tools_tab) {
-    case official_tab: levels(false, "FIND YOUR SPOT", "Waiting for available levels...", ""); break;
-    case custom_tab: levels(true, "CUSTOM MAPS", "No custom maps installed.", "Custom maps from the Mods folder appear here."); break;
+    case official_tab:
+    case custom_tab: levels("FIND YOUR SPOT"); break; // (custom maps are on the one tab now)
     case world_tab: {
         Column list(ui, hash("world"), a, ImVec2(a.x + column_width, z.y));
         list.heading("THIS WORLD");
@@ -1042,7 +1178,7 @@ void tools_page(Ui &ui, ImVec2 a, ImVec2 z) {
         if (list.setting("Pedestrians", population_labels[std::clamp(m.world_controls.choices.pedestrians, -1, 3) + 1], population)) act("pedestrians");
         if (list.setting("Time of day", native_tools::time_of_day_labels[native_tools::time_of_day(m)], native_tools::time_of_day_available(m, cb))) act("time-of-day");
         if (m.world.controlled_by_host)
-            list.note(mp.server_admin ? "You are an admin: time of day changes for the whole server." : "The lobby host controls world layers, including time of day.");
+            list.note(server_can(mp, "tod") ? "Your role sets it: time of day changes for the whole server." : "The lobby host controls world layers, including time of day.");
         list.note(h.notice);
         list.end();
         break;
@@ -1081,7 +1217,7 @@ void tools_page(Ui &ui, ImVec2 a, ImVec2 z) {
         if (all.setting("Randomize on launch", on_off(m.parks.randomize_on_launch), m.parks.available && console)) act("park-random-on-launch");
         all.note(m.world.map != WorldMap::bam ? std::string("Load San Vansterdam to change parks.")
                  : native_tools::parks_locked(m) ? std::string("The lobby host controls park layouts.")
-                 : m.parks.controlled_by_host ? std::string("You are an admin: layouts you load change for the whole server.") : h.notice);
+                 : m.parks.controlled_by_host ? std::string("Your role sets them: layouts you load change for the whole server.") : h.notice);
         all.end();
         break;
     }
@@ -1091,10 +1227,6 @@ void tools_page(Ui &ui, ImVec2 a, ImVec2 z) {
         list.heading("SKATE YOUR WAY");
         if (list.setting("Noclip", on_off(d.noclip), (d.noclip_available || d.noclip) && debugging)) debug({DebugAction::set_noclip, !d.noclip});
         if (list.setting("No bail", on_off(d.no_bail), (d.no_bail_available || d.no_bail) && debugging)) debug({DebugAction::set_no_bail, !d.no_bail});
-        if (list.setting("Hall of Meat", on_off(m.hall_of_meat.enabled), m.hall_of_meat.available && console)) act("hall-of-meat");
-        if (list.setting("Road Rash", on_off(m.road_rash.enabled), m.road_rash.available && console)) act("road-rash");
-        if (list.setting("Road Rash blood", on_off(m.road_rash.blood), m.road_rash.available && m.road_rash.enabled && console)) act("road-rash-blood");
-        if (list.setting("Heal Road Rash", {}, m.road_rash.available && m.road_rash.enabled && console)) act("road-rash-heal");
         const auto &wear = m.offline.board_wear;
         if (list.setting("Board wear", on_off(wear.effective), wear.available && cb.queue_offline_feature)) act("board-wear");
         if (list.setting("Reset board wear", {}, wear.available && wear.effective && console)) act("board-wear-reset");
@@ -1112,8 +1244,8 @@ void tools_page(Ui &ui, ImVec2 a, ImVec2 z) {
         }
         list.title("BOOSTS");
         {
-            constexpr std::array<float, 9> forward{1.f, 5.f, 10.f, 25.f, 50.f, 100.f, 150.f, 200.f, 300.f};
-            constexpr std::array<float, 8> up{1.f, 2.f, 3.f, 5.f, 8.f, 12.f, 18.f, 25.f};
+            constexpr std::array<float, 10> forward{0.f, 1.f, 5.f, 10.f, 25.f, 50.f, 100.f, 150.f, 200.f, 300.f};
+            constexpr std::array<float, 9> up{0.f, 1.f, 2.f, 3.f, 5.f, 8.f, 12.f, 18.f, 25.f};
             if (const int way = list.adjust("Forward boost", "+" + whole(d.forward_velocity_speed), debugging))
                 debug({DebugAction::set_forward_velocity_speed, false, stepped(d.forward_velocity_speed, forward, way)});
             if (const int way = list.adjust("Up boost", "+" + whole(d.up_velocity_speed), debugging))
@@ -1179,6 +1311,11 @@ void tools_page(Ui &ui, ImVec2 a, ImVec2 z) {
             if (list.setting(names[i], on_off(on) + (choice < 0 ? " (default)" : ""), m.graphics.available && console)) act("graphics", std::string(graphics_keys[i]));
         }
         if (list.setting("Restore default effects", {}, m.graphics.available && console)) act("graphics-reset");
+        if (list.setting("Keyframe smoothing", on_off(m.keyframe_smoothing.enabled), m.keyframe_smoothing.available && console))
+            act("keyframe-smoothing");
+        if (list.setting("Keyframe smoothness", std::to_string(keyframe_smoothness_percent(m.keyframe_smoothing)) + "%",
+                         m.keyframe_smoothing.available && m.keyframe_smoothing.enabled && console))
+            act("keyframe-smoothness");
         if (list.setting("Challenges", m.progression.challenges_hidden ? "Hidden" : "Shown", m.progression.challenges_enabled && console)) act("challenges");
         {
             const bool shuffle = dingosdk::profile_runtime::music_shuffle_enabled();
@@ -1290,7 +1427,12 @@ void settings_page(Ui &ui, ImVec2 a, ImVec2 z) {
 // ---------------------------------------------------------------- focus
 
 // Moves the focus one control over, by where the controls were drawn last frame.
-void move_focus(Hub &h, int dx, int dy) {
+#include "mod_manager_page.inl"
+
+// `in_list`: up and down from a control in a scrolling list stay in that list while it has anything
+// that way (the Mod Manager's rows, whose next row up can be out of view and further than the bar
+// over the list).
+void move_focus(Hub &h, int dx, int dy, bool in_list = false) {
     const Item *from{};
     for (const auto &entry : h.last)
         if (entry.id == h.focus) from = &entry;
@@ -1301,8 +1443,13 @@ void move_focus(Hub &h, int dx, int dy) {
     const ImVec2 centre((from->a.x + from->b.x) * .5f, (from->a.y + from->b.y) * .5f);
     const Item *best{};
     float best_score = FLT_MAX;
+    const auto same_list = [&](const Item &entry) { return from->list && entry.list == from->list; };
+    bool list_only{};
+    if (in_list && dy && from->list)
+        for (const auto &entry : h.last)
+            if (entry.id != from->id && same_list(entry) && (dy > 0 ? entry.a.y - from->b.y : from->a.y - entry.b.y) >= -2) list_only = true;
     for (const auto &entry : h.last) {
-        if (entry.id == from->id) continue;
+        if (entry.id == from->id || (list_only && !same_list(entry))) continue;
         // Measured from the nearest point of the other control, so a wide row is as close as it looks.
         const ImVec2 closest(std::clamp(centre.x, entry.a.x, entry.b.x), std::clamp(centre.y, entry.a.y, entry.b.y));
         const float along = dx ? (closest.x - centre.x) * static_cast<float>(dx) : (closest.y - centre.y) * static_cast<float>(dy);
@@ -1335,12 +1482,20 @@ bool hub_page_pending() {
         if (!h.page.visible) h.dismissed = false;
     }
     const bool shown = h.page.visible && !h.dismissed;
+    // The Mod Manager's changes that are not applied are asked about once the pause menu has closed
+    // (not when another of its pages comes up), if it was open this time.
+    if (auto &mods = mod_page(); mods.visited && !shown && !dingosdk::multiplayer::native_pause_menu_open()) {
+        mods.visited = false;
+        offer_apply(mods);
+    }
     if (shown != h.shown) {
         h.shown = shown;
         h.next_model = {};
         h.searched = false;
         h.last.clear();
         if (!shown) {
+            dingosdk::multiplayer::hold_native_menu_back(false);
+            if (!mod_page().leaving) mod_page().declined = false;
             h.recording_bind = 0;
             set_typing(h, 0);
             wipe(h.password), wipe(h.code_password), wipe(h.host_password);
@@ -1373,22 +1528,14 @@ bool hub_page_pending() {
     return shown;
 }
 
-void draw_hub_page() {
-    auto &h = hub();
-    if (!h.shown) return;
+// One frame of the pages, in `a`..`z` with their tabs at `tabs_y`: in the game's pause menu
+// (draw_hub_page), or on the ReSkate menu's full screen ONLINE page (draw_online_embedded), which
+// keeps B for itself.
+void hub_frame(Hub &h, ImDrawList *draw, float u, ImVec2 a, ImVec2 z, float tabs_y, bool input, bool embedded) {
     auto &s = state();
     auto &io = ImGui::GetIO();
-    const auto display = io.DisplaySize;
-    // One unit of the game's menu in pixels, and where its page sits in this window.
-    const float u = std::min(display.x / layout_width, display.y / layout_height);
-    const float across = display.x / u, down = display.y / u, canvas = std::min(across, layout_widest);
-    const float page_left = ((across - canvas) * .5f + side_margin) * u, page_right = ((across + canvas) * .5f - side_margin) * u;
-    const float lower = (down - layout_height) * .05f; // how far a taller window moves the page down
-    const bool others = s.visible.load() || s.console_visible.load() || s.editor_visible.load() || s.chat_visible.load();
-    Ui ui{h, ImGui::GetBackgroundDrawList(), s.menu.bold ? s.menu.bold : ImGui::GetFont(), s.menu.body ? s.menu.body : ImGui::GetFont(), nullptr, u, io.MousePos,
-          // (A card that asks something over the page has the input while it asks.)
-          !others && !s.prompt_input_active.load(std::memory_order_relaxed) && game_window_foreground(s.window.load()),
-          false, false, false, 0, h.model, {}};
+    Ui ui{h, draw, s.menu.bold ? s.menu.bold : ImGui::GetFont(), s.menu.body ? s.menu.body : ImGui::GetFont(), nullptr, u, io.MousePos,
+          input, false, false, false, 0, h.model, {}};
     ui.heading = s.menu.heading ? s.menu.heading : ui.bold;
     ui.clicked = ui.input && ImGui::IsMouseClicked(ImGuiMouseButton_Left);
     ui.doubled = ui.input && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left);
@@ -1454,21 +1601,35 @@ void draw_hub_page() {
     if (ui.moved && !h.typing) h.ring = false;
     h.focus_moved = false;
     int previous_tab{}, next_tab{};
+    // On the Mod Manager, a mod's page holds the menu's Back (hold_native_menu_back): B and Escape go
+    // back to the list there, and keep holding it until they are let go.
+    auto &mods_page = mod_page();
+    const bool on_mods = !embedded && h.page.section == 2;
+    const bool back_down = keys[7] || (ui.pad.buttons & 0x2000);
     if (ui.input && !typing_before) {
         // Back closes the game's menu, which takes a moment to say so: this goes at once.
-        if (key_new(7) || (pressed & 0x2000)) h.dismissed = true;
+        if (!embedded && (key_new(7) || (pressed & 0x2000))) {
+            if (on_mods && mods_hold_back(mods_page)) mods_back(h, mods_page), mods_page.hold_back_until = GetTickCount64() + 300, h.sound = sound_select;
+            else if (on_mods && guard_leave(mods_page)) offer_leave(mods_page), h.sound = sound_select;
+            else if (!on_mods || GetTickCount64() >= mods_page.hold_back_until) h.dismissed = true;
+        }
         const std::array<bool, 4> held{keys[0] || (ui.pad.buttons & 1), keys[1] || (ui.pad.buttons & 2), keys[2] || (ui.pad.buttons & 4), keys[3] || (ui.pad.buttons & 8)};
         const std::array<bool, 4> fresh{key_new(0) || (pressed & 1), key_new(1) || (pressed & 2), key_new(2) || (pressed & 4), key_new(3) || (pressed & 8)};
         const auto tick = GetTickCount64();
         int direction = -1;
         for (int i = 0; i < 4; ++i)
-            if (fresh[static_cast<std::size_t>(i)]) direction = i, h.repeat_at = tick + 380;
+            if (fresh[static_cast<std::size_t>(i)]) direction = i, h.repeat_at = tick + (embedded ? 420 : 380); // (the full screen menu's pace inside it)
         if (direction < 0 && tick >= h.repeat_at)
             for (int i = 0; i < 4; ++i)
-                if (held[static_cast<std::size_t>(i)]) direction = i, h.repeat_at = tick + 70;
-        if (direction >= 0) {
+                if (held[static_cast<std::size_t>(i)]) direction = i, h.repeat_at = tick + (embedded ? 160 : 70);
+        if (direction >= 0 && on_mods && h.ring && h.focus == featured_card && (direction == 2 || direction == 3)) {
+            // Left and right on the Mod Manager's carousel turn it, at a pace to see each card go by.
+            mods_page.carousel_turn = direction == 3 ? 1 : -1;
+            h.repeat_at = std::max(h.repeat_at, tick + 260);
+            h.sound = sound_navigate;
+        } else if (direction >= 0) {
             // The first press only shows where the focus is.
-            if (h.ring || !h.focus) move_focus(h, direction == 2 ? -1 : direction == 3 ? 1 : 0, direction == 0 ? -1 : direction == 1 ? 1 : 0);
+            if (h.ring || !h.focus) move_focus(h, direction == 2 ? -1 : direction == 3 ? 1 : 0, direction == 0 ? -1 : direction == 1 ? 1 : 0, on_mods);
             h.ring = true;
             h.focus_moved = true;
         }
@@ -1478,6 +1639,26 @@ void draw_hub_page() {
         previous_tab = key_new(5) || (pressed & 0x10000);
         next_tab = key_new(6) || (pressed & 0x20000);
     }
+    if (back_down && GetTickCount64() < mods_page.hold_back_until) mods_page.hold_back_until = GetTickCount64() + 300;
+    // The answer to leaving with changes not applied: LATER (or an apply that reloads nothing) lets go
+    // of Back, and a moment later presses it for the player, on the pad only the game reads.
+    if (const int answer = mods_page.leave_answer.exchange(0)) {
+        mods_page.leaving = false;
+        mods_page.declined = true;
+        mods_page.visited = false; // (asked already)
+        const bool reloads = answer == 1 && mods_page.mods && mods_page.mods->effect != live_mods::ApplyEffect::maps_only;
+        if (!reloads) mods_page.close_at = GetTickCount64() + 250;
+    }
+    if (mods_page.close_at && GetTickCount64() >= mods_page.close_at) {
+        mods_page.close_at = 0;
+        if (dingosdk::multiplayer::native_pause_menu_open()) {
+            XINPUT_GAMEPAD back{}, neutral{};
+            back.wButtons = XINPUT_GAMEPAD_B;
+            overlay::play_pad({{0, back}, {6, neutral}, {12, neutral}});
+        }
+    }
+    if (!embedded)
+        dingosdk::multiplayer::hold_native_menu_back(on_mods && (mods_hold_back(mods_page) || guard_leave(mods_page) || GetTickCount64() < mods_page.hold_back_until));
     h.keys_before = keys;
     // A key that ended the typing (Enter, Escape) is still down: it is not a fresh press of anything.
     // And so is one held while the game was not the window in front.
@@ -1486,16 +1667,18 @@ void draw_hub_page() {
     h.items.clear();
 
     // ---- the page's tabs
-    const ImVec2 a(page_left, (body_top + lower) * u);
-    const ImVec2 z(std::min(page_right, a.x + body_most * u), (down - (layout_height - body_bottom) - lower) * u);
-    const bool tools = h.page.section == 1;
+    const bool tools = !embedded && h.page.section == 1;
+    const bool mods = !embedded && h.page.section == 2;
     {
         // (Each page keeps the tab it was left on.)
         std::vector<std::pair<int, const char *>> tabs;
         int multiplayer_tab = static_cast<int>(h.tab);
-        int &open = tools ? h.tools_tab : multiplayer_tab;
-        if (tools) {
-            tabs = {{official_tab, "OFFICIAL MAPS"}, {custom_tab, "CUSTOM MAPS"}, {world_tab, "WORLD"}, {parks_tab, "PARKS"},
+        int &open = tools ? h.tools_tab : mods ? mod_page().tab : multiplayer_tab;
+        if (mods) {
+            tabs = {{browse_tab, "BROWSE"}, {installed_tab, "MY MODS"}, {updates_tab, "UPDATES"}};
+        } else if (tools) {
+            if (h.tools_tab == custom_tab) h.tools_tab = official_tab;
+            tabs = {{official_tab, "MAPS"}, {world_tab, "WORLD"}, {parks_tab, "PARKS"},
                     {player_tab, "PLAYER"}, {online_tab, "ONLINE"}, {visuals_tab, "VISUALS"}, {binds_tab, "BINDS"}};
         } else {
             tabs = {{static_cast<int>(Tab::browser), "SERVER BROWSER"}, {static_cast<int>(Tab::host), "HOST LOBBY"}};
@@ -1514,7 +1697,7 @@ void draw_hub_page() {
             h.sound = sound_tab;
             set_typing(h, 0);
         }
-        const float top = (tabs_top + lower) * u, bottom = top + tabs_height * u, size = 44 * u;
+        const float top = tabs_y, bottom = top + tabs_height * u, size = 44 * u;
         float x = a.x;
         const auto cap = [&](std::uint32_t pad_button, const char *key) {
             const auto name = ui.pad.available ? controller_combo_label(pad_button, ui.pad.style) : std::string(key);
@@ -1534,14 +1717,15 @@ void draw_hub_page() {
             x = q.x + 20 * u;
         }
         cap(0x20000, "C");
-        if (!tools) h.tab = static_cast<Tab>(multiplayer_tab);
+        if (!tools && !mods) h.tab = static_cast<Tab>(multiplayer_tab);
     }
 
     // Under the connecting card the page is still drawn, to look at and not to use.
     const bool page_input = ui.input, page_clicked = ui.clicked, page_doubled = ui.doubled;
     const bool failed = !connecting && !h.failed.empty() && !in_session;
-    if ((connecting || failed) && !tools) ui.input = ui.clicked = ui.doubled = false;
+    if ((connecting || failed) && !tools && !mods) ui.input = ui.clicked = ui.doubled = false;
     if (tools) tools_page(ui, a, z);
+    else if (mods) mod_manager_page(ui, a, z);
     else switch (h.tab) {
     case Tab::browser: browser_page(ui, a, z); break;
     case Tab::host: host_page(ui, a, z); break;
@@ -1549,7 +1733,7 @@ void draw_hub_page() {
     case Tab::voice: voice_page(ui, a, z); break;
     case Tab::settings: settings_page(ui, a, z); break;
     }
-    if ((connecting || failed) && !tools) {
+    if ((connecting || failed) && !tools && !mods) {
         ui.input = page_input, ui.clicked = page_clicked, ui.doubled = page_doubled;
         h.items.clear();   // nothing of the page takes the focus: only the card's way out
         if (connecting) connecting_page(ui, a, z);
@@ -1580,5 +1764,105 @@ void draw_hub_page() {
         // (Sweeping the pointer down a list is not a sound for every row.)
         if (const auto play = ui_sound.load(); play && (wanted != sound_navigate || tick - h.sound_at >= 45)) play(wanted), h.sound_at = tick;
     }
+}
+
+void draw_hub_page() {
+    auto &h = hub();
+    if (!h.shown) return;
+    // (The ReSkate menu drew these pages over this one this frame: once is enough.)
+    if (h.embedded_frame == ImGui::GetFrameCount()) return;
+    auto &s = state();
+    const auto display = ImGui::GetIO().DisplaySize;
+    // One unit of the game's menu in pixels, and where its page sits in this window.
+    const float u = std::min(display.x / layout_width, display.y / layout_height);
+    const float across = display.x / u, down = display.y / u, canvas = std::min(across, layout_widest);
+    const float page_left = ((across - canvas) * .5f + side_margin) * u, page_right = ((across + canvas) * .5f - side_margin) * u;
+    const float lower = (down - layout_height) * .05f; // how far a taller window moves the page down
+    const bool others = s.visible.load() || s.console_visible.load() || s.editor_visible.load() || s.chat_visible.load();
+    const ImVec2 a(page_left, (body_top + lower) * u);
+    const ImVec2 z(std::min(page_right, a.x + body_most * u), (down - (layout_height - body_bottom) - lower) * u);
+    // (A card that asks something over the page has the input while it asks.)
+    hub_frame(h, ImGui::GetBackgroundDrawList(), u, a, z, (tabs_top + lower) * u,
+              !others && !s.prompt_input_active.load(std::memory_order_relaxed) && game_window_foreground(s.window.load()), false);
+}
+
+void draw_online_embedded(ImDrawList *draw, ImVec2 a, ImVec2 z, const Model &model, const CallbacksV3 &callbacks, bool input) {
+    auto &h = hub();
+    const int frame = ImGui::GetFrameCount();
+    const bool fresh = h.embedded_frame != frame - 1;
+    h.embedded_frame = frame;
+    const auto now = Clock::now();
+    if (fresh) {
+        // What is held as the page comes up is not a press on it.
+        h.last.clear();
+        h.focus = 0;
+        h.searched = false;
+        h.keys_before.fill(true);
+        h.pad_before = ~0U;
+    }
+    if (fresh || now >= h.next_model) {
+        h.next_model = now + 200ms;
+        h.full = model;
+        h.model = model.multiplayer;
+        h.callbacks = callbacks;
+        h.rows_stale = true;
+    }
+    const auto display = ImGui::GetIO().DisplaySize;
+    const float u = std::min(display.x / layout_width, display.y / layout_height);
+    hub_frame(h, draw, u, ImVec2(a.x, a.y + (tabs_height + 64) * u), z, a.y, input, true);
+}
+bool online_embedded_typing() { return hub().typing != 0; }
+
+// Mods being applied with the pause menu closed (most often after the Mod Manager's question): a
+// small card at the right edge, out of the way of skating, as the map download's is, then a few
+// seconds of how it went.
+namespace {
+bool apply_card_seen{};
+ULONGLONG apply_card_until{};
+std::string apply_card_result;
+}
+bool mod_apply_card_pending() {
+    const bool applying = live_mods::busy() && dingosdk::map_download::view().stage == dingosdk::map_download::Stage::idle;
+    const bool menu = hub().shown || dingosdk::multiplayer::native_pause_menu_open();
+    if (applying && !menu) apply_card_seen = true, apply_card_until = 0;
+    else if (apply_card_seen && !applying) {
+        apply_card_seen = false;
+        apply_card_until = GetTickCount64() + 4000;
+        apply_card_result = live_mods::status();
+    }
+    return (applying && !menu) || GetTickCount64() < apply_card_until;
+}
+void draw_mod_apply_card() {
+    auto &s = state();
+    auto *bold = s.menu.bold ? s.menu.bold : ImGui::GetFont();
+    auto *body = s.menu.body ? s.menu.body : ImGui::GetFont();
+    const auto display = ImGui::GetIO().DisplaySize;
+    const float u = std::min(display.x / layout_width, display.y / layout_height);
+    const bool applying = live_mods::busy();
+    const auto progress = live_mods::progress();
+    const float width = 820 * u, inset = 30 * u, bar = 12 * u;
+    const float height = inset + 24 * u + 12 * u + 38 * u + 18 * u + bar + 14 * u + 26 * u + inset;
+    const ImVec2 min(std::floor(display.x - 48 * u - width), std::floor(display.y * 0.2f)), max(min.x + width, min.y + height);
+    auto *draw = ImGui::GetForegroundDrawList();
+    skate_theme::rough_rect(draw, min, max, IM_COL32(26, 26, 26, 235), 0x4d3, u * 2);
+    draw->AddRectFilled(min, ImVec2(min.x + 8 * u, max.y), applying ? theme::blue : skate_theme::good);
+    const float left = min.x + inset + 8 * u, right = max.x - inset;
+    float y = min.y + inset;
+    draw->AddText(bold, 24 * u, ImVec2(left, y), theme::blue, "MOD MANAGER");
+    y += 36 * u;
+    draw->AddText(bold, 38 * u, ImVec2(left, y), theme::paper, applying ? "APPLYING MODS" : "MODS APPLIED");
+    y += 56 * u;
+    const float fraction = !applying ? 1.f : progress.total ? static_cast<float>(progress.done) / static_cast<float>(progress.total) : -1.f;
+    draw->AddRectFilled(ImVec2(left, y), ImVec2(right, y + bar), skate_theme::tile_light, 6 * u);
+    if (fraction >= 0) draw->AddRectFilled(ImVec2(left, y), ImVec2(left + (right - left) * std::clamp(fraction, 0.f, 1.f), y + bar), applying ? theme::blue : skate_theme::good, 6 * u);
+    else {
+        const float t = static_cast<float>(std::fmod(ImGui::GetTime(), 2.0)) / 2.f, w = (right - left) * .25f;
+        const float x = left + (right - left - w) * (t < .5f ? t * 2 : 2 - t * 2);
+        draw->AddRectFilled(ImVec2(x, y), ImVec2(x + w, y + bar), theme::blue, 6 * u);
+    }
+    y += bar + 14 * u;
+    const std::string line = applying ? (progress.step.empty() ? std::string("Merging the mods into the game...") : progress.step)
+                                      : (apply_card_result.empty() ? std::string("Done.") : apply_card_result);
+    label(draw, body, 26 * u, ImVec2(left, y), right, theme::muted, line);
 }
 } // namespace dingosdk::overlay::detail

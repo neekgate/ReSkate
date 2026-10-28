@@ -1,0 +1,99 @@
+#pragma once
+#include <algorithm>
+#include <cstdint>
+#include <memory>
+#include <optional>
+#include <string>
+#include <string_view>
+#include <vector>
+
+// What stands in for a peer's cosmetic this PC does not have (a player's cosmetics mod).
+// Without a policy each missing item becomes the matching default_cosmetic_items entry, or an
+// empty slot. A plugin with the "outfit.stand_ins" permission (reskate.outfit.stand_ins) can set
+// one instead: which items may stand in, and whether the first that fits is taken or one picked
+// at random. Only what this PC shows of other players changes; nothing is sent, saved or owned.
+namespace dingosdk::multiplayer::stand_ins {
+enum class Pick : std::uint8_t { first, random };
+enum class Parts : std::uint8_t { both, skater, board };
+inline constexpr std::size_t max_items = 4096;
+struct Policy {
+    std::string owner; // the plugin holding it
+    Pick pick{Pick::first};
+    Parts parts{Parts::both};
+    // Empty: every installed item that fits the slot. Paid store items never stand in either way.
+    std::vector<std::string> items;
+    // Items never to stand in: whole names, or a name's start followed by "*". Any case (set()
+    // keeps them lower case). Only the candidates: an item a player really wears still shows.
+    std::vector<std::string> exclude;
+    std::uint32_t seed{};
+};
+// A stand-in shown recently: the item put in, and the peer's item it stood in for.
+struct Shown {
+    std::string item, replacing;
+};
+inline constexpr std::size_t max_shown = 24;
+
+// The policy in force, or null for the game's defaults. Any thread.
+std::shared_ptr<const Policy> current();
+// Bumped with every change, so the players shown can be dressed again. Starts at 1.
+std::uint64_t generation();
+// Sets `policy` for its owner. Empty when set, else why not (another plugin holds it).
+std::string set(Policy policy);
+// Puts the defaults back, if `owner` holds the policy.
+void clear(std::string_view owner);
+// Remembers that `item` stood in for `replacing` (client thread, as players are dressed), and the
+// last max_shown different items, newest first, for the plugin holding the policy to list.
+void note_shown(std::string item, std::string replacing);
+std::vector<Shown> shown();
+
+inline std::string lower(std::string_view text) {
+    std::string out(text);
+    for (auto &c : out)
+        if (c >= 'A' && c <= 'Z') c = static_cast<char>(c + ('a' - 'A'));
+    return out;
+}
+// Whether `asset` is in the policy's exclude list (which set() keeps lower case).
+inline bool excluded(const Policy &policy, std::string_view asset) {
+    if (policy.exclude.empty() || asset.empty()) return false;
+    const auto name = lower(asset);
+    for (const auto &rule : policy.exclude) {
+        if (!rule.empty() && rule.back() == '*') {
+            if (name.starts_with(std::string_view(rule).substr(0, rule.size() - 1))) return true;
+        } else if (name == rule) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Whether the policy covers a recipe: the skater's (skater_recipe_key) or the board's.
+inline bool covers(const Policy &policy, bool board) {
+    return policy.parts == Parts::both || (policy.parts == Parts::board) == board;
+}
+
+inline std::uint64_t mix(std::uint64_t x) {
+    x += 0x9e3779b97f4a7c15ULL;
+    x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9ULL;
+    x = (x ^ (x >> 27)) * 0x94d049bb133111ebULL;
+    return x ^ (x >> 31);
+}
+inline std::uint64_t text_hash(std::string_view text, std::uint64_t h = 1469598103934665603ULL) {
+    for (unsigned char c : text) h = (h ^ c) * 1099511628211ULL;
+    return h;
+}
+// The candidates for one missing item in the order they are tried. "first": as given. "random":
+// shuffled by a seed made of the outfit (`outfit`, a hash of everything the peer wears), the slot,
+// the missing item and the policy's seed, so a player keeps the same stand-ins for as long as they
+// wear the same outfit (no flicker each time it is put on again), different players and slots get
+// different ones, and a new seed gives everybody new ones.
+inline std::vector<std::string> order(const Policy &policy, std::vector<std::string> candidates, std::uint64_t outfit,
+                                      std::uint32_t slot, std::string_view missing) {
+    if (policy.pick != Pick::random || candidates.size() < 2) return candidates;
+    std::uint64_t state = mix(outfit ^ mix(text_hash(missing) ^ (std::uint64_t{slot} << 32 | policy.seed)));
+    for (std::size_t i = candidates.size() - 1; i > 0; --i) {
+        state = mix(state);
+        std::swap(candidates[i], candidates[static_cast<std::size_t>(state % (i + 1))]);
+    }
+    return candidates;
+}
+} // namespace dingosdk::multiplayer::stand_ins

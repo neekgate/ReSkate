@@ -1,6 +1,8 @@
 #include "mod_merge_internal.h"
 #include "Engine/Core/Json/json.h"
 #include "Engine/Core/Platform/path_text.h"
+#include "Engine/Resource/cas_codec.h"
+#include "Engine/Resource/ebx_fixup_repair.h"
 
 #include <Windows.h>
 #include <bcrypt.h>
@@ -98,6 +100,13 @@ std::uint64_t append_file(const fs::path& from, const fs::path& to) {
     return start;
 }
 
+fs::path inside(const fs::path& output, const fs::path& relative) {
+    const auto normal = relative.lexically_normal();
+    if (normal.empty() || normal.has_root_name() || normal.has_root_directory() || *normal.begin() == L"..")
+        throw std::runtime_error("Refused to write " + path_utf8(relative) + ": it is outside the merged patch's folder");
+    return output / normal;
+}
+
 // Hard link when the volume allows it, so a 400 MB archive costs nothing.
 void link_or_copy(const fs::path& from, const fs::path& to) {
     fs::create_directories(to.parent_path());
@@ -116,8 +125,11 @@ RelativeFiles scan(const fs::path& directory) {
     for (fs::recursive_directory_iterator it(root, error), end; it != end && !error; it.increment(error)) {
         if (!it->is_regular_file(error) || error) { error.clear(); continue; }
         // The game only names archives in ASCII: anything else is not one of its files.
-        const auto relative = ascii_path(fs::relative(it->path(), directory, error));
-        if (error || relative.empty()) { error.clear(); continue; }
+        // Lexically, as the folder is laid out: fs::relative resolves links, and a Win32 (or a
+        // folder in it) that is a junction elsewhere would come out as ../../.., a path the merge
+        // then reads the game's TOC from and writes its own copies to outside the patch folder.
+        const auto relative = ascii_path(it->path().lexically_relative(directory));
+        if (relative.empty() || relative.starts_with("../")) continue;
         const auto extension = lower(ascii_path(it->path().extension()));
         if (extension == ".toc") result.tocs.push_back(relative);
         else if (extension == ".cas") result.archives.push_back(relative);
@@ -142,6 +154,20 @@ fb::Sha1 sha1_of(std::span<const std::byte> bytes) {
     return digest;
 }
 
+std::size_t repair_ebx_payload(std::vector<std::byte>& encoded, fb::BundleAsset& asset, const fs::path& gameRoot) {
+    std::optional<fb::ebx::FixupRepair> repaired;
+    try {
+        repaired = fb::ebx::repair_type_fixups(fb::decode_cas(encoded, {gameRoot}));
+    } catch (const std::exception&) {
+        return 0;
+    }
+    if (!repaired) return 0;
+    encoded = fb::encode_cas(repaired->bytes, {gameRoot});
+    asset.sha1 = sha1_of(repaired->bytes);
+    asset.originalSize = repaired->bytes.size();
+    return repaired->removed;
+}
+
 PlacementRecord read_placements(const fs::path& file) {
     PlacementRecord record;
     std::ifstream input(file, std::ios::binary);
@@ -156,6 +182,9 @@ PlacementRecord read_placements(const fs::path& file) {
                 {spot.at("archive").get<std::uint16_t>(), spot.at("offset").get<std::uint64_t>()};
         }
     }
+    if (root.contains("fingerprints"))
+        for (const auto& [name, files] : root.at("fingerprints").items())
+            if (const auto found = record.mods.find(name); found != record.mods.end() && files.is_string()) found->second.fingerprint = files.string();
     const auto& tocs = root.at("tocs");
     for (std::size_t i = 0; i < tocs.size(); ++i) record.tocs.push_back(tocs.at(i).string());
     if (root.contains("root")) {
@@ -182,6 +211,10 @@ void write_placements(const fs::path& file, const PlacementRecord& record) {
         mods[name] = std::move(spots);
     }
     root["mods"] = std::move(mods);
+    auto fingerprints = Json::object();
+    for (const auto& [name, placement] : record.mods)
+        if (!placement.fingerprint.empty()) fingerprints[name] = placement.fingerprint;
+    root["fingerprints"] = std::move(fingerprints);
     auto tocs = Json::array();
     for (const auto& toc : record.tocs) tocs.push_back(toc);
     root["tocs"] = std::move(tocs);
@@ -193,3 +226,34 @@ void write_placements(const fs::path& file, const PlacementRecord& record) {
 }
 
 } // namespace dingosdk::mods::detail
+
+namespace dingosdk::mods {
+
+std::map<std::string, std::uint64_t> read_map_meshes(const std::filesystem::path& file) {
+    std::map<std::string, std::uint64_t> meshes;
+    try {
+        std::ifstream input(file, std::ios::binary);
+        if (!input) return meshes;
+        const std::string text{std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
+        const auto root = Json::parse(text);
+        if (!root.contains("maps")) return meshes;
+        for (const auto& [level, bytes] : root.at("maps").items()) meshes[level] = bytes.get<std::uint64_t>();
+    } catch (const std::exception&) {
+        meshes.clear();
+    }
+    return meshes;
+}
+
+void write_map_meshes(const std::filesystem::path& file, const std::map<std::string, std::uint64_t>& meshes) {
+    auto all = read_map_meshes(file);
+    for (const auto& [level, bytes] : meshes) all[level] = bytes;
+    auto root = Json::object();
+    root["schema"] = 1u;
+    auto maps = Json::object();
+    for (const auto& [level, bytes] : all) maps[level] = bytes;
+    root["maps"] = std::move(maps);
+    const auto text = root.dump(2);
+    detail::write_file(file, std::as_bytes(std::span(text)));
+}
+
+} // namespace dingosdk::mods

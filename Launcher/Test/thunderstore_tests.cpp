@@ -87,6 +87,21 @@ int main() {
     check(desert.latest().file_size == 5368709120ull, "Sizes over 4 GB survive");
     check(desert.downloads == 15 && desert.in_category("Maps") && !desert.in_category("Audio"),
           "Downloads add up across versions and categories are listed");
+    {
+        // The GET MODS list's categories: hidden ones win, and with any shown only, a package needs one.
+        thunderstore::Package both;
+        both.categories = {"Maps", "Tools"};
+        thunderstore::Package plain;
+        check(thunderstore::shown_by(both, {}) && thunderstore::shown_by(plain, {}), "No filter shows everything");
+        check(thunderstore::shown_by(both, {{"Audio", "Maps"}, {}}) && !thunderstore::shown_by(plain, {{"Maps"}, {}}),
+              "Shown only: a package in any of them shows, one in none does not");
+        check(!thunderstore::shown_by(both, {{}, {"Tools"}}) && thunderstore::shown_by(plain, {{}, {"Tools"}}),
+              "Hidden: a package in it is left out, one without it shows");
+        check(!thunderstore::shown_by(both, {{"Maps"}, {"Tools"}}), "A hidden category wins over one shown only");
+        const std::vector<std::string> none{"No category"};
+        check(thunderstore::shown_by(none, {{"No category"}, {}}) && !thunderstore::shown_by(none, {{}, {"No category"}}),
+              "An installed mod's own categories go by the same rule (MY MODS)");
+    }
     const auto& cam = packages.at(1);
     check(cam.deprecated && cam.latest().icon.empty(), "Flags are read and non-HTTPS icons are dropped");
     check(!error_of([] { thunderstore::parse_listing(R"({"error": "No cache available"})"); }).empty(),
@@ -171,6 +186,41 @@ int main() {
               "A README with nothing to show has no lines");
         const auto wide = thunderstore::readme_lines(std::string(1999, 'a') + "\xC3\xA9\xC3\xA9");
         check(wide.lines.size() == 1 && wide.lines[0].text == std::string(1999, 'a'), "An overlong line is cut between characters");
+    }
+
+    // ------------------------------------------------ dependencies and mod packs
+    {
+        const auto version = [](const char* owner, const char* name, const char* number, const char* needs) {
+            return std::string(R"({"name":")") + name + R"(","full_name":")" + owner + "-" + name + R"(","owner":")" + owner +
+                   R"(","versions":[{"version_number":")" + number + R"(","download_url":"https://thunderstore.io/d/)" + name +
+                   R"(/","dependencies":[)" + needs + R"(]},{"version_number":"0.9.0","download_url":"https://thunderstore.io/d/old/)" +
+                   name + R"(/"}]})";
+        };
+        const auto shop = thunderstore::parse_listing("[" +
+            version("Zee", "Pack", "1.0.0", R"("Zee-Map-1.2.0","Kit-Rails-2.0.0","Gone-Mod-1.0.0")") + "," +
+            version("Zee", "Map", "1.2.0", R"("Kit-Rails-1.0.0","Kit-Core-1.0.0")") + "," +
+            version("Kit", "Rails", "2.0.0", R"("Kit-Core-1.0.0","Zee-Map-1.0.0")") + "," +
+            version("Kit", "Core", "1.0.0", "") + "]");
+        check(shop.size() == 4 && shop[0].latest().dependencies.size() == 3, "A version's dependencies are read");
+        check(thunderstore::split_dependency("Zee-Desert_Springs-1.10.0") == std::pair<std::string, std::string>{"Zee-Desert_Springs", "1.10.0"} &&
+              thunderstore::split_dependency("Zee-Map") == std::pair<std::string, std::string>{"Zee-Map", ""},
+              "A dependency splits into its package and version");
+        const auto names = [](const std::vector<thunderstore::Package>& packages) {
+            std::string text;
+            for (const auto& package : packages) text += package.full_name + " ";
+            return text;
+        };
+        std::vector<std::string> unknown;
+        check(names(thunderstore::with_dependencies(shop[0], shop, {}, &unknown)) == "Kit-Core Kit-Rails Zee-Map Zee-Pack ",
+              "A pack's mods are gathered once each, needed ones first, through a cycle");
+        check(unknown == std::vector<std::string>{"Gone-Mod"}, "A dependency the listing lacks is reported");
+        check(names(thunderstore::with_dependencies(shop[0], shop, {{"Kit-Core", "1.0.0"}, {"Kit-Rails", "1.5.0"}, {"Zee-Map", "1.2.0"}})) ==
+              "Kit-Rails Zee-Pack ", "Dependencies installed at a new enough version are left out, and an old one is updated");
+        check(names(thunderstore::with_dependencies(shop[3], shop, {})) == "Kit-Core ", "A package that needs nothing comes alone");
+        check(shop[1].at_version("0.9.0").latest().number == "0.9.0" && shop[1].at_version("7.7.7").latest().number == "1.2.0" &&
+              shop[1].at_version("0.9.0").versions.size() == 2, "A package is taken at an older version when it has it");
+        check(thunderstore::find_package(shop, "Kit-Rails") == &shop[2] && !thunderstore::find_package(shop, "kit-rails-2.0.0"),
+              "A package is found by its full name");
     }
 
     // ------------------------------------------------ community

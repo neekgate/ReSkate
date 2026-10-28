@@ -143,9 +143,14 @@ int main() {
     // One mod's copy alone is still written in the game's form: its additions go where their guids put them.
     const std::vector<ChunkRecord> oneMod{chunk(0x50, 1, 0, 0), chunk(0x30, 1, 1, 1), chunk(0x70, 1, 2, 2), chunk(0x10, 1, 3, 3),
                                           chunk(0x60, 1, 4, 4), chunk(0x20, 1, 5), chunk(0x80, 1, 6)};
-    check(read_list(merge_chunk_metadata(lists, oneMod, gameList, shipped)) ==
+    std::vector<std::size_t> rows;
+    check(read_list(merge_chunk_metadata(lists, oneMod, gameList, shipped, &rows)) ==
               std::vector<Record>{mesh, firstTexture, textureA, other, textureB, mesh, firstMesh},
           "one mod's additions are put in guid order with the game's");
+    // Where each chunk's record went, so a copy whose list this is reads its chunks' records there.
+    check(rows == std::vector<std::size_t>{3, 2, 5, 0, 4, 1, 6}, "each chunk's record is said to be at its place by guid");
+    (void)merge_chunk_metadata(lists, untouched, gameList, shipped, &rows);
+    check(rows == std::vector<std::size_t>{2, 1, 4, 0, 3}, "and so is each in the game's own list, which comes back as it is");
     // A newer tool writes the replaced texture's own hash with its first mip; the first mip is what counts.
     auto newer = game;
     newer[4] = Record{textureB.owner, 0};
@@ -165,6 +170,17 @@ int main() {
     check(read_list(merge_chunk_metadata(lists, unknown, gameList, shipped)) ==
               std::vector<Record>{mesh, Record{}, textureA, other, textureB, mesh, Record{}},
           "a chunk no list describes gets a record that says nothing, and the others stay in step");
+    // The game reads a record without "h64" as a "g" record, and one with neither through null.
+    {
+        const auto written = merge_chunk_metadata(lists, unknown, gameList, shipped);
+        const std::span<const unsigned char> bytes(reinterpret_cast<const unsigned char*>(written.data()), written.size());
+        const auto root = db::read(bytes, "chunk metadata", nullptr);
+        check(std::ranges::all_of(root.children, [](const db::Node& row) {
+                  const auto* owner = row.field("h64");
+                  return owner && owner->payload().size() == 8 && row.field("meta");
+              }),
+              "every record has the owner hash and meta the game reads");
+    }
 
     // A bundle the game has no list for (it has no chunks there, or does not ship the bundle): every
     // chunk is a mod's, with the record of the copy it came in. Maps each add their loading screen
@@ -172,6 +188,8 @@ int main() {
     const std::vector<Bytes> modsOnly{list_of({firstTexture, firstMesh}), list_of({firstTexture, firstMesh, secondTexture})};
     const std::vector<ChunkRecord> theirs{chunk(0x90, 1, 0), chunk(0x20, 1, 1), chunk(0x40, 1, 2)};
     check(merge_chunk_metadata(modsOnly, theirs) == modsOnly[1], "a bundle that is one mod's copy alone keeps that copy's list");
+    (void)merge_chunk_metadata(modsOnly, theirs, ChunkRecord::none, {}, &rows);
+    check(rows == std::vector<std::size_t>{0, 1, 2}, "and has each record where its chunk is listed");
     const std::vector<ChunkRecord> both{chunk(0x90, 0, 0), chunk(0x20, 0, 1), chunk(0x40, 1, 2)};
     check(read_list(merge_chunk_metadata(modsOnly, both)) == std::vector<Record>{firstMesh, secondTexture, firstTexture},
           "and otherwise each chunk's record from the copy it came in, by guid like any other");

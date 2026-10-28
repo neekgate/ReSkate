@@ -1,6 +1,9 @@
 #pragma once
 #include "Engine/Game/World/park_editor.h"
 #include "Extension/Objects/object_placements.h"
+#include <array>
+#include <optional>
+#include <string>
 
 namespace dingosdk {
 ParkEditorModel local_park_editor();
@@ -12,6 +15,11 @@ void set_park_mod_list_visible(bool visible) noexcept;
 // on disconnect; existing placed objects remain in the world.
 void set_lobby_object_placement_allowed(bool enabled);
 bool lobby_object_placement_allowed() noexcept;
+// Whether objects may be resized in this session (a dedicated server can turn object scaling off;
+// its roles that may always build are exempt). Off, a saved object's scale is kept in the layout
+// but it is not resized in the world, and the world's 1x is never saved over it. On outside a session.
+void set_lobby_object_scaling_allowed(bool enabled) noexcept;
+bool lobby_object_scaling_allowed() noexcept;
 // The session's limit on this player's objects (object_placement.h), 0 for none: the host's
 // own game and a server admin's are given none. Adding an object is refused at the limit.
 void set_lobby_object_limit(unsigned limit) noexcept;
@@ -24,7 +32,38 @@ bool queue_local_park_surface(const EditorSurfaceRequest &);
 bool queue_local_park_preview(const EditorPreviewRequest &);
 bool queue_local_park_selection(const EditorSelectionRequest &);
 bool queue_local_park_paste(const EditorPasteRequest &);
+bool queue_local_park_object_set(const EditorObjectSetRequest &);
+bool queue_local_park_delete(const EditorDeleteRequest &);
 void tick_local_park_editor() noexcept;
+// The world raycast, and the object it meets (reskate.world.pick; world_pick.cpp): where, its root
+// entity (0 for none), its pose as the placements runtime reads it (scale xyz, -, rotation xyzw,
+// position xyz, -), and the world object blueprint it was made from, when that is known.
+struct WorldPick {
+    std::array<float, 3> at{};
+    std::uint64_t entity{};
+    std::optional<std::array<float, 12>> pose;
+    std::string blueprint;
+};
+std::optional<WorldPick> local_world_pick(const std::array<float, 3> &from, const std::array<float, 3> &to);
+// The park editor's picking reader (park_editor_selection.cpp), for a native surface ray cast
+// outside the editor: the physics body that hit `index` of the ray's result met. False when the
+// picking calls did not match their bytes or the body is not valid in `world`.
+bool local_surface_hit_body(std::uintptr_t world, std::uint32_t index, std::uintptr_t data, std::array<std::uint64_t, 2> &body);
+// Gives world_entities the physics world (its objects made not solid, and those standing on the floor).
+void register_world_physics() noexcept;
+struct WorldRayHit {
+    bool cast{}, hit{};
+    std::array<float, 3> at{};
+    std::uint64_t when{}; // GetTickCount64 of the cast
+    bool available{}; // Native client collision API and world were ready.
+};
+void queue_world_ray(std::uint32_t id, const std::array<float, 3> &origin, const std::array<float, 3> &direction, float length);
+WorldRayHit world_ray(std::uint32_t id);
+// Client collision queries used by mode placement do not require the park
+// editor, its placement store, or the server object manager to be enabled.
+// Runs only on the verified local client update thread.
+void tick_local_world_rays() noexcept;
+
 // Invoked through the console's verified game-thread dispatcher. `texts`
 // carries a park mod's name, author, version and description (mod-create:
 // all four; mod-details: the same after the folder in `argument`).
@@ -41,6 +80,9 @@ void update_park_editor();
 void update_park_editor_moves() noexcept;
 void reset_park_editor();
 bool park_editor_owns_placements();
+// The layout the editor's current edit is applying (null without one). Its new objects are saved
+// only when the whole edit completes, but they are live, linked objects before that.
+const profile::ObjectLayout *park_editor_pending_layout();
 bool park_editor_observe(std::uint64_t entity, const profile::PlacedObject &object);
 void park_editor_external_change();
 } // namespace dingosdk::profile_runtime

@@ -8,6 +8,7 @@
 #include "Engine/Core/Platform/path_text.h"
 #include "Engine/Game/Build/20260929/live_mods.h"
 #include "Engine/Game/Build/addresses.h"
+#include "Engine/Vfs/builtin_packs.h"
 #include "Engine/Vfs/mod_catalog.h"
 #include "Engine/Vfs/mod_scoring.h"
 #include "Extension/World/loading_screen.h"
@@ -40,6 +41,8 @@ std::string last_status;
 Progress merge_progress; // under state_mutex, while merging
 std::optional<std::vector<std::filesystem::path>> pending_levels;
 std::optional<std::vector<std::string>> applied; // set by a live apply; the launch's list before one
+// Each level the mods in effect register, and the folder of the mod that does: set by a live apply.
+std::optional<std::vector<std::pair<std::string, std::filesystem::path>>> applied_levels;
 std::string current_level;
 
 template <std::size_t N> bool matches(std::uintptr_t address, const std::array<std::uint8_t, N> &prefix) {
@@ -346,6 +349,7 @@ void apply_now() {
     mods::MergeReport report;
     std::string left_out;
     for (int round = 0;; ++round) {
+        mods::reconcile_variant_additions(catalog);
         // The mods in the game now were checked against the store when they went in.
         report = mods::merge_mods(catalog, [](const mods::MergeProgress &now) {
             std::lock_guard lock(state_mutex);
@@ -436,9 +440,13 @@ void apply_now() {
         std::lock_guard lock(state_mutex);
         // Set with the manifests, so the client tick sees both in one update.
         if (needed) reload_ready = true;
+        mods::variants_applied(catalog);
         pending_levels = mods::level_manifest_paths(catalog);
         applied.emplace();
         for (const auto &mod : catalog.mods) applied->push_back(mod.name);
+        applied_levels.emplace();
+        for (const auto &mod : catalog.mods)
+            for (const auto &level : mod.levels) applied_levels->emplace_back(level, mod.directory);
     }
     if (!left_out.empty()) problem += (problem.empty() ? "left out " : "; left out ") + left_out + ", which could not be merged cleanly";
     // Where the time went, step by step, as the launch's merge logs it.
@@ -504,8 +512,11 @@ ApplyEffect preview(const mods::ModList &list) {
     };
     bool reload{};
     for (const auto &name : before) {
-        if (named(now, name)) continue;
+        // A variant stands for the mod that holds it (mod_catalog.h).
+        if (const auto owner = mods::variant_owner(name); named(now, owner.empty() ? name : owner)) continue;
         const auto *entry = entry_of(name);
+        // Content ReSkate keeps itself (builtin_packs.h) is in no mod list, and stays.
+        if (!entry && (name.starts_with("reskate-builtin-") || mods::kept_by_reskate(list.root, name))) continue;
         // A folder deleted since: what it held is unknown, so assume the worst.
         if (!entry) {
             reload = true;
@@ -549,5 +560,21 @@ bool placed_at_launch(const std::string &name) {
 std::optional<std::vector<std::filesystem::path>> take_level_manifests() {
     std::lock_guard lock(state_mutex);
     return std::exchange(pending_levels, std::nullopt);
+}
+std::filesystem::path level_mod_directory(std::string_view asset) {
+    const auto same = [&](const std::string &level) {
+        return level.size() == asset.size() && _strnicmp(level.data(), asset.data(), asset.size()) == 0;
+    };
+    {
+        std::lock_guard lock(state_mutex);
+        if (applied_levels) {
+            for (const auto &[level, directory] : *applied_levels)
+                if (same(level)) return directory;
+            return {};
+        }
+    }
+    for (const auto &mod : mods::catalog().mods)
+        if (std::ranges::any_of(mod.levels, same)) return mod.directory;
+    return {};
 }
 } // namespace dingosdk::live_mods

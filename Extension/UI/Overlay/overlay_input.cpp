@@ -5,6 +5,8 @@
 #include "input_capture.h"
 #include "playstation_input.h"
 #include "cursor.h"
+#include "Extension/Throwdowns/throwdown_kit.h"
+#include "Engine/Game/Input/owned_menu_input.h"
 
 using namespace dingosdk::overlay::detail;
 namespace dingosdk::overlay::detail {
@@ -94,6 +96,7 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wp, LPARAM lp) {
         ~NativeInputScope() { overlay_input_access = saved; }
     } native_input;
     auto& s = state();
+    if (message == WM_MOUSEWHEEL) s.look_wheel_message.fetch_add(GET_WHEEL_DELTA_WPARAM(wp));
     WNDPROC previous{};
     {
         std::lock_guard lock(s.window_hook_mutex);
@@ -148,6 +151,8 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wp, LPARAM lp) {
         else window_cursor_input(window, message, wp);
         const bool key = message == WM_KEYDOWN || message == WM_SYSKEYDOWN;
         const bool release = message == WM_KEYUP || message == WM_SYSKEYUP;
+        if((key || release) && challenge_menu_key(static_cast<int>(wp)))return 0;
+        if (key && wp < 256 && key_hidden(static_cast<unsigned>(wp))) return 0;
         if (console_character(message) && s.console_character_pending.exchange(false)) return 0;
         if (console_character(message) && s.chat_character_pending.exchange(false)) return 0;
         if (console_character(message) && s.item_search_character_pending.exchange(false)) return 0;
@@ -281,10 +286,12 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wp, LPARAM lp) {
                 s.input.push_back({window, message, wp, lp});
             }
         }
-        const bool capture = owns_pointer();
+        const bool countdown = game::owned_menu_countdown_capture(
+            dingosdk::throwdowns::kit::match().input_lock,challenge_panel_owns_input());
         const bool freecam_capture = s.freecam_controller_active.load(std::memory_order_relaxed) ||
                                      s.prompt_input_active.load(std::memory_order_relaxed);
-        if (freecam_capture) release_game_buttons(window, previous);
+        if (countdown || freecam_capture) release_game_buttons(window, previous);
+        const bool capture = owns_pointer() || (countdown && wp != VK_ESCAPE && !console_toggle_key(message, wp, lp));
         if ((capture || freecam_capture) && is_input(message)) {
             // Foreground raw-input packets still need DefWindowProc cleanup.
             return message == WM_INPUT ? DefWindowProcW(window, message, wp, lp) : 0;
@@ -450,6 +457,10 @@ dingosdk::overlay::FlightInput read_player_flight_controller() {
 }
 
 namespace dingosdk::overlay {
+void begin_input_access() noexcept { ++detail::overlay_input_access; }
+void end_input_access() noexcept { --detail::overlay_input_access; }
+std::uint64_t controls_touched_at() noexcept { return detail::controls_at.load(std::memory_order_relaxed); }
+void note_joystick(std::uint32_t buttons, const std::array<float, 6>& axes) noexcept { detail::note_pad(5, buttons, axes); }
 Gamepad read_gamepad() {
     const auto sample = read_controller_sample();
     Gamepad out;
@@ -462,6 +473,8 @@ Gamepad read_gamepad() {
     out.left_trigger = static_cast<float>(sample.pad.bLeftTrigger) / 255.0f;
     out.right_trigger = static_cast<float>(sample.pad.bRightTrigger) / 255.0f;
     out.buttons = sample.pad.wButtons;
+    // (A PlayStation controller the game reads itself is seen here, when ReSkate reads it.)
+    detail::note_pad(4, out.buttons, {out.left_x, out.left_y, out.right_x, out.right_y, out.left_trigger, out.right_trigger});
     return out;
 }
 } // namespace dingosdk::overlay
@@ -506,9 +519,14 @@ extern "C" unsigned DingoSDKOverlayReadPromptKeys() {
     // (Not while a menu, the console or chat has the keyboard; the card itself having the pointer is no reason.)
     const bool typing = s.visible.load() || s.console_visible.load() || s.editor_visible.load() || s.chat_visible.load() || s.hub_typing.load();
     if (!window || s.stop.load() || s.failed.load() || typing || !game_window_foreground(window)) return 0;
-    OverlayInputAccess access;
     unsigned keys{};
     constexpr int wanted[]{VK_LEFT, VK_RIGHT, VK_RETURN, VK_ESCAPE};
+    if (std::array<std::uint64_t, 4> held{}; sampled_keys(window, held)) {
+        for (unsigned bit = 0; bit < 4; ++bit)
+            if (held[wanted[bit] / 64] >> (wanted[bit] % 64) & 1) keys |= 1u << bit;
+        return keys;
+    }
+    OverlayInputAccess access;
     for (unsigned bit = 0; bit < 4; ++bit)
         if (GetAsyncKeyState(wanted[bit]) & 0x8000) keys |= 1u << bit;
     return keys;
@@ -522,8 +540,13 @@ extern "C" void DingoSDKOverlayReadControllerInput(dingosdk::ControllerInput* ou
     const HWND window = s.window.load();
     if (!window || s.stop.load() || s.failed.load() || (!allow_menu && interactive_visible(s)) ||
         !game_window_foreground(window)) return;
-    // Read through the overlay's bypass: freecam capture hides keys from the game.
-    {
+    // Read through the overlay's bypass: freecam capture hides keys from the game. (As sampled
+    // off this thread when there is a recent sample, cursor.cpp.)
+    if (std::array<std::uint64_t, 4> held{}; sampled_keys(window, held)) {
+        for (unsigned key = 0; key < 256; ++key)
+            if (dingosdk::bindable_keyboard_key(key) && (held[key / 64] >> (key % 64) & 1))
+                output->keys[key / 64] |= std::uint64_t{1} << (key % 64);
+    } else {
         OverlayInputAccess access;
         for (unsigned key = 0; key < 256; ++key) {
             if (dingosdk::bindable_keyboard_key(key) && (GetAsyncKeyState(key) & 0x8000)) {
@@ -548,6 +571,24 @@ static bool raw_mouse_live(const State& s) {
     return time && GetTickCount64() < time + 10000;
 }
 
+namespace dingosdk::overlay {
+bool read_mouse_look(MouseLook& output) noexcept {
+    struct PreserveError { DWORD value = GetLastError(); ~PreserveError() { SetLastError(value); } } preserve_error;
+    output = {};
+    auto& s = state();
+    // Taken whatever happens next, so nothing piles up while a menu is open.
+    const long x = s.look_mouse_x.exchange(0), y = s.look_mouse_y.exchange(0);
+    const long wheel_raw = s.look_wheel_raw.exchange(0), wheel_message = s.look_wheel_message.exchange(0);
+    const HWND window = s.window.load();
+    if (!window || s.stop.load() || s.failed.load() || interactive_visible(s) || !game_window_foreground(window)) return false;
+    output.x = x;
+    output.y = y;
+    // The same notch can arrive both ways: the raw count where raw packets come in, else the message's.
+    output.wheel = raw_mouse_live(s) && wheel_raw != 0 ? wheel_raw : wheel_message;
+    return true;
+}
+} // namespace dingosdk::overlay
+
 extern "C" void DingoSDKOverlayReadFlightInput(dingosdk::overlay::FlightInput* output, bool flight_active, bool player_flight) {
     if (!output) return;
     struct PreserveError { DWORD value = GetLastError(); ~PreserveError() { SetLastError(value); } } preserve_error;
@@ -565,7 +606,13 @@ extern "C" void DingoSDKOverlayReadFlightInput(dingosdk::overlay::FlightInput* o
         return;
     }
     OverlayInputAccess editor_access;
-    const auto held = [](int key) { return (GetAsyncKeyState(key) & 0x8000) != 0; };
+    // (The keys as sampled off this thread when there is a sample, cursor.cpp: this runs every
+    // client frame while flying.)
+    std::array<std::uint64_t, 4> sampled{};
+    const bool have_sample = sampled_keys(window, sampled);
+    const auto held = [&](int key) {
+        return have_sample ? ((sampled[key / 64] >> (key % 64)) & 1) != 0 : (GetAsyncKeyState(key) & 0x8000) != 0;
+    };
     // Physical right button: the logical one unless the buttons are swapped.
     const bool swapped = GetSystemMetrics(SM_SWAPBUTTON) != 0;
     const bool raw = raw_mouse_live(s);
@@ -605,4 +652,16 @@ extern "C" void DingoSDKOverlayReadFlightInput(dingosdk::overlay::FlightInput* o
             if (ClientToScreen(window, &center) && SetCursorPos(center.x, center.y)) previous = center;
         }
     } else looking = false;
+}
+
+// For native tools that run beside the game (a controller translator, say): whether ReSkate's menu,
+// a free camera on the pad or a prompt has the input now, so they hold their own input back while it
+// does. 1 or 0. Versioned: a later meaning gets a new name. Any thread; the caller's last error is kept.
+extern "C" __declspec(dllexport) unsigned long WINAPI ReSkateOverlayOwnsInputV1() {
+    const auto error = GetLastError();
+    const auto& s = state();
+    const bool owns = owns_menu_cursor(s) || s.freecam_controller_active.load(std::memory_order_relaxed) ||
+                      s.prompt_input_active.load(std::memory_order_relaxed);
+    SetLastError(error);
+    return owns ? 1ul : 0ul;
 }

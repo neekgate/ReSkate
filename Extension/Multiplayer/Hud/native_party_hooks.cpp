@@ -4,9 +4,19 @@
 #include "Extension/Skater/client_source_spawn.h"
 #include "Extension/Throwdowns/native_type_scan.h"
 #include "Extension/Throwdowns/throwdown_relay.h"
+#include "Extension/Throwdowns/throwdown_kit.h"
 #include "Engine/Core/Platform/memory.h"
 #include "follow_camera.h"
+#include "Extension/Customization/local_player_card_runtime.h"
+#include "Extension/Objects/network_object_runtime.h"
+#include "Extension/Objects/object_prompt.h"
 #include "Engine/Game/Build/20260929/profile.h"
+#include <format>
+#include <map>
+#include <set>
+#include <mutex>
+#include <fstream>
+#include <filesystem>
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -16,6 +26,10 @@
 namespace dingosdk::multiplayer {
 using namespace native_party_detail;
 namespace {
+// Above zero on the thread that is running the placed-object prompt's graph (object_prompt.h).
+thread_local int object_prompt_running{};
+// That run's VM and graph resource: the object the card is for is one of its locals.
+thread_local Address object_prompt_vm{}, object_prompt_resource{};
 Handle find_model_hook(Address manager, Address type, std::uint64_t id,
                        std::uint32_t name_space, std::uint8_t realm) {
     auto &s = state();
@@ -34,15 +48,17 @@ Handle find_model_hook(Address manager, Address type, std::uint64_t id,
             return game::native_data().models.value(manager, record->handle, 0, 0) ? record->handle : 0;
         };
         if (const auto handle = find(p->record(id))) return handle;
-        return find(p->friend_record(id));
+        if (const auto handle = find(p->friend_record(id))) return handle;
+        return find(p->server_record(id));
     } catch (...) { return 0; }
 }
 std::uint64_t get_info_hook(Address ui, std::uint64_t id) {
     try {
     const auto published = state().published.load(std::memory_order_acquire);
     if (state().installed.load(std::memory_order_acquire) && published && id) {
-        const auto record = published->record(id);
-        if (const auto found = record ? record : published->friend_record(id)) {
+        auto record = published->record(id);
+        if (!record) record = published->friend_record(id);
+        if (const auto found = record ? record : published->server_record(id)) {
             Address manager{};
             if (!memory::peek(ui + 0x140, manager) || manager != published->manager) return 0;
             game::ModelWriteLock lock(manager);
@@ -542,6 +558,14 @@ std::uint32_t teleport_hook(Address reason, const void *matrix, Address destinat
     // lip mount. While the local player waits for their S.K.A.T.E. turn, the turn start's
     // teleport of the local skater (id 0) lands it on foot. Kept in a static: the native
     // copies the options into its components, but must never see a dead buffer.
+    // A plugin match's countdown (kit::match().input_lock) lands the skater on the board.
+    if(!id && stance && dingosdk::throwdowns::kit::match().input_lock) {
+        static thread_local std::array<std::uint8_t,3> on_board{};
+        if(memory::peek_bytes(stance,on_board.data(),on_board.size())) {
+            on_board[0]=1;
+            return state().teleport(reason,matrix,destination,id,mode,reinterpret_cast<Address>(on_board.data()),transition);
+        }
+    }
     if (!id && stance && throwdown_relay_waits_offboard()) {
         static thread_local std::array<std::uint8_t, 3> on_foot{};
         if (memory::peek_bytes(stance, on_foot.data(), on_foot.size()) && on_foot[0]) {
@@ -679,6 +703,40 @@ void clear_stale_cooldowns() {
 // the SDK started pressed no Coop button here, so IsCoop still says solo and the row never comes
 // (analysis/coop-challenges-re/coop_criteria_hud.md). It is set just before either graph runs.
 constexpr std::uint32_t graph_objective_list = 0xeae864ca, graph_challenge_rewards = 0x1e01dd61;
+// profile_runtime::player_info_override: while that prompt runs, the info of whoever placed the
+// object nearest the skater, when that is another player the party HUD has a record for.
+std::uint64_t object_owner_info() noexcept {
+    if (!object_prompt_running) return 0;
+    try {
+        auto &s = state();
+        if (!s.installed.load(std::memory_order_acquire) || !object_prompt_vm || !object_prompt_resource) return 0;
+        // The object the card is for: the script's local 0x380, read from the card's model at
+        // its start, well before it asks whose card to show (flow_buildkit aa058fc: frame
+        // 0xc0, constants 0x1be0; a script of another shape is left alone).
+        std::uint32_t frame{}, constants{};
+        Address registers{}, locals{};
+        std::uint64_t entity{};
+        if (!memory::peek(object_prompt_resource + 0x20, frame) || frame != 0xc0 ||
+            !memory::peek(object_prompt_resource + 0x24, constants) || constants != 0x1be0 ||
+            !memory::peek(object_prompt_vm + 0x30, registers) || !registers ||
+            !memory::peek(registers + 0xc0 + 16, locals) || !locals || !memory::peek(locals + 0x380, entity)) return 0;
+        const auto owner = profile_runtime::network_object_owner_of(entity);
+        Address ui{};
+        if (!owner || !memory::peek(s.base + engine::ui_manager, ui) || !ui) return 0;
+        // A dedicated server's own objects (its parks) name the server: it is in no player list,
+        // so its card is not one get_info finds.
+        if (const auto published = s.published.load(std::memory_order_acquire);
+                published && published->server.handle && published->server.player.id == owner) {
+            Address manager{};
+            if (!memory::peek(ui + 0x140, manager) || manager != published->manager) return 0;
+            game::ModelWriteLock lock(manager);
+            return game::native_data().models.value(manager, published->server.handle, 0, 0) ? published->server.handle : 0;
+        }
+        return get_info_hook(ui, owner);
+    } catch (...) {
+        return 0;
+    }
+}
 void show_coop_objectives() {
     auto &s = state();
     const auto published = s.published.load(std::memory_order_acquire);
@@ -716,6 +774,20 @@ void run_expression(Address vm, std::uint32_t pc, Address profiler, void (*runne
     // The common path avoids RPM, schema scans and locks for unrelated scripts.
     const auto resource = *reinterpret_cast<const Address *>(vm + 0x38);
     const auto hash = *reinterpret_cast<const std::uint32_t *>(resource + 0x10);
+    struct Prompt {
+        bool on;
+        explicit Prompt(bool running, Address vm, Address resource) : on(running) {
+            if (!on) return;
+            ++object_prompt_running;
+            object_prompt_vm = vm;
+            object_prompt_resource = resource;
+        }
+        ~Prompt() {
+            if (!on) return;
+            --object_prompt_running;
+            object_prompt_vm = object_prompt_resource = 0;
+        }
+    } prompt(hash == object_prompt::graph, vm, resource);
     if ((hash == graph_objective_list || hash == graph_challenge_rewards) &&
         state().challenge_coop.load(std::memory_order_acquire)) {
         try { show_coop_objectives(); } catch (const std::exception &e) { status(e.what()); }
@@ -784,6 +856,7 @@ void install(Address base) {
                 "Cannot enable native party hooks; restart ReSkate.");
     require(hook_apply_queued() == HookOk, "Cannot enable native party hooks; restart ReSkate.");
     s.installed.store(true, std::memory_order_release);
+    profile_runtime::player_info_override.store(&object_owner_info, std::memory_order_release);
     try { install_requests(base); } catch (const std::exception &e) { status(e.what()); }
 }
 } // namespace native_party_detail
@@ -808,6 +881,10 @@ void spectate_party_member(std::uint64_t id) noexcept {
             started = id;
         }
     } catch (...) {}
+}
+bool party_spectating() noexcept {
+    auto &s = state();
+    return s.spectating.load(std::memory_order_acquire) != 0 || s.camera_owned;
 }
 void tick_native_party_actions(std::uintptr_t base, std::uintptr_t client, bool ready, bool camera_phase) noexcept {
     auto &s = state();

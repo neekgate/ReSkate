@@ -6,6 +6,8 @@
 #include "Engine/Game/Build/20260929/engine.h"
 #include "Engine/Game/Build/20260929/local_player_card.h"
 #include "Extension/Throwdowns/native_throwdowns.h"
+#include "Extension/Throwdowns/native_flag_session.h"
+#include "Extension/Throwdowns/throwdown_kit.h"
 #include "Extension/Multiplayer/Steam/steam_social.h"
 
 namespace dingosdk::profile_runtime {
@@ -84,9 +86,10 @@ bool read_player_card(std::uintptr_t manager, profile::CosmeticLoadout& result) 
 }
 
 namespace {
-bool player_card_item_owned(const profile::CosmeticSlot& slot, const dingosdk::Json& inventory) {
+bool player_card_item_owned(const profile::CosmeticSlot& slot, const profile::Snapshot& snapshot) {
     const auto it = cosmetic_runtime().items.find(slot.asset);
-    if (it == cosmetic_runtime().items.end() || !inventory.value(slot.asset, false)) return false;
+    if (it == cosmetic_runtime().items.end() || !installed_item_owned(snapshot, slot.asset, it->second.hash, it->second.build_kit))
+        return false;
     // Each card category is also its recipe slot hash in the installed template.
     return std::find(it->second.categories.begin(), it->second.categories.end(), slot.slot) !=
         it->second.categories.end();
@@ -96,9 +99,8 @@ bool player_card_item_owned(const profile::CosmeticSlot& slot, const dingosdk::J
 bool player_card_owned(const profile::CosmeticLoadout& value) {
     const auto snapshot_shared = local_runtime().store->shared_snapshot();
     const auto& snapshot = *snapshot_shared;
-    const auto& inventory = snapshot.customization.at("inventory");
     for (const auto& slot : value.recipes.front().items)
-        if (!player_card_item_owned(slot, inventory)) return false;
+        if (!player_card_item_owned(slot, snapshot)) return false;
     return true;
 }
 
@@ -115,6 +117,8 @@ void apply_player_card(std::uintptr_t manager, const profile::CosmeticLoadout& v
 }
 
 std::uint64_t local_player_info_hook() {
+    if (const auto other = player_info_override.load(std::memory_order_relaxed))
+        if (const auto info = other()) return info;
     auto& s = local_runtime(); auto& p = player_card_runtime();
     const auto original = p.functions.get_local_info();
     if (!s.active.load(std::memory_order_acquire) || original) return original;
@@ -209,8 +213,11 @@ bool publish_player_card(const profile::CosmeticLoadout& value) {
         // In-throwdown / throwdown-host flags. The throwdown Quit action does
         // nothing unless the first is set; the second is only for the local
         // player's own drop (a joined one is left, not cancelled).
-        const bool throwdown = multiplayer::local_throwdown_active();
-        const bool host = multiplayer::local_throwdown_host();
+        // A plugin match counts when it asks to be an activity (kit::match().in_activity); its
+        // host is whoever placed its flag.
+        const bool plugin_match = throwdowns::kit::match().in_activity;
+        const bool throwdown = multiplayer::local_throwdown_active() || plugin_match;
+        const bool host = multiplayer::local_throwdown_host() || (plugin_match && multiplayer::native_flag::hosting());
         static bool logged_state{};
         if (const auto field = n.field(model, handle, 11, UINT32_MAX, false))
             n.publish(model, field, s.base + addr::engine::bool_type, &throwdown);
@@ -262,10 +269,9 @@ void update_player_card() {
             // slot. The saved card keeps it until the player changes the card.
             const auto snapshot_shared = s.store->shared_snapshot();
             const auto& snapshot = *snapshot_shared;
-            const auto& inventory = snapshot.customization.at("inventory");
             const auto& defaults = current.recipes.front().items;
             for (auto& slot : restore->recipes.front().items) {
-                if (player_card_item_owned(slot, inventory)) continue;
+                if (player_card_item_owned(slot, snapshot)) continue;
                 const auto fallback = std::find_if(defaults.begin(), defaults.end(),
                     [&](const profile::CosmeticSlot& item) { return item.slot == slot.slot; });
                 if (fallback == defaults.end()) { restore.reset(); break; }

@@ -57,9 +57,11 @@ void publish_custom_nametags(std::uintptr_t base, std::vector<NametagPlayer> pla
             tag.color = player.color;
             tag.tag = std::move(player.tag);
             tag.talking = player.talking;
+            tag.extra = player.extra;
+            tag.extra_color = player.extra_color;
             tag.bubbles.reserve(player.bubbles.size());
             for (auto &line : player.bubbles)
-                tag.bubbles.push_back({std::move(line.text), std::move(line.raw), line.appear, line.fade});
+                tag.bubbles.push_back({std::move(line.text), std::move(line.raw), line.appear, line.fade, line.hint});
             tag.self = player.self;
             tag.nameless = player.nameless;
             if (local) {

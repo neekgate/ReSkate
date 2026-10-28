@@ -1,13 +1,18 @@
 #include "gui_internal.h"
 #include "gui_renderer.h"
 
+#include "Engine/Vfs/builtin_packs.h"
+
 #include "mod_manager.h"
 #include "updater.h"
 
 #include "Engine/Core/Log/logging.h"
+#include "Engine/Core/Debug/trace.h"
 
 #include <cstdio>
+#include <cctype>
 #include <format>
+#include <set>
 
 // The Mods panel's BROWSE page: packages from Thunderstore, their icons, and
 // downloading and installing them on the panel's worker.
@@ -20,6 +25,8 @@ constexpr int listing_timeout_ms = 20000;
 constexpr int download_timeout_ms = 30000;
 constexpr std::size_t max_icons = 128;          // loaded icon textures, of the renderer's 160 slots
 constexpr std::uint64_t max_icon_bytes = 6 * 1024 * 1024;
+// Marks an Icons key that is an icon.png on disk rather than a URL.
+constexpr std::string_view local_icon_prefix = "file:";
 
 void log(logging::Level level, const std::string& message) {
     logging::write(level, logging::Channel::launcher, message);
@@ -96,9 +103,13 @@ void icon_worker(Icons& icons) {
         }
         Icons::Decoded decoded{url};
         try {
-            const auto cached = cache.empty() ? fs::path() : cache / icon_file(url);
-            auto bytes = cached.empty() ? std::vector<unsigned char>() : read_bytes(cached);
-            if (bytes.empty()) {
+            const bool local = url.starts_with(local_icon_prefix);
+            const auto cached = local ? fs::path(wide(std::string_view(url).substr(local_icon_prefix.size())))
+                              : cache.empty() ? fs::path() : cache / icon_file(url);
+            std::error_code size_error;
+            auto bytes = cached.empty() || (local && fs::file_size(cached, size_error) > max_icon_bytes)
+                ? std::vector<unsigned char>() : read_bytes(cached);
+            if (bytes.empty() && !local) {
                 const auto body = fetch(wide(url), max_icon_bytes, never);
                 bytes.assign(body.begin(), body.end());
                 if (!cached.empty()) {
@@ -145,7 +156,7 @@ void set_activity(ModsPanel& panel, std::string text) {
 }
 
 // Downloads one package into Mods/.reskate-download, then installs it over any
-// installed copy (which goes to the Recycle Bin, keeping its place in mods.json).
+// installed copy (which is deleted, its place in mods.json kept).
 std::string install_package(ModsPanel& panel, const fs::path& root, const ts::Package& package) {
     const auto& version = package.latest();
     const auto folder = root / L".reskate-download";
@@ -157,6 +168,9 @@ std::string install_package(ModsPanel& panel, const fs::path& root, const ts::Pa
         ~Cleanup() { std::error_code ignored; fs::remove(archive, ignored); fs::remove(folder, ignored); }
     } cleanup{folder, archive};
 
+    trace::Scope timing("launcher.mod_install", "task");
+    timing.tag("package", package.full_name);
+    timing.tag("version", version.number);
     set_activity(panel, "Downloading " + package.title() + " v" + version.number +
         (version.file_size ? "  (" + size_text(version.file_size) + ")" : std::string()));
     panel.progress = 0;
@@ -202,7 +216,7 @@ bool nsfw(const ts::Package& package) {
                                        [](const std::string& category) { return lower(category) == "nsfw"; });
 }
 
-std::vector<const ts::Package*> visible_packages(const Store& store, const ts::Installed& installed) {
+std::vector<const ts::Package*> visible_packages(const Store& store, const ts::Installed& installed, const ts::CategoryFilter& categories) {
     const auto query = lower(store.search.data());
     std::vector<const ts::Package*> result;
     for (const auto& package : store.packages) {
@@ -211,7 +225,7 @@ std::vector<const ts::Package*> visible_packages(const Store& store, const ts::I
         // or a category of that name. A deprecated one only shows once installed.
         if (nsfw(package)) continue;
         if (package.deprecated && !have) continue;
-        if (!store.category.empty() && !package.in_category(store.category)) continue;
+        if (!ts::shown_by(package, categories)) continue;
         if (!query.empty() && lower(package.title()).find(query) == std::string::npos &&
             lower(package.owner).find(query) == std::string::npos &&
             lower(package.latest().description).find(query) == std::string::npos) continue;
@@ -234,6 +248,17 @@ std::vector<const ts::Package*> visible_packages(const Store& store, const ts::I
 
 constexpr std::array<const char*, 5> sort_names{"Last updated", "Most downloaded", "Newest", "Top rated", "Name"};
 
+// GET MODS's categories: Thunderstore's, with how many mods are in each, kept in the launcher's settings.
+void category_filter(Launcher& launcher, const Store& store, float width) {
+    std::vector<std::pair<std::string, int>> categories;
+    for (const auto& package : store.packages) {
+        if (nsfw(package)) continue; // (and no category that only they have)
+        for (const auto& category : package.categories) ++category_count(categories, category);
+    }
+    if (category_menu("##category", launcher.settings().mod_categories_only, launcher.settings().mod_categories_hidden, std::move(categories), width))
+        launcher.save();
+}
+
 // What installing `package` does now: install, update or reinstall.
 std::string action_label(const ts::Package& package, const ts::Installed& installed) {
     const auto found = installed.find(ts::folder_for(package.full_name));
@@ -244,11 +269,81 @@ std::string action_label(const ts::Package& package, const ts::Installed& instal
 
 } // namespace
 
+int& category_count(std::vector<std::pair<std::string, int>>& categories, const std::string& category) {
+    for (auto& entry : categories)
+        if (entry.first == category) return entry.second;
+    return categories.emplace_back(category, 0).second;
+}
+
+bool category_menu(const char* id, std::vector<std::string>& only, std::vector<std::string>& hidden,
+                   std::vector<std::pair<std::string, int>> categories, float width) {
+    // One chosen before that no mod has now stays in the list, so it can be put back.
+    for (const auto* list : {&only, &hidden})
+        for (const auto& category : *list) (void)category_count(categories, category);
+    std::sort(categories.begin(), categories.end(), [](const auto& a, const auto& b) { return lower(a.first) < lower(b.first); });
+    const auto in = [](const std::vector<std::string>& list, const std::string& name) { return std::find(list.begin(), list.end(), name) != list.end(); };
+    std::string shown;
+    if (only.empty() && hidden.empty()) shown = "All categories";
+    else if (hidden.empty()) shown = only.size() == 1 ? "Only " + only.front() : std::format("Only {} categories", only.size());
+    else if (only.empty()) shown = hidden.size() == 1 ? "Hiding " + hidden.front() : std::format("Hiding {} categories", hidden.size());
+    else shown = std::format("Only {}, hiding {}", only.size(), hidden.size());
+    ImGui::SetNextItemWidth(width);
+    if (!ImGui::BeginCombo(id, shown.c_str(), ImGuiComboFlags_HeightLarge)) {
+        if (ImGui::IsItemHovered() && !(only.empty() && hidden.empty())) {
+            std::string tip;
+            if (!only.empty()) {
+                tip = "Showing only:";
+                for (const auto& category : only) tip += "\n  " + category;
+            }
+            if (!hidden.empty()) {
+                tip += std::string(tip.empty() ? "" : "\n") + "Hiding:";
+                for (const auto& category : hidden) tip += "\n  " + category;
+            }
+            ImGui::SetTooltip("%s", tip.c_str());
+        }
+        return false;
+    }
+    bool changed = false;
+    ImGui::PushStyleColor(ImGuiCol_Text, color::muted);
+    ImGui::TextUnformatted("Click a category to show only it,");
+    ImGui::TextUnformatted("again to hide it, again for either.");
+    ImGui::PopStyleColor();
+    if (ImGui::Selectable("Every category", only.empty() && hidden.empty(), ImGuiSelectableFlags_DontClosePopups)) {
+        changed = !only.empty() || !hidden.empty();
+        only.clear();
+        hidden.clear();
+    }
+    ImGui::Separator();
+    for (const auto& [category, mods] : categories) {
+        const bool is_only = in(only, category), is_hidden = in(hidden, category);
+        const auto label = std::format("{}  {}  ({})##{}", is_only ? "+" : is_hidden ? "-" : " ", category, mods, category);
+        ImGui::PushStyleColor(ImGuiCol_Text, is_only ? color::good : is_hidden ? color::danger : color::text);
+        if (ImGui::Selectable(label.c_str(), is_only || is_hidden, ImGuiSelectableFlags_DontClosePopups)) {
+            // Either, then shown only, then hidden, then either again.
+            if (is_only) {
+                std::erase(only, category);
+                hidden.push_back(category);
+            } else if (is_hidden) {
+                std::erase(hidden, category);
+            } else {
+                only.push_back(category);
+            }
+            changed = true;
+        }
+        ImGui::PopStyleColor();
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("%s", is_only ? "Shown only. Click to hide it." : is_hidden ? "Hidden. Click to show it as any other." : "Click to show only this category (and any others shown only).");
+    }
+    ImGui::EndCombo();
+    return changed;
+}
+
 // Placed by hand: a row lays its own icon, text and badges out.
-void mod_icon(ModsPanel& panel, const thunderstore::Package* package, ImVec2 position, float size) {
+void mod_icon(ModsPanel& panel, const thunderstore::Package* package, ImVec2 position, float size,
+    const std::filesystem::path& folder) {
     const ImVec2 end(position.x + size, position.y + size);
     auto* draw = ImGui::GetWindowDrawList();
-    if (const auto id = package ? package_icon(panel, *package) : ImTextureID{})
+    if (const auto id = package ? package_icon(panel, *package) : !folder.empty() ? folder_icon(panel, folder) : ImTextureID{})
         draw->AddImageRounded(id, position, end, ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE, S(4));
     else
         draw->AddRectFilled(position, end, rgba(255, 255, 255, 0.06f), S(4));
@@ -294,6 +389,8 @@ void collect_listing(ModsPanel& panel) {
     if (store.incoming_error.empty()) {
         store.packages = std::move(store.incoming);
         store.loaded = true;
+        panel.categories_by_folder.clear();
+        for (const auto& package : store.packages) panel.categories_by_folder[ts::folder_for(package.full_name)] = package.categories;
         store.error.clear();
     } else {
         store.error = std::move(store.incoming_error);
@@ -317,12 +414,53 @@ const thunderstore::Package* package_for(const Store& store, std::string_view fo
 std::vector<const thunderstore::Package*> updates(const Store& store, const thunderstore::Installed& installed) {
     std::vector<const ts::Package*> result;
     for (const auto& package : store.packages)
-        if (ts::update_available(package, installed)) result.push_back(&package);
+        if (ts::update_available(package, installed))
+            result.push_back(&package);
     return result;
 }
 
 void start_store_install(ModsPanel& panel, std::vector<thunderstore::Package> packages) {
     if (panel.installing || packages.empty()) return;
+    // Each package asked for, with the mods its install brings in (launcher_mods::record_brought_in).
+    std::vector<std::pair<std::string, std::vector<std::string>>> brought;
+    {
+        // A package brings what it needs with it (a mod pack is nothing else), needed mods first.
+        const auto have = installed_versions(panel.list);
+        // The installed folders as Windows tells them apart, ignoring case: one installed by hand or by another
+        // manager may be spelt differently from Thunderstore's name, and is still a mod the player had.
+        const auto folded = [](std::string text) {
+            std::transform(text.begin(), text.end(), text.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            return text;
+        };
+        std::set<std::string> had;
+        std::map<std::string, std::string> version_of;   // folded folder -> its installed version
+        for (const auto& [folder, version] : have) {
+            had.insert(folded(folder));
+            version_of.emplace(folded(folder), version);
+        }
+        // So a dependency installed under another spelling counts as installed (at its version) and is not
+        // downloaded again: each package whose folder is one of those, under Thunderstore's own spelling.
+        auto installed = have;
+        for (const auto& known : panel.store.packages) {
+            const auto folder = ts::folder_for(known.full_name);
+            if (installed.contains(folder)) continue;
+            if (const auto found = version_of.find(folded(folder)); found != version_of.end()) installed.emplace(folder, found->second);
+        }
+        std::vector<thunderstore::Package> expanded;
+        for (const auto& package : packages) {
+            std::vector<std::string> brings;
+            for (auto& needed : thunderstore::with_dependencies(package, panel.store.packages, installed)) {
+                // What it brings in: a dependency that is not installed at all now (one only updated was there before).
+                const auto folder = ts::folder_for(needed.full_name);
+                if (needed.full_name != package.full_name && !had.contains(folded(folder))) brings.push_back(folder);
+                if (std::none_of(expanded.begin(), expanded.end(),
+                        [&](const auto& queued) { return queued.full_name == needed.full_name; }))
+                    expanded.push_back(std::move(needed));
+            }
+            if (!brings.empty()) brought.emplace_back(ts::folder_for(package.full_name), std::move(brings));
+        }
+        packages = std::move(expanded);
+    }
     if (panel.worker.joinable()) panel.worker.join();
     panel.installing = true;
     panel.cancel = false;
@@ -330,8 +468,9 @@ void start_store_install(ModsPanel& panel, std::vector<thunderstore::Package> pa
     panel.message.clear();
     set_activity(panel, "Starting download...");
     const auto root = panel.root;
-    panel.worker = std::thread([&panel, root, packages = std::move(packages)] {
+    panel.worker = std::thread([&panel, root, packages = std::move(packages), brought = std::move(brought)] {
         std::string name, error, note;
+        wait_for_conflict_check(panel);   // (it may be reading the mods these replace)
         std::size_t done = 0;
         // One that fails does not stop the ones after it: each is its own download, and the
         // list ends with what could not be installed. Cancelling does stop the rest.
@@ -345,7 +484,7 @@ void start_store_install(ModsPanel& panel, std::vector<thunderstore::Package> pa
                 log(logging::Level::info, std::format("Mod {} from Thunderstore: {} v{} into Mods\\{}",
                     update ? "updated" : "installed", package.full_name, package.latest().number, name));
                 note = packages.size() > 1
-                    ? std::format("Updated {} mods. Changes apply the next time Skate starts.", done)
+                    ? std::format("Installed or updated {} mods. Changes apply the next time Skate starts.", done)
                     : std::format("{} {} v{}. It loads the next time Skate starts.", update ? "Updated" : "Installed",
                                   package.title(), package.latest().number);
             } catch (const std::exception& failure) {
@@ -355,6 +494,19 @@ void start_store_install(ModsPanel& panel, std::vector<thunderstore::Package> pa
                     break;
                 }
                 failed.push_back(package.title() + ": " + failure.what());
+            }
+        }
+        // A pack that installed remembers what it brought in, so its uninstall can offer exactly those.
+        for (const auto& [pack, brings] : brought) {
+            std::error_code missing;
+            if (!fs::is_directory(root / wide(pack), missing)) continue;
+            std::vector<std::string> present;
+            for (const auto& folder : brings)
+                if (fs::is_directory(root / wide(folder), missing)) present.push_back(folder);
+            try {
+                launcher_mods::record_brought_in(root, pack, present);
+            } catch (const std::exception& failure) {
+                log(logging::Level::warning, "Could not note what " + pack + " brought in: " + failure.what());
             }
         }
         if (error.empty() && !failed.empty()) {
@@ -380,10 +532,10 @@ void start_store_install(ModsPanel& panel, std::vector<thunderstore::Package> pa
     });
 }
 
-ImTextureID package_icon(ModsPanel& panel, const thunderstore::Package& package) {
-    const auto& url = package.latest().icon;
+namespace {
+// The texture for an icon URL (or local_icon_prefix and a path), or empty while the worker loads it.
+ImTextureID icon_texture(Icons& icons, const std::string& url) {
     if (url.empty() || !g_renderer) return {};
-    auto& icons = panel.icons;
     auto& entry = icons.entries[url];
     entry.used = ImGui::GetFrameCount();
     if (entry.id || entry.failed || entry.queued) return entry.id;
@@ -395,6 +547,18 @@ ImTextureID package_icon(ModsPanel& panel, const thunderstore::Package& package)
     if (!icons.worker.joinable()) icons.worker = std::thread([&icons] { icon_worker(icons); });
     icons.wake.notify_one();
     return {};
+}
+} // namespace
+
+ImTextureID package_icon(ModsPanel& panel, const thunderstore::Package& package) {
+    return icon_texture(panel.icons, package.latest().icon);
+}
+
+ImTextureID folder_icon(ModsPanel& panel, const std::filesystem::path& folder) {
+    // A Thunderstore package ships its icon.png beside manifest.json, so a mod installed by hand
+    // or not (yet) on Thunderstore usually has one too.
+    const auto path = utf8((folder / L"icon.png").wstring());
+    return icon_texture(panel.icons, path.empty() ? path : std::string(local_icon_prefix) + path);
 }
 
 void pump_icons(ModsPanel& panel) {
@@ -440,27 +604,32 @@ void browse_page(Launcher& launcher, const Fonts& fonts, ModsPanel& panel, float
     auto& store = panel.store;
     const auto installed = installed_versions(panel.list);
 
-    // ------------------------------------------------ search, category, sort, refresh
     const float top = ImGui::GetCursorPosY();
+    {
+        const auto waiting = store.loaded ? updates(store, installed).size() : 0;
+        const auto have = std::count_if(store.packages.begin(), store.packages.end(),
+            [&](const ts::Package& package) { return installed.contains(ts::folder_for(package.full_name)); });
+        page_banner(fonts, "GET MODS", nullptr,
+            "Mods for ReSkate from Thunderstore. Open one to read about it, or tick several and install them together.",
+            !store.loaded ? (store.loading || store.error.empty() ? "LOADING" : "OFFLINE")
+                : waiting ? std::format("{} {} WAITING", waiting, waiting == 1 ? "UPDATE" : "UPDATES")
+                          : std::format("{} INSTALLED", have),
+            !store.loaded ? (store.loading || store.error.empty() ? color::blue : color::danger) : waiting ? color::blue : color::good,
+            !store.loaded ? (store.loading || store.error.empty() ? "Reading Thunderstore..." : "Thunderstore could not be reached")
+                          : std::format("{} mods on Thunderstore", count_text(store.packages.size())));
+    }
+
+    // ------------------------------------------------ search, category, sort, refresh
     const float combo = S(190), refresh = S(110);
     ImGui::SetNextItemWidth(std::max(S(140),
         ImGui::GetContentRegionAvail().x - (combo + S(10)) * 2 - refresh - S(10)));
-    ImGui::InputTextWithHint("##search", "Search mods", store.search.data(), store.search.size());
+    // Ctrl+F jumps to the search, as it does in a browser.
+    if (!installing && ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_F, false) &&
+        !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId))
+        ImGui::SetKeyboardFocusHere();
+    ImGui::InputTextWithHint("##search", "Search mods  (Ctrl+F)", store.search.data(), store.search.size());
     ImGui::SameLine();
-    std::vector<std::string> categories;
-    for (const auto& package : store.packages) {
-        if (nsfw(package)) continue;   // (and no category that only they have)
-        for (const auto& category : package.categories)
-            if (std::find(categories.begin(), categories.end(), category) == categories.end()) categories.push_back(category);
-    }
-    std::sort(categories.begin(), categories.end());
-    ImGui::SetNextItemWidth(combo);
-    if (ImGui::BeginCombo("##category", store.category.empty() ? "All categories" : store.category.c_str())) {
-        if (ImGui::Selectable("All categories", store.category.empty())) store.category.clear();
-        for (const auto& category : categories)
-            if (ImGui::Selectable(category.c_str(), store.category == category)) store.category = category;
-        ImGui::EndCombo();
-    }
+    category_filter(launcher, store, combo);
     ImGui::SameLine();
     ImGui::SetNextItemWidth(combo);
     if (ImGui::BeginCombo("##sort", sort_names[static_cast<std::size_t>(std::clamp(store.sort, 0, 4))])) {
@@ -476,6 +645,10 @@ void browse_page(Launcher& launcher, const Fonts& fonts, ModsPanel& panel, float
     // ------------------------------------------------ what is ticked
     if (!store.picked.empty()) {
         ImGui::Spacing();
+        const ImVec2 bar = ImGui::GetCursorScreenPos();
+        const float pad = S(10), bar_tall = ImGui::GetFrameHeight() + pad * 2;
+        card(ImGui::GetWindowDrawList(), bar, ImVec2(ImGui::GetContentRegionAvail().x, bar_tall), true);
+        ImGui::SetCursorScreenPos(ImVec2(bar.x + S(20), bar.y + pad));
         ImGui::AlignTextToFramePadding();
         // What installing them all downloads: each one's newest version.
         std::uint64_t bytes{};
@@ -488,7 +661,7 @@ void browse_page(Launcher& launcher, const Fonts& fonts, ModsPanel& panel, float
         ImGui::TextUnformatted(chosen_text.c_str());
         ImGui::SameLine();
         const float action = S(190);
-        ImGui::SetCursorPosX(ImGui::GetContentRegionMax().x - action - S(90) - S(8));
+        ImGui::SetCursorPosX(ImGui::GetContentRegionMax().x - action - S(90) - S(8) - pad);
         if (ImGui::Button("Clear", ImVec2(S(90), 0))) store.picked.clear();
         ImGui::SameLine();
         ImGui::BeginDisabled(installing);
@@ -504,13 +677,15 @@ void browse_page(Launcher& launcher, const Fonts& fonts, ModsPanel& panel, float
         }
         pop_primary_button();
         ImGui::EndDisabled();
+        ImGui::SetCursorScreenPos(ImVec2(bar.x, bar.y + bar_tall));
+        ImGui::Dummy(ImVec2(0, 0));
     }
     ImGui::Spacing();
     const float body = std::max(S(120), height - (ImGui::GetCursorPosY() - top));
-    const auto packages = visible_packages(store, installed);
+    const auto packages = visible_packages(store, installed, {launcher.settings().mod_categories_only, launcher.settings().mod_categories_hidden});
 
     // ------------------------------------------------ the list
-    ImGui::BeginChild("##store_list", ImVec2(0, body), ImGuiChildFlags_Borders | ImGuiChildFlags_NavFlattened);
+    ImGui::BeginChild("##store_list", ImVec2(0, body), ImGuiChildFlags_NavFlattened);
     const auto note = [](const char* text) {
         ImGui::Spacing();
         ImGui::Indent(S(14));
@@ -538,9 +713,10 @@ void browse_page(Launcher& launcher, const Fonts& fonts, ModsPanel& panel, float
         note("No mods match your search.");
     }
 
-    const float row = S(78);
+    const float row = S(80) + row_gap();
     ImGui::BeginDisabled(installing);
-    virtual_rows(static_cast<int>(packages.size()), [&](int) { return row; }, [&](int index, float tall) {
+    virtual_rows(static_cast<int>(packages.size()), [&](int) { return row; }, [&](int index, float slot) {
+        const float tall = slot - row_gap();
         const auto& package = *packages[static_cast<std::size_t>(index)];
         const auto& version = package.latest();
         const auto found = installed.find(ts::folder_for(package.full_name));
