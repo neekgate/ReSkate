@@ -13,6 +13,11 @@ jobs:
       # Stamped as ReSkate 2.1.3, the release this branch is built on, and marked as a modified
       # build (Random Stand-ins) so its logs and crash reports are never taken for official ReSkate.
       # A failing step also posts its error lines as annotations, readable without the full log.
+      # cmake/Runtime.cmake looks for an import library in cargo's unpacked registry while it
+      # configures, which a fresh runner does not have yet: fetch the Spotify helper's crates first.
+      - name: Fetch Rust crates
+        working-directory: SpotifyHelper
+        run: cargo fetch --locked
       - name: Configure
         run: |
           cmake --preset vs2022-x64 "-DDINGOSDK_VERSION=2.1.3" "-DDINGOSDK_MOD_ID=Random_Stand_Ins" "-DDINGOSDK_MOD_VERSION=1.1.0" 2>&1 | Tee-Object -FilePath configure.log
