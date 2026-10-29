@@ -21,7 +21,7 @@ reskate.outfit.stand_ins(nil)
 | `pick` | `"first"` | `"first"`: the candidates in order; `"random"`: shuffled per missing item |
 | `parts` | `"both"` | which recipes it covers: `"skater"`, `"board"` or `"both"`; the others keep the defaults |
 | `items` | every installed item | the candidates, at most 4096 names; only those that fit the slot are taken |
-| `exclude` | none | never these: whole names, or a name's start and `*`, any case; at most 4096 |
+| `exclude` | none | never these: names, `*` for any run of characters (`*GhostSkater*`), any case; at most 4096 |
 | `seed` | 0 | 0 to 4294967295; a new seed gives new random picks |
 
 It returns `true`, or `false` and why not: another plugin holds the stand-ins, or it was asked
@@ -55,7 +55,7 @@ more than 4 times in a second (each change dresses every player shown again).
 - `Extension/Plugins/plugin_api_world.cpp`: the Lua call; `plugin_game_runtime.cpp`: the policy
   set and cleared.
 - Tests: `cosmetic_layout_regression` (catalog walk, first and random, paid items never taken)
-  with the exclude list and the store, and `plugins_choose_stand_ins` (the calls,
+  with the exclude list and its stars, and the store, and `plugins_choose_stand_ins` (the calls,
   their checks, and the permission).
 
 Not verified in the game: the catalog walk over the real cosmetics manager and how random

@@ -2047,8 +2047,8 @@ struct WorldApi {
     }
     // stand_ins({pick = "first" | "random", parts = "both" | "skater" | "board", items = {...}, exclude = {...}, seed = n}):
     // what this PC shows in place of other players' items it does not have (their cosmetics mods).
-    // No items: every installed item that fits the slot. exclude: never these (names, or a name's start
-    // and "*"), though a player who really wears one still shows it. Never a paid store item. stand_ins(nil): the
+    // No items: every installed item that fits the slot. exclude: never these (names, "*" for any run
+    // of characters), though a player who really wears one still shows it. Never a paid store item. stand_ins(nil): the
     // game's defaults again. Only what you see changes. true, or false and why not.
     static int outfit_stand_ins(lua_State* L) {
         auto& plugin = plugin_of(L);
@@ -2084,7 +2084,7 @@ struct WorldApi {
                 s.seed = static_cast<std::uint32_t>(seed);
             }
             lua_pop(L, 1);
-            // A list of item names (exclude: or a name's start followed by "*").
+            // A list of item names (exclude: with "*" for any run of characters).
             const auto names = [&](const char* field, std::vector<std::string>& out) {
                 lua_getfield(L, 1, field);
                 if (!lua_isnil(L, -1)) {

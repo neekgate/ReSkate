@@ -22,8 +22,9 @@ struct Policy {
     Parts parts{Parts::both};
     // Empty: every installed item that fits the slot. Paid store items never stand in either way.
     std::vector<std::string> items;
-    // Items never to stand in: whole names, or a name's start followed by "*". Any case (set()
-    // keeps them lower case). Only the candidates: an item a player really wears still shows.
+    // Items never to stand in: names, in which "*" is any run of characters ("Own_Costume*",
+    // "*GhostSkater*"). Any case (set() keeps them lower case). Only the candidates: an item a player
+    // really wears still shows.
     std::vector<std::string> exclude;
     std::uint32_t seed{};
 };
@@ -43,17 +44,32 @@ inline std::string lower(std::string_view text) {
         if (c >= 'A' && c <= 'Z') c = static_cast<char>(c + ('a' - 'A'));
     return out;
 }
+// Whether `name` fits `rule`, in which "*" is any run of characters, none included. Both lower case.
+inline bool fits(std::string_view name, std::string_view rule) {
+    std::size_t n = 0, r = 0, star = std::string_view::npos, from = 0;
+    while (n < name.size()) {
+        if (r < rule.size() && rule[r] == '*') {
+            star = r++; // the star takes nothing yet; it takes one more each time what follows fails
+            from = n;
+        } else if (r < rule.size() && rule[r] == name[n]) {
+            ++r;
+            ++n;
+        } else if (star != std::string_view::npos) {
+            r = star + 1;
+            n = ++from;
+        } else {
+            return false;
+        }
+    }
+    while (r < rule.size() && rule[r] == '*') ++r;
+    return r == rule.size();
+}
 // Whether `asset` is in the policy's exclude list (which set() keeps lower case).
 inline bool excluded(const Policy &policy, std::string_view asset) {
     if (policy.exclude.empty() || asset.empty()) return false;
     const auto name = lower(asset);
-    for (const auto &rule : policy.exclude) {
-        if (!rule.empty() && rule.back() == '*') {
-            if (name.starts_with(std::string_view(rule).substr(0, rule.size() - 1))) return true;
-        } else if (name == rule) {
-            return true;
-        }
-    }
+    for (const auto &rule : policy.exclude)
+        if (fits(name, rule)) return true;
     return false;
 }
 

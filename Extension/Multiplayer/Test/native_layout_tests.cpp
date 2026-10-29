@@ -710,12 +710,20 @@ void cosmetic_layout_regression() {
         std::sort(sorted.begin(), sorted.end());
         check(shuffled == sorted, "\"random\" must keep every candidate once");
         check(stand_ins::order(first, many, 7, 11, "Unknown") == many, "\"first\" must keep the order given");
-        // Excluded items: whole names or a start and "*", any case, taken out after the shuffle.
+        // Excluded items: names with "*" for any run of characters, any case, taken out after the shuffle.
         stand_ins::Policy blocked;
         blocked.exclude = {"own_hoodie", "item1*"}; // set() keeps them lower case
         check(stand_ins::excluded(blocked, "Own_Hoodie") && stand_ins::excluded(blocked, "ITEM12") &&
                   !stand_ins::excluded(blocked, "Own_Shirt") && !stand_ins::excluded(blocked, "Item2") && !stand_ins::excluded(blocked, ""),
               "An exclude list matches whole names and starts, in any case");
+        const auto star = [](std::string_view n, std::string_view r) { return stand_ins::fits(n, r); };
+        check(star("own_costume_gen_ghostskater_00001", "*costume_gen_ghostskater_00001") &&
+                  star("costume_gen_ghostskater_00001", "*costume_gen_ghostskater_00001") &&
+                  star("own_costume_gen_ghostskater_00001", "*ghostskater*") && star("abcabd", "*abd") &&
+                  star("own_hat", "own*hat") && star("own_hat", "own_hat*") && star("x", "*") &&
+                  !star("own_costume_gen_ghostskater_00002", "*ghostskater_00001") && !star("own_hat", "own*cap") &&
+                  !star("own_hat_", "own_hat") && !star("hat", "*hat*x"),
+              "A star stands for any run of characters, anywhere in a rule");
         blocked.pick = stand_ins::Pick::random;
         for (std::uint32_t seed = 0; seed < 64; ++seed) {
             blocked.seed = random.seed = seed;
