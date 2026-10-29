@@ -27,11 +27,6 @@ reskate.outfit.stand_ins(nil)
 It returns `true`, or `false` and why not: another plugin holds the stand-ins, or it was asked
 more than 4 times in a second (each change dresses every player shown again).
 
-`reskate.outfit.stand_ins_shown()` lists the items that stood in recently (at most 24, each
-once, newest first) as `{item, title, replacing}`: the item, its title as the game shows it, and
-the other player's item it stood in for. It is empty unless this plugin holds the stand-ins; an
-item excluded since is left out. A plugin can offer to block what the player has just seen.
-
 ## What it does and does not do
 
 - Only what this PC shows of other players changes. Nothing is sent, saved, owned or unlocked;
@@ -60,7 +55,7 @@ item excluded since is left out. A plugin can offer to block what the player has
 - `Extension/Plugins/plugin_api_world.cpp`: the Lua call; `plugin_game_runtime.cpp`: the policy
   set and cleared.
 - Tests: `cosmetic_layout_regression` (catalog walk, first and random, paid items never taken)
-  with the exclude list, the store and the shown list, and `plugins_choose_stand_ins` (the calls,
+  with the exclude list and the store, and `plugins_choose_stand_ins` (the calls,
   their checks, and the permission).
 
 Not verified in the game: the catalog walk over the real cosmetics manager and how random

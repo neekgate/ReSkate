@@ -725,8 +725,7 @@ void cosmetic_layout_regression() {
             std::erase_if(kept, [&](const std::string &c) { return stand_ins::excluded(blocked, c); });
             check(full == kept && full.size() == 39, "Blocking items must not move the others' order");
         }
-        // The store: one owner at a time, the exclude list kept lower case, the recent stand-ins listed
-        // newest first and without what was excluded since.
+        // The store: one owner at a time, the exclude list kept lower case, cleared only by its owner.
         stand_ins::Policy mine;
         mine.owner = "mine";
         const auto before = stand_ins::generation();
@@ -734,23 +733,13 @@ void cosmetic_layout_regression() {
         stand_ins::Policy theirs;
         theirs.owner = "theirs";
         check(!stand_ins::set(theirs).empty(), "Another plugin's is refused while one holds it");
-        stand_ins::note_shown("Own_Hoodie", "Mod_Jacket");
-        stand_ins::note_shown("Own_Cap", "Mod_Hat");
-        stand_ins::note_shown("Own_Hoodie", "Mod_Jacket2");
-        auto listed = stand_ins::shown();
-        check(listed.size() == 2 && listed[0].item == "Own_Hoodie" && listed[0].replacing == "Mod_Jacket2" && listed[1].item == "Own_Cap",
-              "Recent stand-ins are listed once each, newest first");
         mine.exclude = {"OWN_HOODIE"};
         check(stand_ins::set(mine).empty() && stand_ins::current()->exclude == std::vector<std::string>{"own_hoodie"},
               "The exclude list is kept lower case");
-        listed = stand_ins::shown();
-        check(listed.size() == 1 && listed[0].item == "Own_Cap", "An excluded item is no longer listed as shown");
         stand_ins::clear("theirs");
         check(stand_ins::current() != nullptr, "Only the owner clears it");
         stand_ins::clear("mine");
-        check(!stand_ins::current() && stand_ins::shown().empty(), "Cleared, the defaults are back and nothing is listed");
-        stand_ins::note_shown("Own_Cap", "Mod_Hat");
-        check(stand_ins::shown().empty(), "Nothing is listed while no plugin's stand-ins are set");
+        check(!stand_ins::current(), "Cleared, the defaults are back");
         stand_ins::Policy board_only;
         board_only.parts = stand_ins::Parts::board;
         check(!stand_ins::covers(board_only, false) && stand_ins::covers(board_only, true) && stand_ins::covers(first, false),

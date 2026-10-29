@@ -2112,25 +2112,6 @@ struct WorldApi {
         if (!within(plugin.services_.now_ms(), plugin.control_second_, plugin.controls_, 4)) return result(L, "asked more than 4 times in a second");
         return result(L, game(plugin).outfit_stand_ins(plugin.id(), std::move(wanted)));
     }
-    // stand_ins_shown(): the items that stood in recently, newest first, as {item, title, replacing}
-    // (replacing: the other player's item it stood in for). Empty unless this plugin's stand-ins are set.
-    static int outfit_stand_ins_shown(lua_State* L) {
-        auto& plugin = plugin_of(L);
-        need(L, plugin, "outfit.stand_ins", "reskate.outfit.stand_ins_shown");
-        const auto shown = game(plugin).outfit_stand_ins_shown(plugin.id());
-        lua_createtable(L, static_cast<int>(shown.size()), 0);
-        for (std::size_t i = 0; i < shown.size(); ++i) {
-            lua_createtable(L, 0, 3);
-            lua_pushlstring(L, shown[i].item.data(), shown[i].item.size());
-            lua_setfield(L, -2, "item");
-            lua_pushlstring(L, shown[i].title.data(), shown[i].title.size());
-            lua_setfield(L, -2, "title");
-            lua_pushlstring(L, shown[i].replacing.data(), shown[i].replacing.size());
-            lua_setfield(L, -2, "replacing");
-            lua_rawseti(L, -2, static_cast<int>(i + 1));
-        }
-        return 1;
-    }
     static int outfit_status(lua_State* L) {
         auto& plugin = plugin_of(L);
         need(L, plugin, "outfit", "reskate.outfit.status");
@@ -3168,7 +3149,7 @@ void WorldApi::install(Plugin& plugin, lua_State* L) {
                                    {"sample", animation_sample}, {"joints", animation_joints}, {"trim", animation_trim}, {"edit", animation_edit},
                                    {"save", animation_save}, {"game_clips", animation_game_clips},
                                    {"mirror", animation_mirror}});
-    add_functions(L, "outfit", {{"set", outfit_set}, {"clear", outfit_clear}, {"find", outfit_find}, {"slots", outfit_slots}, {"status", outfit_status}, {"stand_ins", outfit_stand_ins}, {"stand_ins_shown", outfit_stand_ins_shown}});
+    add_functions(L, "outfit", {{"set", outfit_set}, {"clear", outfit_clear}, {"find", outfit_find}, {"slots", outfit_slots}, {"status", outfit_status}, {"stand_ins", outfit_stand_ins}});
     add_functions(L, "audio", {{"play", audio_play}, {"set", audio_set}, {"stop", audio_stop}, {"playing", audio_playing}});
     add_functions(L, "server", {{"kick", server_kick}, {"say", server_say}, {"tell", server_tell}, {"move", server_move},
                                 {"ban", server_ban}, {"unban", server_unban}, {"parks", server_parks}, {"park_spawn", server_park_spawn},

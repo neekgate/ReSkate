@@ -621,16 +621,6 @@ public:
         policy.seed = wanted->seed;
         return multiplayer::stand_ins::set(std::move(policy));
     }
-    std::vector<StandInShown> outfit_stand_ins_shown(std::string_view plugin) override {
-        const auto policy = multiplayer::stand_ins::current();
-        if (!policy || policy->owner != plugin) return {};
-        std::vector<StandInShown> out;
-        for (auto& s : multiplayer::stand_ins::shown()) {
-            auto title = worn_items::item_title(s.item);
-            out.push_back({std::move(s.item), std::move(title), std::move(s.replacing)});
-        }
-        return out;
-    }
     std::uint64_t effect_create(std::string_view plugin, const EffectRequest& request) override { return effects::create(plugin, request); }
     void effect_move(std::string_view plugin, std::uint64_t id, const EffectMatrix& transform) override { effects::move(plugin, id, transform); }
     void effect_stop(std::string_view plugin, std::uint64_t id) override { effects::stop(plugin, id); }

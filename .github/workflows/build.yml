@@ -20,7 +20,7 @@ jobs:
         run: cargo fetch --locked
       - name: Configure
         run: |
-          cmake --preset vs2022-x64 "-DDINGOSDK_VERSION=2.1.3" "-DDINGOSDK_MOD_ID=Random_Stand_Ins" "-DDINGOSDK_MOD_VERSION=1.1.0" 2>&1 | Tee-Object -FilePath configure.log
+          cmake --preset vs2022-x64 "-DDINGOSDK_VERSION=2.1.3" "-DDINGOSDK_MOD_ID=Random_Stand_Ins" "-DDINGOSDK_MOD_VERSION=1.2.0" 2>&1 | Tee-Object -FilePath configure.log
           if ($LASTEXITCODE -ne 0) {
             Get-Content configure.log | Select-String -Pattern 'error|CMake Error|not found|could not' -CaseSensitive:$false |
               Select-Object -First 30 | ForEach-Object { Write-Output "::error::$($_.Line.Trim())" }

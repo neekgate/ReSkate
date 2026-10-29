@@ -320,10 +320,6 @@ struct FakeGame final : Game {
         for (const auto& rule : wanted->exclude) calls.push_back(std::format("stand-ins {} exclude {}", plugin, rule));
         return {};
     }
-    std::vector<StandInShown> outfit_stand_ins_shown(std::string_view plugin) override {
-        if (plugin != "dresser") return {};
-        return {{"Own_TopShirt_Gen_Hoodie_00003", "Grey Hoodie", "ModPack_Jacket"}, {"Own_Hat_Gen_Beanie_00001", "Beanie", "ModPack_Cap"}};
-    }
     std::string camera_cycle(std::string_view plugin, CycleCamera place) override {
         calls.push_back(std::format("cycle {} {}", plugin, place == CycleCamera::out ? "out" : place == CycleCamera::ready ? "ready" : "active"));
         return {};
@@ -2524,14 +2520,9 @@ void plugins_choose_stand_ins() {
         assert(reskate.outfit.stand_ins({pick = "random", exclude = {"Own_Costume*", "Own_TopShirt_Gen_Hoodie_00003"}}))
         assert(not pcall(reskate.outfit.stand_ins, {exclude = {"*"}}), "excluding everything is not a name")
         assert(not pcall(reskate.outfit.stand_ins, {exclude = "Own_Hat"}), "exclude is a list")
-        local shown = reskate.outfit.stand_ins_shown()
-        assert(#shown == 2 and shown[1].item == "Own_TopShirt_Gen_Hoodie_00003" and shown[1].title == "Grey Hoodie" and
-            shown[1].replacing == "ModPack_Jacket" and shown[2].title == "Beanie", "the recent stand-ins")
         reskate.log("dressed")
     )", R"("outfit.stand_ins")"), script("plain", R"(
         local ok, err = pcall(reskate.outfit.stand_ins, {pick = "random"})
-        assert(not ok and err:find("needs the \"outfit.stand_ins\" permission"), err)
-        ok, err = pcall(reskate.outfit.stand_ins_shown)
         assert(not ok and err:find("needs the \"outfit.stand_ins\" permission"), err)
         reskate.log("refused")
     )", R"("outfit")")});

@@ -27,11 +27,6 @@ struct Policy {
     std::vector<std::string> exclude;
     std::uint32_t seed{};
 };
-// A stand-in shown recently: the item put in, and the peer's item it stood in for.
-struct Shown {
-    std::string item, replacing;
-};
-inline constexpr std::size_t max_shown = 24;
 
 // The policy in force, or null for the game's defaults. Any thread.
 std::shared_ptr<const Policy> current();
@@ -41,10 +36,6 @@ std::uint64_t generation();
 std::string set(Policy policy);
 // Puts the defaults back, if `owner` holds the policy.
 void clear(std::string_view owner);
-// Remembers that `item` stood in for `replacing` (client thread, as players are dressed), and the
-// last max_shown different items, newest first, for the plugin holding the policy to list.
-void note_shown(std::string item, std::string replacing);
-std::vector<Shown> shown();
 
 inline std::string lower(std::string_view text) {
     std::string out(text);

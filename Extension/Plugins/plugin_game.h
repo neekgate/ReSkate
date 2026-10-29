@@ -884,12 +884,6 @@ public:
         std::uint32_t seed{};
     };
     virtual std::string outfit_stand_ins(std::string_view /*plugin*/, std::optional<StandIns>) { return unavailable; }
-    // The items that stood in recently, newest first: the item, its title as the game shows it,
-    // and the other player's item it stood in for. Empty unless `plugin` holds the stand-ins.
-    struct StandInShown {
-        std::string item, title, replacing;
-    };
-    virtual std::vector<StandInShown> outfit_stand_ins_shown(std::string_view /*plugin*/) { return {}; }
     virtual std::vector<WornItem> board_parts() { return {}; }
     // An item's title as the game shows it (its catalog's, the one an item grid showed, or its key
     // made readable).

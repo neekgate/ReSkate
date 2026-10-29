@@ -159,7 +159,6 @@ void apply_cosmetic_recipe(std::uintptr_t base, std::uintptr_t entity, std::uint
                 return candidates;
             },
             reserved);
-        for (const auto &[missing, replacement] : swaps) stand_ins::note_shown(replacement, missing);
     } else {
         swaps = memory.substitute_missing(resource, usable, default_cosmetic_items, reserved);
     }
