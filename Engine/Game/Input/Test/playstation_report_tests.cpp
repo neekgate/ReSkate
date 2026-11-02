@@ -132,6 +132,47 @@ int main() {
         check(controller_combo_label(0x300 | 0x1000, ControllerStyle::dualshock4) == "L1 + R1 + Cross", "PlayStation labels");
         check(controller_combo_label(0x20, ControllerStyle::dualsense) == "Create" &&
             controller_combo_label(0x20, ControllerStyle::dualshock4) == "Share", "Back button names per pad");
+        // Buttons a plugin keeps from the game (reskate.input.game_buttons) let go in native reports too.
+        {
+            // DS4 USB: hat right, Cross, L1 + Options. D-pad left and right hidden: the hat lets go, the rest stays.
+            std::array<std::uint8_t, 64> r{0x01, 128, 128, 128, 128, 0x22, 0x21, 0x00, 0, 0};
+            check(hide_playstation_buttons(PlayStationPad::dualshock4, false, r.data(), r.size(), 0x0004 | 0x0008), "Hidden D-pad right is let go");
+            auto read = parse_playstation_report(PlayStationPad::dualshock4, false, r.data(), r.size());
+            check(read && read->buttons == (0x1000 | 0x100 | 0x10), "Only the hidden direction goes; Cross, L1 and Options stay");
+            check(!hide_playstation_buttons(PlayStationPad::dualshock4, false, r.data(), r.size(), 0x0004 | 0x0008), "Nothing to hide: no change");
+            // A diagonal keeps its other direction: down-left with left hidden is down.
+            r[5] = 0x05;
+            check(hide_playstation_buttons(PlayStationPad::dualshock4, false, r.data(), r.size(), 0x0004), "Diagonal changed");
+            read = parse_playstation_report(PlayStationPad::dualshock4, false, r.data(), r.size());
+            check(read && (read->buttons & 0x0f) == 0x2, "Down-left with left hidden reads as down");
+            // Face and shoulder buttons: Cross (A), L1 (LB), Options (Start), Share (Back).
+            r[5] = 0x28; r[6] = 0x31;
+            check(hide_playstation_buttons(PlayStationPad::dualshock4, false, r.data(), r.size(), 0x1000 | 0x0100 | 0x0010 | 0x0020), "Buttons hidden");
+            read = parse_playstation_report(PlayStationPad::dualshock4, false, r.data(), r.size());
+            check(read && read->buttons == 0, "Cross, L1, Options and Share let go");
+            // Nothing hidden, or a report it does not read: left alone.
+            r[5] = 0x26;
+            const auto before = r;
+            check(!hide_playstation_buttons(PlayStationPad::dualshock4, false, r.data(), r.size(), 0), "Nothing hidden: no change");
+            check(!hide_playstation_buttons(PlayStationPad::none, false, r.data(), r.size(), 0x0004), "Unknown pad: no change");
+            check(r == before, "Reports left alone are unchanged");
+        }
+        {
+            // DualSense Bluetooth full: hat left with Square; the CRC is written again for the change.
+            std::array<std::uint8_t, 78> r{0x31, 0x10, 128, 128, 128, 128, 0, 0, 0, 0x16, 0x00};
+            check(hide_playstation_buttons(PlayStationPad::dualsense, true, r.data(), r.size(), 0x0004 | 0x0008), "DualSense left hidden");
+            const auto read = parse_playstation_report(PlayStationPad::dualsense, true, r.data(), r.size());
+            check(read && read->buttons == 0x4000, "Square stays, the hat lets go");
+            check(stored_crc(r.data()) == bluetooth_crc(r.data(), 74), "Its CRC is right for the change");
+        }
+        {
+            // DualShock 4 Bluetooth full (0x11), padded to 547: hat up-right, right hidden, up stays.
+            std::array<std::uint8_t, 547> r{0x11, 0xc0, 0x00, 128, 128, 128, 128, 0x01, 0x00, 0, 0, 0};
+            check(hide_playstation_buttons(PlayStationPad::dualshock4, true, r.data(), r.size(), 0x0008), "DS4 Bluetooth right hidden");
+            const auto read = parse_playstation_report(PlayStationPad::dualshock4, true, r.data(), r.size());
+            check(read && read->buttons == 0x1, "Up-right with right hidden reads as up");
+            check(stored_crc(r.data()) == bluetooth_crc(r.data(), 74), "Its CRC is right for the change");
+        }
         std::puts("PlayStation report checks passed."); return 0;
     } catch (const std::exception& e) { std::fprintf(stderr, "%s\n", e.what()); return 1; }
 }
