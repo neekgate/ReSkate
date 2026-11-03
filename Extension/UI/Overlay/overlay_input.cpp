@@ -618,9 +618,35 @@ bool read_mouse_look(MouseLook& output) noexcept {
     const long x = s.look_mouse_x.exchange(0), y = s.look_mouse_y.exchange(0);
     const long wheel_raw = s.look_wheel_raw.exchange(0), wheel_message = s.look_wheel_message.exchange(0);
     const HWND window = s.window.load();
-    if (!window || s.stop.load() || s.failed.load() || interactive_visible(s) || !game_window_foreground(window)) return false;
-    output.x = x;
-    output.y = y;
+    // The Windows cursor's own movement, for when no raw packets come: the game registers the raw mouse
+    // only in some of its states, and a plugin's mouse look did nothing until a menu was opened and closed
+    // (which registers it again). Kept in the window's middle, so it never stops at an edge.
+    thread_local POINT previous{};
+    thread_local ULONGLONG previous_at = 0;
+    if (!window || s.stop.load() || s.failed.load() || interactive_visible(s) || !game_window_foreground(window)) {
+        previous_at = 0;
+        return false;
+    }
+    const auto now = GetTickCount64();
+    const bool raw_recent = now < s.raw_mouse_time.load() + 500;
+    POINT current{};
+    if (!raw_recent && GetCursorPos(&current)) {
+        if (previous_at && now - previous_at < 250) {
+            output.x = current.x - previous.x;
+            output.y = current.y - previous.y;
+        }
+        previous = current;
+        previous_at = now;
+        RECT bounds{};
+        if (GetClientRect(window, &bounds)) {
+            POINT center{(bounds.left + bounds.right) / 2, (bounds.top + bounds.bottom) / 2};
+            if (ClientToScreen(window, &center) && SetCursorPos(center.x, center.y)) previous = center;
+        }
+    } else {
+        previous_at = 0;
+        output.x = x;
+        output.y = y;
+    }
     // The same notch can arrive both ways: the raw count where raw packets come in, else the message's.
     output.wheel = raw_mouse_live(s) && wheel_raw != 0 ? wheel_raw : wheel_message;
     return true;
