@@ -637,6 +637,8 @@ bool read_mouse_look(MouseLook& output) noexcept {
         }
         previous = current;
         previous_at = now;
+        s.cursor_look_until.store(now + 300);
+        SetCursor(nullptr); // (the game's pointer out of sight while it is kept in the middle)
         RECT bounds{};
         if (GetClientRect(window, &bounds)) {
             POINT center{(bounds.left + bounds.right) / 2, (bounds.top + bounds.bottom) / 2};
