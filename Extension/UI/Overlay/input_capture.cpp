@@ -761,6 +761,12 @@ BOOL WINAPI captured_release_capture() {
 }
 HCURSOR WINAPI captured_cursor(HCURSOR cursor) {
     if (block_polled_input()) return GetCursor();
+    // A plugin's mouse look on the Windows cursor (overlay_input.cpp, read_mouse_look): the game's pointer
+    // stays hidden; the game is told it was set.
+    if (!overlay_input_access && GetTickCount64() < state().cursor_look_until.load()) {
+        original<HCURSOR(WINAPI*)(HCURSOR)>(input_hooks().cursor)(nullptr);
+        return cursor;
+    }
     return original<HCURSOR(WINAPI*)(HCURSOR)>(input_hooks().cursor)(cursor);
 }
 int WINAPI captured_show_cursor(BOOL show) {
