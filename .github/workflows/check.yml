@@ -1,0 +1,29 @@
+name: Check stand-ins-per-item (Windows)
+on:
+  push:
+jobs:
+  build:
+    runs-on: windows-2022
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch Rust crates
+        working-directory: SpotifyHelper
+        run: cargo fetch --locked
+      - name: Configure
+        run: |
+          cmake --preset vs2022-x64 "-DDINGOSDK_BUILD_MULTIPLAYER_TESTS=ON" "-DDINGOSDK_BUILD_PLUGIN_TESTS=ON" 2>&1 | Tee-Object -FilePath configure.log
+          if ($LASTEXITCODE -ne 0) { Get-Content configure.log -Tail 30 | ForEach-Object { Write-Output "::error::$($_.Trim())" }; exit 1 }
+      - name: Build ReSkate.dll and the multiplayer tests
+        run: |
+          cmake --build build/vs2022-x64 --config Release --parallel 4 --target dingosdk_runtime dingosdk_multiplayer_mesh_tests dingosdk_multiplayer_native_tests 2>&1 | Tee-Object -FilePath build.log
+          if ($LASTEXITCODE -ne 0) {
+            Get-Content build.log | Select-String -Pattern ': (fatal )?error|error:|warning C' | Select-Object -First 40 | ForEach-Object { Write-Output "::error::$($_.Line.Trim())" }
+            exit 1
+          }
+      - name: Run them
+        run: |
+          ctest --test-dir build/vs2022-x64 -C Release -R "multiplayer_mesh|multiplayer_native" --output-on-failure 2>&1 | Tee-Object -FilePath test.log
+          if ($LASTEXITCODE -ne 0) { Get-Content test.log -Tail 40 | ForEach-Object { Write-Output "::error::$($_.Trim())" }; exit 1 }
