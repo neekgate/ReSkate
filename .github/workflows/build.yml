@@ -39,6 +39,21 @@ jobs:
           git ls-files | ForEach-Object { if (-not $changed[$_] -and (Test-Path -LiteralPath $_)) { (Get-Item -LiteralPath $_).LastWriteTime = $past } }
           Write-Output "Cached build from $old; $($changed.Count) file(s) changed since."
 
+      # The screen look's shader is compiled by the game's D3DCompile at run time: compiled here too, so
+      # a mistake in it fails the build instead of the look in the game.
+      - name: Compile the screen look's shader
+        run: |
+          $fxc = Get-ChildItem 'C:\Program Files (x86)\Windows Kits\10\bin' -Recurse -Filter fxc.exe | Where-Object { $_.FullName -match '\\x64\\' } | Select-Object -Last 1
+          if (-not $fxc) { Write-Output '::error::fxc.exe not found'; exit 1 }
+          foreach ($entry in @(@('vs_main', 'vs_5_0'), @('ps_main', 'ps_5_0'), @('ps_adapt', 'ps_5_0'))) {
+            & $fxc.FullName /nologo /E $entry[0] /T $entry[1] /Fo "$env:RUNNER_TEMP\look.cso" Extension/UI/Overlay/screen_look.hlsl *>&1 | Tee-Object -FilePath fxc.log
+            if ($LASTEXITCODE -ne 0) {
+              $tail = (Get-Content fxc.log | Select-Object -Last 20) -join '%0A'
+              Write-Output "::error::$tail"
+              exit 1
+            }
+          }
+
       - name: Configure
         run: |
           # -DDINGOSDK_CARGO=OFF: skip the Rust Spotify device (not needed for these builds)
