@@ -7,6 +7,7 @@
 #include "Engine/Game/Build/20260929/engine.h"
 #include "Engine/Game/Build/20260929/native_cosmetics.h"
 #include "Engine/Vfs/content_catalogs.h"
+#include "Extension/Customization/item_browser_order.h"
 #include "Extension/Customization/local_customization_runtime.h"
 #include "Extension/Customization/local_player_card_runtime.h"
 #include <Windows.h>
@@ -111,6 +112,24 @@ std::vector<std::string> stand_ins_for(const Memory &memory, std::uintptr_t base
     out.insert(out.end(), defaults.begin(), defaults.end());
     return out;
 }
+static_assert(item_browser::picker_count == stand_ins::slot_kinds.size(), "stand_ins::slot_kinds follows item_browser::Picker");
+// The kind of a template slot (an index in stand_ins::slot_kinds), by its category's name, as the
+// item grids sort them; "other" when it cannot be read. Kept by category for the client thread.
+template <class Memory> std::size_t slot_kind(const Memory &memory, std::uintptr_t resource, std::size_t index) {
+    static std::mutex mutex;
+    static std::map<std::uint32_t, std::size_t> kinds;
+    try {
+        const auto category = memory.slot_category(resource, index);
+        std::lock_guard lock(mutex);
+        if (const auto found = kinds.find(category); found != kinds.end()) return found->second;
+        const auto kind = item_browser::picker_kind(memory.slot_category_name(resource, index));
+        const auto value = static_cast<std::size_t>(kind.value_or(item_browser::Picker::none));
+        if (kinds.size() < 512) kinds.emplace(category, value);
+        return value;
+    } catch (const std::exception &) {
+        return 0;
+    }
+}
 std::uint64_t outfit_hash(const CosmeticRecipe &recipe) {
     auto h = stand_ins::text_hash({}, recipe.key);
     for (const auto &item : recipe.items) h = stand_ins::text_hash(item.asset, stand_ins::mix(h ^ item.slot));
@@ -200,6 +219,9 @@ void apply_cosmetic_recipe(std::uintptr_t base, std::uintptr_t entity, std::uint
         swaps = memory.substitute_missing_each(
             resource, usable,
             [&](std::size_t index, const CosmeticSlot &missing) {
+                // A kind the plugin leaves alone gets what it would without a plugin.
+                if (policy->leave && stand_ins::leaves(*policy, slot_kind(memory, resource, index)))
+                    return std::vector<std::string>(default_cosmetic_items.begin(), default_cosmetic_items.end());
                 return stand_ins_for(memory, base, policy, resource, index, outfit, missing);
             },
             reserved);

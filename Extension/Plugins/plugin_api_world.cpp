@@ -2138,7 +2138,8 @@ struct WorldApi {
     // stand_ins({pick = "first" | "random", parts = "both" | "skater" | "board", items = {...}, exclude = {...}, seed = n}):
     // what this PC shows in place of other players' items it does not have (their cosmetics mods).
     // No items: every installed item that fits the slot. exclude: never these (names, "*" for any run
-    // of characters; up to 4096 names, 64 of them with a "*"), though a player who really wears one still shows it. Never a paid store item. stand_ins(nil): the
+    // of characters; up to 4096 names, 64 of them with a "*"), though a player who really wears one still shows it.
+    // leave: kinds of slot given no stand-in ("appearance": hair, skin tone, brows...), as without a plugin. Never a paid store item. stand_ins(nil): the
     // game's defaults again. Only what you see changes. true, or false and why not.
     static int outfit_stand_ins(lua_State* L) {
         auto& plugin = plugin_of(L);
@@ -2200,6 +2201,23 @@ struct WorldApi {
                                                  [](const std::string& rule) { return rule.find('*') != std::string::npos; });
                 stars > static_cast<std::ptrdiff_t>(multiplayer::stand_ins::max_exclude))
                 luaL_error(L, "exclude has at most %d names with \"*\"", static_cast<int>(multiplayer::stand_ins::max_exclude));
+            // leave = {"appearance", ...}: kinds of slot that get no stand-in, as without a plugin.
+            lua_getfield(L, 1, "leave");
+            if (!lua_isnil(L, -1)) {
+                if (!lua_istable(L, -1)) luaL_error(L, "leave is a list of kinds of slot");
+                const int count = lua_objlen(L, -1);
+                for (int i = 1; i <= count; ++i) {
+                    lua_rawgeti(L, -1, i);
+                    const char* kind = lua_type(L, -1) == LUA_TSTRING ? lua_tostring(L, -1) : nullptr;
+                    const auto& kinds = multiplayer::stand_ins::slot_kinds;
+                    const auto found = kind ? std::find(kinds.begin(), kinds.end(), std::string_view(kind)) : kinds.end();
+                    if (found == kinds.end())
+                        luaL_error(L, "leave takes clothing, board, tattoos, gestures, appearance and other");
+                    s.leave |= static_cast<std::uint8_t>(1U << (found - kinds.begin()));
+                    lua_pop(L, 1);
+                }
+            }
+            lua_pop(L, 1);
             wanted = std::move(s);
         }
         // Every change dresses the players you see again, which is heavy: not every frame.

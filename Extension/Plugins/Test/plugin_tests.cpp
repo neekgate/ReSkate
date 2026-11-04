@@ -382,6 +382,7 @@ struct FakeGame final : Game {
         }
         calls.push_back(std::format("stand-ins {} {} {} {} {}", plugin, wanted->random ? "random" : "first", wanted->parts,
                                     wanted->seed, wanted->items.empty() ? std::string("all") : wanted->items.front()));
+        if (wanted->leave) calls.push_back(std::format("stand-ins {} leave {}", plugin, wanted->leave));
         for (const auto& rule : wanted->exclude) calls.push_back(std::format("stand-ins {} exclude {}", plugin, rule));
         return {};
     }
@@ -3091,9 +3092,12 @@ void plugins_choose_stand_ins() {
             assert(reskate.outfit.stand_ins({pick = "random", exclude = names}), "4096 plain names")
             names[4097] = "Own_Item_4097"
             assert(not pcall(reskate.outfit.stand_ins, {exclude = names}), "and no more")
+            assert(reskate.outfit.stand_ins({pick = "random", leave = {"appearance", "tattoos"}}), "kinds of slot left alone")
             reskate.log("many names")
         end)
         assert(not pcall(reskate.outfit.stand_ins, {exclude = {"*"}}), "excluding everything is not a name")
+        assert(not pcall(reskate.outfit.stand_ins, {leave = {"hair"}}), "leave takes kinds of slot")
+        assert(not pcall(reskate.outfit.stand_ins, {leave = "appearance"}), "leave is a list")
         assert(not pcall(reskate.outfit.stand_ins, {exclude = "Own_Hat"}), "exclude is a list")
         reskate.log("dressed")
     )", R"("outfit.stand_ins")"), script("plain", R"(
@@ -3114,6 +3118,7 @@ void plugins_choose_stand_ins() {
     check(environment.logged("[dresser] many names") && game.called("stand-ins dresser exclude Own_Item_4096") &&
               !game.called("stand-ins dresser exclude Own_Item_4097"),
           "4096 plain names may be left out, and no more\n" + environment.all());
+    check(game.called("stand-ins dresser leave 40"), "appearance and tattoos left alone: bits 5 and 3\n" + environment.all());
 }
 
 // reskate.chat.command: "/name" typed in chat runs the plugin's function with the rest of the line,

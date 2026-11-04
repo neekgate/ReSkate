@@ -23,6 +23,7 @@ reskate.outfit.stand_ins(nil)
 | `items` | every installed item | the candidates, at most 4096 names; only those that fit the slot are taken |
 | `exclude` | none | never these: names, `*` for any run of characters (`*GhostSkater*`), any case; at most 4096, of which 64 with a `*` |
 | `seed` | 0 | 0 to 4294967295; a new seed gives new random picks |
+| `leave` | none | kinds of slot that get no stand-in, as without a plugin: `appearance` (hair, beards, brows, skin tone, makeup, eye colour), `clothing`, `board`, `tattoos`, `gestures`, `other` |
 
 It returns `true`, or `false` and why not: another plugin holds the stand-ins, or it was asked
 more than 4 times in a second (each change dresses every player shown again).

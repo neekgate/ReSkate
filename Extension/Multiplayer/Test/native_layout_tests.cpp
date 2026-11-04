@@ -816,6 +816,33 @@ void cosmetic_layout_regression() {
         board_only.parts = stand_ins::Parts::board;
         check(!stand_ins::covers(board_only, false) && stand_ins::covers(board_only, true) && stand_ins::covers(first, false),
               "A policy covers the parts it names");
+        // Kinds of slot left alone: a slot's category name read from its category record, and the
+        // policy's bits for item_browser's kinds.
+        {
+            Memory k;
+            constexpr std::uintptr_t kres = 0x300000, kslots = 0x310000, kslot = 0x320000, kcat = 0x330000, kname = 0x340000;
+            k.put(kres + 0x28, kslots);
+            k.put(kslots - 4, std::uint32_t{1});
+            k.put(kslots + 8, kslot | 4);
+            k.put(kslot + 0x30, kcat | 4);
+            const std::string hair = "hair";
+            k.put(kcat + 0x28, kname);
+            k.put(kcat + 0x38, cosmetic_asset_hash(hair));
+            for (std::size_t i = 0; i <= hair.size(); ++i) k.put(kname + i, hair.c_str()[i]);
+            const CosmeticMemory kinds{std::cref(k), fixture_base};
+            check(kinds.slot_category_name(kres, 0) == "hair" && kinds.slot_category(kres, 0) == cosmetic_asset_hash(hair),
+                  "A slot's category name must be read");
+            auto bad = k;
+            bad.put(kcat + 0x38, std::uint32_t{5});
+            bool refused{};
+            try { (void)CosmeticMemory{std::cref(bad), fixture_base}.slot_category_name(kres, 0); } catch (const std::exception &) { refused = true; }
+            check(refused, "A category name that does not hash to its category must be refused");
+            stand_ins::Policy body;
+            body.leave = 1U << 5; // appearance
+            check(stand_ins::slot_kinds[5] == "appearance" && stand_ins::leaves(body, 5) && !stand_ins::leaves(body, 1) &&
+                      !stand_ins::leaves(body, 9) && !stand_ins::leaves(first, 5),
+                  "A policy leaves the kinds it names, and no others");
+        }
     }
     auto bad = m;
     bad.put(categories, category + 0x100);

@@ -942,6 +942,7 @@ public:
         std::vector<std::string> items;
         std::vector<std::string> exclude; // never to stand in: names, or a name's start and "*"
         std::uint32_t seed{};
+        std::uint8_t leave{}; // kinds of slot given no stand-in (multiplayer::stand_ins::slot_kinds, a bit each)
     };
     virtual std::string outfit_stand_ins(std::string_view /*plugin*/, std::optional<StandIns>) { return unavailable; }
     virtual std::vector<WornItem> board_parts() { return {}; }

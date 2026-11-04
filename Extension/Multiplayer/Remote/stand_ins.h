@@ -22,6 +22,10 @@ inline constexpr std::size_t max_items = 4096;
 // lookup in a set however many there are, so a plugin can leave out as many as it lists.
 inline constexpr std::size_t max_exclude = 64;
 inline constexpr std::size_t max_exclude_names = max_items;
+// The kinds of slot a policy can leave alone, in the order of item_browser::Picker (the item
+// grids' kinds, by category name: Extension/Customization/item_browser_order.h). "appearance" is the
+// body's own: hair, beards, brows, skin tone, makeup, freckles, eye colour.
+inline constexpr std::array<std::string_view, 6> slot_kinds{"other", "clothing", "board", "tattoos", "gestures", "appearance"};
 struct Policy {
     std::string owner; // the plugin holding it
     Pick pick{Pick::first};
@@ -34,6 +38,9 @@ struct Policy {
     // `exclude_names`.
     std::vector<std::string> exclude;
     std::unordered_set<std::string> exclude_names;
+    // Kinds of slot (a bit for each of slot_kinds) whose missing items get no stand-in: the game's
+    // default or nothing, as without a policy. A random hairstyle or skin tone is no look of theirs.
+    std::uint8_t leave{};
     std::uint32_t seed{};
     // Whether each of `items` is left after `exclude`. set() works it out on the plugin's thread, so
     // the engine thread matches none of them when it dresses a player.
@@ -107,6 +114,10 @@ inline bool excluded(const Policy &policy, std::string_view asset) {
     return false;
 }
 
+// Whether the policy leaves slots of this kind (an index in slot_kinds) to the game's defaults.
+inline bool leaves(const Policy &policy, std::size_t kind) {
+    return kind < slot_kinds.size() && (policy.leave >> kind & 1U) != 0;
+}
 // Whether the policy covers a recipe: the skater's (skater_recipe_key) or the board's.
 inline bool covers(const Policy &policy, bool board) {
     return policy.parts == Parts::both || (policy.parts == Parts::board) == board;

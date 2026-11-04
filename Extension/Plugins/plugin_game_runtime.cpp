@@ -659,6 +659,7 @@ public:
         policy.items = std::move(wanted->items);
         policy.exclude = std::move(wanted->exclude);
         policy.seed = wanted->seed;
+        policy.leave = wanted->leave;
         return multiplayer::stand_ins::set(std::move(policy));
     }
     std::uint64_t effect_create(std::string_view plugin, const EffectRequest& request) override { return effects::create(plugin, request); }

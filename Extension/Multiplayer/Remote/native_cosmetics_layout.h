@@ -172,6 +172,17 @@ template <class Read> struct CosmeticMemory {
         const auto slot = ptr(slots, index * 24 + 8) & ~std::uintptr_t{4};
         return get<std::uint32_t>(ptr(slot, 0x30) & ~std::uintptr_t{4}, 0x38);
     }
+    // The category name of template slot `index` ("hair", "cust_tops", ...): the same category
+    // record as slot_category, whose name is at +0x28 (refresh_cosmetic_catalog reads items' so).
+    std::string slot_category_name(std::uintptr_t res, std::size_t index) const {
+        const auto slots = ptr(res, 0x28);
+        check(index < count(slots, 24, max_cosmetic_slots), "Cosmetic slot is out of range.");
+        const auto slot = ptr(slots, index * 24 + 8) & ~std::uintptr_t{4};
+        const auto category = ptr(slot, 0x30) & ~std::uintptr_t{4};
+        auto name = text(ptr(category, 0x28));
+        check(!name.empty() && cosmetic_asset_hash(name) == get<std::uint32_t>(category, 0x38), "Cosmetic slot category differs.");
+        return name;
+    }
     CosmeticRecipe capture(std::uintptr_t entity) const {
         const auto c = component(entity), res = resource(c);
         check(!get<std::uint8_t>(c, 0x10a) && !get<std::uint8_t>(c, 0x10d),
