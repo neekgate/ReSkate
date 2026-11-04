@@ -1824,6 +1824,14 @@ public:
         camera_releasing_ = true;
         camera_status_.clear();
     }
+    std::string smooth_camera(std::string_view plugin, bool on) override {
+        if (on) {
+            if (const auto found = rough_cameras_.find(plugin); found != rough_cameras_.end()) rough_cameras_.erase(found);
+        } else {
+            rough_cameras_.insert(std::string(plugin));
+        }
+        return {};
+    }
     std::string camera_status(std::string_view plugin) override {
         if (follower_ == plugin) return multiplayer::party_spectating() ? std::string{} : "Spectate is starting";
         if (camera_holder_ != plugin) return "it does not hold the camera";
@@ -1853,7 +1861,7 @@ public:
     // shook against it. Given there, each frame gets it between the last two ticks', as the game's own.
     // (The game's camera still has it too: what streams in, the sound and the nametags follow it.)
     void smooth_camera() noexcept {
-        const bool wanted = camera_shown_ && !camera_holder_.empty() && !multiplayer::party_spectating();
+        const bool wanted = camera_shown_ && !camera_holder_.empty() && !multiplayer::party_spectating() && !rough_cameras_.contains(camera_holder_);
         if (wanted != camera_smoothing_) {
             camera_smoothing_ = wanted && xray::keep_view_camera(true);
             if (!wanted) (void)xray::keep_view_camera(false);
@@ -2131,6 +2139,7 @@ private:
     std::array<float, 16> camera_pose_{};
     float camera_fov_{};
     bool camera_smoothing_{}, camera_smoothing_logged_{};
+    std::set<std::string, std::less<>> rough_cameras_; // plugins whose camera is drawn as given (camera.smooth(false))
     bool camera_shown_{}, camera_releasing_{};
     std::set<std::string, std::less<>> freezers_;
     std::set<std::string, std::less<>> hud_hiders_;

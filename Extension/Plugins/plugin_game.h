@@ -697,6 +697,9 @@ public:
     // Spectate's camera on a session player (0 stops the one this plugin started).
     virtual std::string follow_player(std::string_view /*plugin*/, std::uint64_t) { return unavailable; }
     virtual void release_camera(std::string_view /*plugin*/) {}
+    // Whether the plugin's camera is drawn between its last two ticks on every frame (on as it comes) or
+    // as given, once a tick.
+    virtual std::string smooth_camera(std::string_view /*plugin*/, bool /*on*/) { return unavailable; }
     // "" while the plugin's view is the one shown, otherwise why not.
     virtual std::string camera_status(std::string_view /*plugin*/) { return unavailable; }
     // The plugin's camera as a step of the game's camera height button cycle (Engine/Game/Skater/

@@ -260,6 +260,14 @@ struct WorldApi {
         game(plugin).release_camera(plugin.id());
         return 0;
     }
+    // camera.smooth(on): the plugin's camera drawn between its last two ticks on every frame (true, as it
+    // comes), or once a tick as given (false).
+    static int camera_smooth(lua_State* L) {
+        auto& plugin = plugin_of(L);
+        need(L, plugin, "camera", "reskate.camera.smooth");
+        luaL_checktype(L, 1, LUA_TBOOLEAN);
+        return result(L, game(plugin).smooth_camera(plugin.id(), lua_toboolean(L, 1) != 0));
+    }
     static int camera_held(lua_State* L) {
         auto& plugin = plugin_of(L);
         need(L, plugin, "camera", "reskate.camera.held");
@@ -3415,7 +3423,7 @@ void WorldApi::install(Plugin& plugin, lua_State* L) {
     add_functions(L, "board", {{"motion", board_motion}, {"bones", board_bones}, {"set", board_set}, {"hide", board_hide}, {"clear", board_clear}, {"scale", board_scale},
                                {"park", board_park}, {"fit", board_fit}, {"toss", board_toss}, {"parameters", board_parameters},
                                {"set_parameter", board_set_parameter}, {"clear_parameter", board_clear_parameter}});
-    add_functions(L, "camera", {{"look", camera_look}, {"set", camera_set}, {"follow", camera_follow}, {"release", camera_release}, {"held", camera_held}, {"get", camera_get}, {"cycle", camera_cycle}});
+    add_functions(L, "camera", {{"look", camera_look}, {"set", camera_set}, {"follow", camera_follow}, {"release", camera_release}, {"smooth", camera_smooth}, {"held", camera_held}, {"get", camera_get}, {"cycle", camera_cycle}});
     add_functions(L, "trainer", {{"set_point", set_point}, {"back", back}});
     add_functions(L, "hud", {{"hide", hide_hud}, {"corner", hud_corner}});
     add_functions(L, "time", {{"slow", slow}, {"speed", speed}});
