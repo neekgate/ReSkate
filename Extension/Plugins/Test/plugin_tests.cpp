@@ -1110,10 +1110,6 @@ struct FakeGame final : Game {
         return {};
     }
     void release_camera(std::string_view plugin) override { calls.push_back("camera release " + std::string(plugin)); }
-    std::string smooth_camera(std::string_view plugin, bool on) override {
-        calls.push_back(std::format("camera smooth {} {}", plugin, on ? "on" : "off"));
-        return {};
-    }
     std::string freeze(std::string_view plugin, bool on) override {
         calls.push_back(std::format("freeze {} {}", plugin, on ? "on" : "off"));
         return {};
@@ -4279,10 +4275,10 @@ void plugins_carry_and_take_a_step_in_the_camera_cycle() {
     host.apply({package("sneaky", {{manifest_file, manifest()}, {"plugin/main.lua", R"(
         reskate.log(tostring(pcall(reskate.skater.carry, {at = vector.create(0, 0, 0), rotation = {0, 0, 0, 1}})) .. " " ..
             tostring(pcall(reskate.camera.cycle, "ready")) .. " " .. tostring(pcall(reskate.session.nametags, false)) .. " " ..
-            tostring(pcall(reskate.on, "camera_cycle", function() end)) .. " " .. tostring(pcall(reskate.camera.smooth, false)))
+            tostring(pcall(reskate.on, "camera_cycle", function() end)))
     )"}})});
     ticks(host, environment, 1);
-    check(environment.logged("[sneaky] false false false false false"), "skater.animation, camera and session.nametags are needed\n" + environment.all());
+    check(environment.logged("[sneaky] false false false false"), "skater.animation, camera and session.nametags are needed\n" + environment.all());
 }
 
 // Reading a skater's joints, and the physics tuning read and set.
@@ -5931,8 +5927,6 @@ void the_wider_set_reaches_the_game() {
             assert(reskate.input.joystick(1).name == "Pad" and reskate.input.joystick(5) == nil, "a chosen controller")
             assert(not pcall(reskate.input.joystick, -1) and not pcall(reskate.input.joystick, 1.5), "a controller's number")
             assert(reskate.input.capture(true))
-            assert(reskate.camera.smooth(false) and reskate.camera.smooth(true))
-            assert(not pcall(reskate.camera.smooth, "yes"), "smooth is true or false")
             reskate.camera.release()
             assert(reskate.skater.freeze(true))
             assert(reskate.throwdowns.state().active == false)
@@ -5962,7 +5956,7 @@ void the_wider_set_reaches_the_game() {
     for (const auto* call : {"control noclip_on", "control boost_up", "hud wide on", "place 0 bench_01 5.0", "move 42  6.0", "delete 42",
                              "env tod night", "env control fog 1", "env park historic skatepark_02", "travel location bam", "ai spawn 2",
                              "ai clear", "tag wide 7 IT ff0000ff", "voice 7 0.0", "chat hello all", "notice wide note 5 ff00ff00", "camera wide 0.0 5.0 0.0 back 0.00 0.00 -1.00 fov 70",
-                             "camera wide 0.0 5.0 0.0 back -0.00 -0.00 1.00 fov 80", "capture wide on", "camera smooth wide off", "camera smooth wide on",
+                             "camera wide 0.0 5.0 0.0 back -0.00 -0.00 1.00 fov 80", "capture wide on",
                              "camera release wide", "freeze wide on", "host wide ThrowdownSkate 2 players max 4", "music next"})
         check(game.called(call), std::string("The game was asked: ") + call);
     check(environment.teleports.size() == 1, "The save point teleports back");

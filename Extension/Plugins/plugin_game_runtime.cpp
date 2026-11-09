@@ -35,7 +35,6 @@
 #include "Engine/Game/Skater/first_person_cycle.h"
 #include "Extension/Multiplayer/Hud/custom_nametags.h"
 #include "Extension/Skater/xray.h"
-#include "Extension/Skater/xray_render.h"
 #include "Extension/UI/hud_corner.h"
 #include "Extension/Throwdowns/custom_modes.h"
 #include "Extension/Throwdowns/throwdown_kit.h"
@@ -1824,14 +1823,6 @@ public:
         camera_releasing_ = true;
         camera_status_.clear();
     }
-    std::string smooth_camera(std::string_view plugin, bool on) override {
-        if (on) {
-            if (const auto found = rough_cameras_.find(plugin); found != rough_cameras_.end()) rough_cameras_.erase(found);
-        } else {
-            rough_cameras_.insert(std::string(plugin));
-        }
-        return {};
-    }
     std::string camera_status(std::string_view plugin) override {
         if (follower_ == plugin) return multiplayer::party_spectating() ? std::string{} : "Spectate is starting";
         if (camera_holder_ != plugin) return "it does not hold the camera";
@@ -1842,7 +1833,6 @@ public:
             // Spectate has the lease now, and gives the game's camera back itself.
             camera_shown_ = camera_releasing_ = false;
             if (!camera_holder_.empty()) camera_status_ = "Spectate has the camera";
-            smooth_camera();
             return;
         }
         std::string detail;
@@ -1852,25 +1842,6 @@ public:
         } else if (camera_releasing_ && update_party_camera(base, client, ready, phase, nullptr, detail)) {
             camera_releasing_ = false;
         }
-        smooth_camera();
-    }
-    // The plugin's camera given to the picture too, through the renderer's frame setup (xray_render.h
-    // set_view_camera): the game ticks less often than the screen draws (2.4 frames a tick at 144 Hz) and
-    // draws the world between its last two ticks every frame, its own camera too; the plugin's camera,
-    // written to the game's camera once a tick, stood still for a frame or two and jumped, and the skater
-    // shook against it. Given there, each frame gets it between the last two ticks', as the game's own.
-    // (The game's camera still has it too: what streams in, the sound and the nametags follow it.)
-    void smooth_camera() noexcept {
-        const bool wanted = camera_shown_ && !camera_holder_.empty() && !multiplayer::party_spectating() && !rough_cameras_.contains(camera_holder_);
-        if (wanted != camera_smoothing_) {
-            camera_smoothing_ = wanted && xray::keep_view_camera(true);
-            if (!wanted) (void)xray::keep_view_camera(false);
-            if (wanted && !camera_smoothing_ && !camera_smoothing_logged_) {
-                camera_smoothing_logged_ = true;
-                logging::log(logging::Level::info, logging::Channel::plugins, "Plugin camera: drawn once a tick (the renderer's hooks are unavailable).");
-            }
-        }
-        if (camera_smoothing_) xray::set_view_camera(camera_pose_, camera_fov_);
     }
     std::string freeze(std::string_view plugin, bool on) override {
         const bool before = !freezers_.empty();
@@ -2138,8 +2109,6 @@ private:
     std::string camera_holder_, follower_, camera_status_;
     std::array<float, 16> camera_pose_{};
     float camera_fov_{};
-    bool camera_smoothing_{}, camera_smoothing_logged_{};
-    std::set<std::string, std::less<>> rough_cameras_; // plugins whose camera is drawn as given (camera.smooth(false))
     bool camera_shown_{}, camera_releasing_{};
     std::set<std::string, std::less<>> freezers_;
     std::set<std::string, std::less<>> hud_hiders_;
