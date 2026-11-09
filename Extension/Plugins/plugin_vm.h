@@ -244,6 +244,8 @@ public:
     void http_done(const HttpResponse& response);
     // The wider set's events, each to a plugin with its permission and a handler for it.
     void skater_changed(const char* state, const char* previous);
+    // menu: the pause menu, ReSkate's menu or the replay editor came up or went (menu_changed).
+    void menu_changed(const Game::MenuState& state, const Game::MenuState& previous);
     void bailed(std::uint64_t wipeouts, std::optional<SlamNews> slam);
     void launched(const LaunchNews& launch);
     // A game event with plain data (board_landed, body_hit, bail_end), to a plugin with `permission`.
@@ -258,7 +260,6 @@ public:
         Vec3 at{};
     };
     std::optional<float> touch_reach() const noexcept { return touch_reach_; }
-    const std::map<std::uint64_t, Contact>& contacts() const noexcept { return contacts_; }
     void touch_tick(const std::vector<Body>& bodies);
     void track_changed(const Track& track);
     void throwdown_phase(const char* phase);
@@ -286,7 +287,6 @@ public:
     const std::string& reason() const noexcept { return reason_; }
     std::size_t memory() const noexcept { return memory_; }
     double tick_ms() const noexcept { return last_window_ms_; }
-    // Its console commands and their help.
     // Its console commands, and the subcommands each declared ("prop random", run by "prop"'s
     // function): the name, its arguments as help shows them, and its help.
     std::vector<CommandInfo> commands() const;
@@ -300,13 +300,14 @@ private:
     friend struct UiApi;
     friend struct MoreApi;
     friend struct WorldApi;
-    friend struct ServicesApi;
+    friend struct VehiclesApi;
     friend struct KitApi;
     friend struct CaptureApi;
     friend struct ValuesApi;
     friend struct PhysicsApi;
     friend struct EffectsApi;
     friend struct ViewmodelApi;
+    friend Game& game_of(Plugin& plugin); // plugin_api.h
     std::uint64_t instance_{};
     struct Subcommand { std::string name, args, help; };
     struct Command { std::string help; int function{}; std::vector<Subcommand> subcommands; };
@@ -386,6 +387,7 @@ private:
     int raycasts_{};                    // since the last tick
     body_query::Budget native_casts_{}; // world.probe's and probe_batch's native casts, failed ones included
     unsigned body_prepares_{};          // explicit native body preparation calls since the last tick
+    unsigned body_reuses_{};            // creates that asked to reuse a parked native body since the last tick
     std::optional<float> touch_reach_;
     std::map<std::uint64_t, Contact> contacts_;
     double teleport_second_{};
