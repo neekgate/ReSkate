@@ -416,6 +416,8 @@ Held carry(std::span<Joint> pose, const Goal& goal) noexcept {
     // The other hand to its side, underneath, where the first one put it.
     Vec3 support = support_from_grip;
     if (goal.hand == Hand::left) support[0] = -support[0];
+    // (Moved by the caller, for an item whose sides are not the camcorder's: a phone, held lower down.)
+    support = add(support, goal.support);
     const Vec3 point = add(held.item.position, rotate(held.item.rotation, support));
     One other;
     other.hand = goal.hand == Hand::left ? Hand::right : Hand::left;

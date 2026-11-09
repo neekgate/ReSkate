@@ -1441,9 +1441,10 @@ struct WorldApi {
         lua_pop(L, 1);
         return shown;
     }
-    // skater.carry({at = vector, rotation = {x, y, z, w}, hand, both, front, grip, weight, crouch, hunch,
-    // still, turn, step, step_phase, push_straightens, shown}): something held out in the hands and
-    // aimed, its front at `at`; for 0.3 s, so every tick. nil lets it go.
+    // skater.carry({at = vector, rotation = {x, y, z, w}, hand, both, support, front, grip, weight, crouch,
+    // hunch, still, turn, step, step_phase, push_straightens, shown}): something held out in the hands and
+    // aimed, its front at `at`; for 0.3 s, so every tick. nil lets it go. `support` (a vector, at most
+    // 0.3 m each way): with both, the other hand moved from where it takes the item, in the item's frame.
     static int carry(lua_State* L) {
         auto& plugin = plugin_of(L);
         need(L, plugin, "skater.animation", "reskate.skater.carry");
@@ -1459,6 +1460,13 @@ struct WorldApi {
         lua_pop(L, 1);
         lua_getfield(L, 1, "both");
         goal.both = lua_toboolean(L, -1);
+        lua_pop(L, 1);
+        lua_getfield(L, 1, "support");
+        if (!lua_isnil(L, -1)) {
+            goal.support = position_of(L, lua_gettop(L), "a carry's support");
+            for (const auto v : goal.support)
+                if (!(std::abs(v) <= 0.3f)) luaL_error(L, "a carry's support is at most 0.3 m on each axis");
+        }
         lua_pop(L, 1);
         lua_getfield(L, 1, "at");
         goal.front = position_of(L, lua_gettop(L), "the carry's point");

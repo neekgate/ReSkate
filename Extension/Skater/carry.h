@@ -52,6 +52,7 @@ struct Goal {
     std::optional<Grip> worn;
     float weight = 1.0f;   // 0: the body as the animation has it, 1: carrying
     bool both{};           // the other hand holds it too, from the side and underneath
+    Vec3 support{};        // with both: moved from where the other hand takes it, in the item's frame (metres)
     float crouch{};        // how far the hips go down (metres), the feet kept where they are
     float hunch{};         // how far the back curls over it (radians), the head looking down at it
     bool still{};          // the back, neck and head from a still standing pose (no idle fidgets)
