@@ -615,6 +615,9 @@ struct FakeGame final : Game {
                           : std::format("carry {} none", plugin));
         if (c && (c->support[0] != 0 || c->support[1] != 0 || c->support[2] != 0))
             calls.push_back(std::format("carry support {} {:.2f} {:.2f} {:.2f}", plugin, c->support[0], c->support[1], c->support[2]));
+        if (c && (c->exact || c->look_at))
+            calls.push_back(std::format("carry held {}{} look {}", plugin, c->exact ? " exact" : "",
+                                        c->look_at ? std::format("{:.1f} {:.1f} {:.1f}", (*c->look_at)[0], (*c->look_at)[1], (*c->look_at)[2]) : "none"));
         return {};
     }
     std::string skater_pose(std::string_view plugin, const std::vector<JointOffset>& offsets, float weight, Shown shown) override {
@@ -4666,6 +4669,9 @@ void plugins_carry_and_take_a_step_in_the_camera_cycle() {
         assert(reskate.skater.carry({at = vector.create(0, 1, 0), rotation = {0, 0, 0, 1}, both = true, support = vector.create(0.02, -0.05, 0.1)}))
         assert(not pcall(reskate.skater.carry, {at = vector.create(0, 1, 0), rotation = {0, 0, 0, 1}, support = vector.create(0, 0.5, 0)}),
             "a support is at most 0.3 m each way")
+        assert(reskate.skater.carry({at = vector.create(0, 1, 0), rotation = {0, 0, 0, 1}, exact = true, look_at = vector.create(0, 1.2, -0.1)}))
+        assert(not pcall(reskate.skater.carry, {at = vector.create(0, 1, 0), rotation = {0, 0, 0, 1}, look_at = vector.create(0, 9, 0)}),
+            "a look_at is within 3 m")
         assert(reskate.skater.carry(nil))
         assert(not pcall(reskate.skater.carry, {at = vector.create(0, 1, 0)}), "a carry needs a rotation")
         assert(not pcall(reskate.skater.carry, {at = vector.create(0, 1, 0), rotation = {0, 0, 0, 1}, crouch = 1}), "a crouch is 0 to 0.6 m")
@@ -4696,6 +4702,7 @@ void plugins_carry_and_take_a_step_in_the_camera_cycle() {
               game.called("carry filmer none"),
           "Carried in both hands for the others, in one, and let go\n" + environment.all());
     check(game.called("carry support filmer 0.02 -0.05 0.10"), "The other hand moved where it takes the item\n" + environment.all());
+    check(game.called("carry held filmer exact look 0.0 1.2 -0.1"), "Held where asked, the face on it\n" + environment.all());
     check(game.called("pose filmer 1.00 me 48:0.00,0.00,0.00,1.00x0.00") && game.called("reach filmer right 1.0 2.0 3.0 false 1.00 others"),
           "A pose only you see, a reach only the others see\n" + environment.all());
     check(game.called("cycle filmer ready") && game.called("cycle filmer active") && game.called("cycle filmer out"), "In the cycle, on, and out");
