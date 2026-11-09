@@ -147,6 +147,14 @@ void the_face_looks_at_a_point() {
     const Placed turned = placed(pose, chain);
     const Vec3 face = anim_studio::rotate(turned.rotation, {0, 0, 1});
     check(face[0] < -0.5f, "The face turns to the point on its right");
+
+    // Then a pose whose face joints are all at one point (not posed, as riding): the face's way as measured
+    // is kept, and the head still turns to the point.
+    auto riding = standing();
+    for (std::size_t j = 107; j <= 254; ++j) riding[j].position = {0, 0, 0};
+    check(carry::carry(riding, goal).valid, "Carried, looking, the face not posed");
+    const Placed again = placed(riding, chain);
+    check(anim_studio::rotate(again.rotation, {0, 0, 1})[0] < -0.5f, "The face still turns to the point, by the way measured before");
 }
 
 void no_weight_and_a_broken_pose() {

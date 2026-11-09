@@ -346,6 +346,13 @@ namespace {
 // the skeleton stands looking the way the hips face was tried first: on the game's skeleton it was a quarter
 // turn off, and the head turned to look left of the phone.) That, only when the face's joints are not there.
 constexpr std::uint16_t face_root = 107, face_first = 108, face_last = 254;
+// The face's way in the head, once measured: the face is fixed in the head, so it holds for every pose after.
+// (Riding, the game's pose of the face joints was not one to measure: the head looked off the phone on the
+// board while it looked at it on foot.)
+std::optional<Vec3>& measured_face() {
+    static std::optional<Vec3> face;
+    return face;
+}
 std::optional<Vec3> face_in_head(std::span<const Joint> pose) {
     std::array<Placed, head_chain.size()> w{};
     if (!compose(pose, head_chain, w)) return std::nullopt;
@@ -355,24 +362,40 @@ std::optional<Vec3> face_in_head(std::span<const Joint> pose) {
         const Joint& root = pose[face_root];
         const Vec3 root_at = add(head.position, scaled(rotate(head.rotation, root.position), head.scale));
         const Quat root_turn = normalised(multiply(head.rotation, root.rotation));
+        std::vector<Vec3> points;
+        points.reserve(face_last - face_first + 1);
         Vec3 sum{};
-        int count = 0;
         for (std::uint16_t j = face_first; j <= face_last; ++j) {
             const Vec3 at = add(root_at, scaled(rotate(root_turn, pose[j].position), head.scale * root.scale[0]));
             if (!finite(at)) continue;
+            points.push_back(at);
             sum = add(sum, at);
-            ++count;
         }
-        if (count >= 20) {
-            Vec3 forward = sub(scaled(sum, 1.0f / static_cast<float>(count)), head.position);
+        if (points.size() >= 20) {
+            const Vec3 middle = scaled(sum, 1.0f / static_cast<float>(points.size()));
+            // (A face, spread over the front of the head: not the joints all at one point, unposed.)
+            float spread = 0.0f;
+            for (const auto& at : points) spread = std::max(spread, length(sub(at, middle)));
+            Vec3 forward = sub(middle, head.position);
             forward = sub(forward, scaled(up, dot(forward, up)));
-            if (length(forward) > 0.01f) return unit(rotate(conjugate(head.rotation), forward), {0, 0, 1});
+            if (spread > 0.02f && length(forward) > 0.01f) {
+                const Vec3 face = unit(rotate(conjugate(head.rotation), forward), {0, 0, 1});
+                measured_face() = face;
+                return face;
+            }
         }
     }
+    if (measured_face()) return measured_face();
+    // Never measured yet: the head as the skeleton stands looking the way the hips face, turned the quarter
+    // turn that was seen to be off (the head looked fully to the left of the phone with it), about the neck.
     std::vector<Joint> standing(pose.begin(), pose.end());
     for (std::size_t i = 0; i < back_joints.size(); ++i) standing[back_joints[i]].rotation = standing_back[i];
     if (!compose(standing, head_chain, w)) return std::nullopt;
-    return unit(rotate(conjugate(w.back().rotation), body_facing(standing)), {0, 0, 1});
+    const Quat standing_head = w.back().rotation;
+    const Vec3 neck_up = unit(sub(w.back().position, w[w.size() - 2].position), {0, 1, 0});
+    const Vec3 hips_way = body_facing(standing);
+    const Vec3 left = unit(cross(neck_up, hips_way), hips_way);
+    return unit(rotate(conjugate(standing_head), left), {0, 0, 1});
 }
 // The neck and head turned (Neck, Neck1, Head, a share each) so `face` (in the head's frame) looks at
 // `point`, at most about 70 degrees, `weight` of the way.
