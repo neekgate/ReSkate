@@ -131,6 +131,24 @@ void the_body_turns() {
     check(std::abs(facing[0]) > 0.99f, "The body turns a quarter round");
 }
 
+void the_face_looks_at_a_point() {
+    // A face in front of the head (+Z, the way the skater faces), its joints under joint 107.
+    auto pose = standing();
+    pose[107].position = {0, 0.05f, 0};
+    for (std::size_t j = 108; j <= 254; ++j) pose[j].position = {0.01f * static_cast<float>(j % 5) - 0.02f, 0.03f, 0.09f};
+    const std::array<std::uint16_t, 10> chain{0, 1, 7, 42, 43, 44, 45, 101, 102, 103};
+    const Placed head = placed(pose, chain);
+    Goal goal;
+    goal.front = {4, 1.3f, -1.5f};
+    goal.aim = aimed(0);
+    // Off to its right (-X) and a little ahead: the head turns that way.
+    goal.look_at = Vec3{head.position[0] - 1.0f, head.position[1], head.position[2] + 0.4f};
+    check(carry::carry(pose, goal).valid, "Carried, looking");
+    const Placed turned = placed(pose, chain);
+    const Vec3 face = anim_studio::rotate(turned.rotation, {0, 0, 1});
+    check(face[0] < -0.5f, "The face turns to the point on its right");
+}
+
 void no_weight_and_a_broken_pose() {
     auto pose = standing();
     const auto before = pose;
@@ -168,6 +186,7 @@ int main() {
         the_other_hand_holds_it_too();
         the_feet_stay_as_the_hips_go_down();
         the_body_turns();
+        the_face_looks_at_a_point();
         no_weight_and_a_broken_pose();
     } catch (const std::exception& error) {
         std::cerr << "FAILED: " << error.what() << '\n';

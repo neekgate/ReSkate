@@ -340,15 +340,39 @@ bool hunch(std::span<Joint> pose, const Vec3& toward, float angle, float look, f
 }
 
 namespace {
-// The way the face looks out of the head, in the head joint's own frame: the head as the skeleton stands
-// (the back from its bind pose) looks the way the hips face, level.
+// The way the face looks out of the head, in the head joint's own frame. Measured from the face itself: the
+// face's joints (the leaves under joint 107, its 147 points on the face, not the chain at 255) lie in front
+// of the head, so from the head to the middle of them, square to the neck, is the way it looks. (The head as
+// the skeleton stands looking the way the hips face was tried first: on the game's skeleton it was a quarter
+// turn off, and the head turned to look left of the phone.) That, only when the face's joints are not there.
+constexpr std::uint16_t face_root = 107, face_first = 108, face_last = 254;
 std::optional<Vec3> face_in_head(std::span<const Joint> pose) {
+    std::array<Placed, head_chain.size()> w{};
+    if (!compose(pose, head_chain, w)) return std::nullopt;
+    const Placed& head = w.back();
+    const Vec3 up = unit(sub(head.position, w[w.size() - 2].position), {0, 1, 0});
+    if (pose.size() > face_last) {
+        const Joint& root = pose[face_root];
+        const Vec3 root_at = add(head.position, scaled(rotate(head.rotation, root.position), head.scale));
+        const Quat root_turn = normalised(multiply(head.rotation, root.rotation));
+        Vec3 sum{};
+        int count = 0;
+        for (std::uint16_t j = face_first; j <= face_last; ++j) {
+            const Vec3 at = add(root_at, scaled(rotate(root_turn, pose[j].position), head.scale * root.scale[0]));
+            if (!finite(at)) continue;
+            sum = add(sum, at);
+            ++count;
+        }
+        if (count >= 20) {
+            Vec3 forward = sub(scaled(sum, 1.0f / static_cast<float>(count)), head.position);
+            forward = sub(forward, scaled(up, dot(forward, up)));
+            if (length(forward) > 0.01f) return unit(rotate(conjugate(head.rotation), forward), {0, 0, 1});
+        }
+    }
     std::vector<Joint> standing(pose.begin(), pose.end());
     for (std::size_t i = 0; i < back_joints.size(); ++i) standing[back_joints[i]].rotation = standing_back[i];
-    std::array<Placed, head_chain.size()> w{};
     if (!compose(standing, head_chain, w)) return std::nullopt;
-    const Vec3 facing = body_facing(standing);
-    return unit(rotate(conjugate(w.back().rotation), facing), {0, 0, 1});
+    return unit(rotate(conjugate(w.back().rotation), body_facing(standing)), {0, 0, 1});
 }
 // The neck and head turned (Neck, Neck1, Head, a share each) so `face` (in the head's frame) looks at
 // `point`, at most about 70 degrees, `weight` of the way.
