@@ -212,6 +212,25 @@ void the_face_turns_all_the_way_and_no_further() {
     }
 }
 
+void held_where_asked_up_in_front_of_the_face() {
+    // Aimed straight up and asked to hold it over the face (exact): the hand goes up there, well over the
+    // shoulder, rather than kept down by it as the aim's own sweep does.
+    auto pose = standing();
+    const auto shoulder = arm(pose, Hand::right)[8].position;
+    Goal goal;
+    goal.aim = aimed(1.5f);
+    goal.front = {shoulder[0] + 0.15f, shoulder[1] + 0.45f, shoulder[2] + 0.25f};
+    goal.exact = true;
+    const auto held = carry::carry(pose, goal);
+    check(held.valid, "Carried up in front of the face");
+    check(held.front[1] > shoulder[1] + 0.35f, "Held high, in front of the face");
+    Goal sweep = goal;
+    sweep.exact = false;
+    auto pose2 = standing();
+    const auto swept = carry::carry(pose2, sweep);
+    check(swept.valid && swept.front[1] < held.front[1], "The aim's own sweep holds it lower");
+}
+
 void no_weight_and_a_broken_pose() {
     auto pose = standing();
     const auto before = pose;
@@ -251,6 +270,7 @@ int main() {
         the_body_turns();
         the_face_looks_at_a_point();
         the_face_turns_all_the_way_and_no_further();
+        held_where_asked_up_in_front_of_the_face();
         no_weight_and_a_broken_pose();
     } catch (const std::exception& error) {
         std::cerr << "FAILED: " << error.what() << '\n';

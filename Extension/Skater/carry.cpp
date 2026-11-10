@@ -147,7 +147,10 @@ Held hold_one(std::span<Joint> pose, const One& goal) noexcept {
         const float out_min = (0.24f - 0.06f * up_part) * (1.0f - 0.35f * to_own_side);
         const float out_now = dot(sub(palm_goal, s), forward);
         if (out_now < out_min) palm_goal = add(palm_goal, scaled(forward, out_min - out_now));
-        const float top = s[1] + 0.04f + 0.22f * up_part + side_lift * to_own_side;
+        // (Held where asked (exact), aimed up: up in front of the face, as a phone is held up to film the sky;
+        // the hand no further over the shoulder than the arm reaches up in front.)
+        const float up_reach = goal.exact ? 0.6f : 0.22f;
+        const float top = s[1] + 0.04f + up_reach * up_part + side_lift * to_own_side;
         if (palm_goal[1] > top) palm_goal[1] = top;
     }
     {
