@@ -1,0 +1,92 @@
+name: Build ReSkate
+on:
+  workflow_dispatch:
+  push:
+jobs:
+  build:
+    runs-on: windows-2022
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # the timestamp step below compares against the cached build's commit
+
+      # The build folder from an earlier run, so only what changed is compiled again.
+      - name: Restore build cache
+        id: cache
+        uses: actions/cache/restore@v4
+        with:
+          path: build/vs2022-x64
+          key: build-${{ github.ref_name }}-${{ github.sha }}
+          restore-keys: |
+            build-${{ github.ref_name }}-
+            build-
+
+      # A fresh checkout makes every file look new, and MSBuild would rebuild everything.
+      # Files unchanged since the cached build get an old timestamp; changed ones stay new.
+      - name: Keep unchanged files older than the cached build
+        run: |
+          $stamp = 'build/vs2022-x64/.cached-sha'
+          if (-not (Test-Path $stamp)) { Write-Output 'No cached build: full build.'; exit 0 }
+          $old = (Get-Content $stamp).Trim()
+          git cat-file -e "$old^{commit}" 2>$null
+          if ($LASTEXITCODE -ne 0) { Write-Output "Cached commit $old not in history: full build."; Remove-Item -Recurse -Force build/vs2022-x64; exit 0 }
+          $changed = @{}
+          git diff --name-only $old HEAD | ForEach-Object { $changed[$_] = $true }
+          $past = [datetime]'2000-01-01'
+          git ls-files | ForEach-Object { if (-not $changed[$_] -and (Test-Path -LiteralPath $_)) { (Get-Item -LiteralPath $_).LastWriteTime = $past } }
+          Write-Output "Cached build from $old; $($changed.Count) file(s) changed since."
+
+      # The screen look's shader is compiled by the game's D3DCompile at run time: compiled here too, so
+      # a mistake in it fails the build instead of the look in the game.
+      - name: Compile the screen look's shader
+        run: |
+          $fxc = Get-ChildItem 'C:\Program Files (x86)\Windows Kits\10\bin' -Recurse -Filter fxc.exe | Where-Object { $_.FullName -match '\\x64\\' } | Select-Object -Last 1
+          if (-not $fxc) { Write-Output '::error::fxc.exe not found'; exit 1 }
+          foreach ($entry in @(@('vs_main', 'vs_5_0'), @('ps_main', 'ps_5_0'), @('ps_adapt', 'ps_5_0'))) {
+            & $fxc.FullName /nologo /E $entry[0] /T $entry[1] /Fo "$env:RUNNER_TEMP\look.cso" Extension/UI/Overlay/screen_look.hlsl *>&1 | Tee-Object -FilePath fxc.log
+            if ($LASTEXITCODE -ne 0) {
+              $tail = (Get-Content fxc.log | Select-Object -Last 20) -join '%0A'
+              Write-Output "::error::$tail"
+              exit 1
+            }
+          }
+
+      - name: Configure
+        run: |
+          # -DDINGOSDK_CARGO=OFF: skip the Rust Spotify device (not needed for these builds)
+          cmake --preset vs2022-x64 -DDINGOSDK_CARGO=OFF *>&1 | Tee-Object -FilePath configure.log
+          if ($LASTEXITCODE -ne 0) {
+            $tail = (Get-Content configure.log | Select-Object -Last 40) -join '%0A'
+            Write-Output "::error::$tail"
+            exit 1
+          }
+
+      - name: Build
+        run: |
+          cmake --build --preset release --parallel 4 --target dingosdk_launcher dingosdk_runtime *>&1 | Tee-Object -FilePath build.log
+          $code = $LASTEXITCODE
+          Set-Content -Path build/vs2022-x64/.cached-sha -Value (git rev-parse HEAD)
+          if ($code -ne 0) {
+            $errors = (Select-String -Path build.log -Pattern ' error | error [A-Z]*[0-9]+:' | Select-Object -First 40 | ForEach-Object { $_.Line }) -join '%0A'
+            Write-Output "::error::$errors"
+            exit 1
+          }
+
+      # Saved even when the build fails, so a fix only recompiles what it touches.
+      - name: Save build cache
+        if: always() && steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: build/vs2022-x64
+          key: build-${{ github.ref_name }}-${{ github.sha }}
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: ReSkate-${{ github.ref_name }}
+          path: |
+            build/vs2022-x64/Release/ReSkateLauncher.exe
+            build/vs2022-x64/Release/ReSkate.dll
