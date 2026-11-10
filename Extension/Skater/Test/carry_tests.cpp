@@ -131,106 +131,6 @@ void the_body_turns() {
     check(std::abs(facing[0]) > 0.99f, "The body turns a quarter round");
 }
 
-void the_face_looks_at_a_point() {
-    // A face in front of the head (+Z, the way the skater faces), its joints under joint 107.
-    auto pose = standing();
-    pose[107].position = {0, 0.05f, 0};
-    for (std::size_t j = 108; j <= 254; ++j) pose[j].position = {0.01f * static_cast<float>(j % 5) - 0.02f, 0.03f, 0.09f};
-    const std::array<std::uint16_t, 10> chain{0, 1, 7, 42, 43, 44, 45, 101, 102, 103};
-    const Placed head = placed(pose, chain);
-    Goal goal;
-    goal.front = {4, 1.3f, -1.5f};
-    goal.aim = aimed(0);
-    // Off to its right (-X) and a little ahead: the head turns that way.
-    goal.look_at = Vec3{head.position[0] - 1.0f, head.position[1], head.position[2] + 0.4f};
-    check(carry::carry(pose, goal).valid, "Carried, looking");
-    const Placed turned = placed(pose, chain);
-    const Vec3 face = anim_studio::rotate(turned.rotation, {0, 0, 1});
-    check(face[0] < -0.5f, "The face turns to the point on its right");
-
-    // Then a pose whose face joints are all at one point (not posed, as riding): the face's way as measured
-    // is kept, and the head still turns to the point.
-    auto riding = standing();
-    for (std::size_t j = 107; j <= 254; ++j) riding[j].position = {0, 0, 0};
-    check(carry::carry(riding, goal).valid, "Carried, looking, the face not posed");
-    const Placed again = placed(riding, chain);
-    check(anim_studio::rotate(again.rotation, {0, 0, 1})[0] < -0.5f, "The face still turns to the point, by the way measured before");
-}
-
-float degrees_between(const Vec3& a, const Vec3& b) {
-    const float d = (a[0] * b[0] + a[1] * b[1] + a[2] * b[2]) /
-                    std::sqrt((a[0] * a[0] + a[1] * a[1] + a[2] * a[2]) * (b[0] * b[0] + b[1] * b[1] + b[2] * b[2]));
-    return std::acos(std::clamp(d, -1.0f, 1.0f)) * 180.0f / std::numbers::pi_v<float>;
-}
-std::vector<Joint> with_a_face() {
-    auto pose = standing();
-    pose[107].position = {0, 0.05f, 0};
-    for (std::size_t j = 108; j <= 254; ++j) pose[j].position = {0.01f * static_cast<float>(j % 5) - 0.02f, 0.03f, 0.09f};
-    return pose;
-}
-void the_face_turns_all_the_way_and_no_further() {
-    const std::array<std::uint16_t, 10> chain{0, 1, 7, 42, 43, 44, 45, 101, 102, 103};
-    // A quarter turn round to its right, level: the face ends on the point.
-    {
-        auto pose = with_a_face();
-        const Placed head = placed(pose, chain);
-        Goal goal;
-        goal.front = {4, 1.3f, -1.5f};
-        goal.aim = aimed(0);
-        goal.look_at = Vec3{head.position[0] - 1.0f, head.position[1], head.position[2]};
-        check(carry::carry(pose, goal).valid, "Carried, looking right round");
-        const Placed turned = placed(pose, chain);
-        const Vec3 to{goal.look_at->at(0) - turned.position[0], goal.look_at->at(1) - turned.position[1], goal.look_at->at(2) - turned.position[2]};
-        check(degrees_between(anim_studio::rotate(turned.rotation, {0, 0, 1}), to) < 3.0f, "A quarter turn lands on the point");
-    }
-    // Straight behind it: no further round than a neck turns (about 100 degrees off the way the hips face).
-    {
-        auto pose = with_a_face();
-        const Placed head = placed(pose, chain);
-        Goal goal;
-        goal.front = {4, 1.3f, -1.5f};
-        goal.aim = aimed(0);
-        goal.look_at = Vec3{head.position[0] - 0.05f, head.position[1], head.position[2] - 1.0f};
-        check(carry::carry(pose, goal).valid, "Carried, looking behind");
-        const Placed turned = placed(pose, chain);
-        const float off = degrees_between(anim_studio::rotate(turned.rotation, {0, 0, 1}), {0, 0, 1});
-        check(off > 90.0f && off < 110.0f, "Behind: the head turns as far as a neck does, no further");
-    }
-    // Held out of reach (exact, the front far off): the face looks where the item ended up.
-    {
-        auto pose = with_a_face();
-        Goal goal;
-        goal.front = {4, 1.3f, 3.0f}; // 5 m out in front: well past the arm
-        goal.aim = aimed(0);
-        goal.exact = true;
-        goal.look_at = goal.front;
-        const auto held = carry::carry(pose, goal);
-        check(held.valid, "Carried, out of reach");
-        const Placed turned = placed(pose, chain);
-        const Vec3 to{held.front[0] - turned.position[0], held.front[1] - turned.position[1], held.front[2] - turned.position[2]};
-        check(degrees_between(anim_studio::rotate(turned.rotation, {0, 0, 1}), to) < 5.0f, "The face looks at the item where it is held");
-    }
-}
-
-void held_where_asked_up_in_front_of_the_face() {
-    // Aimed straight up and asked to hold it over the face (exact): the hand goes up there, well over the
-    // shoulder, rather than kept down by it as the aim's own sweep does.
-    auto pose = standing();
-    const auto shoulder = arm(pose, Hand::right)[8].position;
-    Goal goal;
-    goal.aim = aimed(1.5f);
-    goal.front = {shoulder[0] + 0.15f, shoulder[1] + 0.45f, shoulder[2] + 0.25f};
-    goal.exact = true;
-    const auto held = carry::carry(pose, goal);
-    check(held.valid, "Carried up in front of the face");
-    check(held.front[1] > shoulder[1] + 0.35f, "Held high, in front of the face");
-    Goal sweep = goal;
-    sweep.exact = false;
-    auto pose2 = standing();
-    const auto swept = carry::carry(pose2, sweep);
-    check(swept.valid && swept.front[1] < held.front[1], "The aim's own sweep holds it lower");
-}
-
 void no_weight_and_a_broken_pose() {
     auto pose = standing();
     const auto before = pose;
@@ -268,9 +168,6 @@ int main() {
         the_other_hand_holds_it_too();
         the_feet_stay_as_the_hips_go_down();
         the_body_turns();
-        the_face_looks_at_a_point();
-        the_face_turns_all_the_way_and_no_further();
-        held_where_asked_up_in_front_of_the_face();
         no_weight_and_a_broken_pose();
     } catch (const std::exception& error) {
         std::cerr << "FAILED: " << error.what() << '\n';

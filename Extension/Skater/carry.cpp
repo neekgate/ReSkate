@@ -147,8 +147,8 @@ Held hold_one(std::span<Joint> pose, const One& goal) noexcept {
         const float out_min = (0.24f - 0.06f * up_part) * (1.0f - 0.35f * to_own_side);
         const float out_now = dot(sub(palm_goal, s), forward);
         if (out_now < out_min) palm_goal = add(palm_goal, scaled(forward, out_min - out_now));
-        // (Held where asked (exact), aimed up: up in front of the face, as a phone is held up to film the sky;
-        // the hand no further over the shoulder than the arm reaches up in front.)
+        // (Held where asked (exact), aimed up, the hand may go up in front of the face, as a phone is held
+        // up to film the sky; the aim's own sweep keeps it lower, so the arm never folds up over the shoulder.)
         const float up_reach = goal.exact ? 0.6f : 0.22f;
         const float top = s[1] + 0.04f + up_reach * up_part + side_lift * to_own_side;
         if (palm_goal[1] > top) palm_goal[1] = top;
@@ -343,15 +343,13 @@ bool hunch(std::span<Joint> pose, const Vec3& toward, float angle, float look, f
 }
 
 namespace {
-// The way the face looks out of the head, in the head joint's own frame. Measured from the face itself: the
-// face's joints (the leaves under joint 107, its 147 points on the face, not the chain at 255) lie in front
-// of the head, so from the head to the middle of them, square to the neck, is the way it looks. (The head as
-// the skeleton stands looking the way the hips face was tried first: on the game's skeleton it was a quarter
-// turn off, and the head turned to look left of the phone.) That, only when the face's joints are not there.
+// The way the face looks out of the head, in the head joint's own frame. The skeleton has no joint that points
+// where the face looks, so it is measured from the face itself: the face's joints (the leaves under joint 107,
+// not the chain at 255) lie over the front of the head, so from the head to the middle of them, square to the
+// neck, is the way it looks.
 constexpr std::uint16_t face_root = 107, face_first = 108, face_last = 254;
-// The face's way in the head, once measured: the face is fixed in the head, so it holds for every pose after.
-// (Riding, the game's pose of the face joints was not one to measure: the head looked off the phone on the
-// board while it looked at it on foot.)
+// The face is fixed in the head, so a way measured once holds for every pose after. Kept, because in some of
+// the game's poses (riding) the face's joints are not posed: all at one point, nothing to measure.
 std::optional<Vec3>& measured_face() {
     static std::optional<Vec3> face;
     return face;
@@ -389,8 +387,9 @@ std::optional<Vec3> face_in_head(std::span<const Joint> pose) {
         }
     }
     if (measured_face()) return measured_face();
-    // Never measured yet: the head as the skeleton stands looking the way the hips face, turned the quarter
-    // turn that was seen to be off (the head looked fully to the left of the phone with it), about the neck.
+    // Never measured yet: from the head as the skeleton stands. Standing, it looks a quarter turn to the left
+    // of the way the hips face (seen in the game: aimed by the hips' way, the head looked fully left of the
+    // point), so that way turned a quarter round, about the neck.
     std::vector<Joint> standing(pose.begin(), pose.end());
     for (std::size_t i = 0; i < back_joints.size(); ++i) standing[back_joints[i]].rotation = standing_back[i];
     if (!compose(standing, head_chain, w)) return std::nullopt;
@@ -401,9 +400,9 @@ std::optional<Vec3> face_in_head(std::span<const Joint> pose) {
     return unit(rotate(conjugate(standing_head), left), {0, 0, 1});
 }
 // The neck and head turned (Neck, Neck1, Head, a share each, then the head the last of the way) so `face` (in
-// the head's frame) looks at `point`, `weight` of the way. Never further round than a neck turns: no more than
-// about 100 degrees either side of the way the hips face (riding, the head is already turned toward the board's
-// nose, so a limit from where the animation had it left the far side short).
+// the head's frame) looks at `point`, `weight` of the way. Never further round than a neck turns: about 100
+// degrees either side of the way the hips face (not of where the animation has the head: riding, that is
+// already turned toward the board's nose).
 void look_toward(std::span<Joint> pose, const Vec3& face, const Vec3& point, float weight) {
     constexpr std::array<float, 3> share{0.3f, 0.25f, 0.45f};
     constexpr float most_round = 1.75f; // radians either side of the hips' way
@@ -454,7 +453,7 @@ void look_toward(std::span<Joint> pose, const Vec3& face, const Vec3& point, flo
 Held carry(std::span<Joint> pose, const Goal& goal) noexcept {
     if (pose.size() <= 343 || !finite(goal.front) || !finite(goal.aim) || !finite(goal.front_from_grip)) return {};
     const float body_weight = std::clamp(goal.weight, 0.0f, 1.0f);
-    // (Read before the body is bent: the face's way in the head, from the skeleton standing.)
+    // (The face's way in the head, read from the pose as the animation has it, before the body is bent.)
     std::optional<Vec3> face;
     if (goal.look_at && finite(*goal.look_at)) face = face_in_head(pose);
     // (The point moves with the item: held short of `at` (out of reach, kept out of the body), the face looks
@@ -544,7 +543,7 @@ Held carry(std::span<Joint> pose, const Goal& goal) noexcept {
     // The other hand to its side, underneath, where the first one put it.
     Vec3 support = support_from_grip;
     if (goal.hand == Hand::left) support[0] = -support[0];
-    // (Moved by the caller, for an item whose sides are not the camcorder's: a phone, held lower down.)
+    // (Moved by the caller: that fixed place suits one item's shape, and a hand on another sits elsewhere.)
     support = add(support, goal.support);
     const Vec3 point = add(held.item.position, rotate(held.item.rotation, support));
     One other;
