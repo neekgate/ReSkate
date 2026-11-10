@@ -397,24 +397,52 @@ std::optional<Vec3> face_in_head(std::span<const Joint> pose) {
     const Vec3 left = unit(cross(neck_up, hips_way), hips_way);
     return unit(rotate(conjugate(standing_head), left), {0, 0, 1});
 }
-// The neck and head turned (Neck, Neck1, Head, a share each) so `face` (in the head's frame) looks at
-// `point`, at most about 70 degrees, `weight` of the way.
+// The neck and head turned (Neck, Neck1, Head, a share each, then the head the last of the way) so `face` (in
+// the head's frame) looks at `point`, `weight` of the way. Never further round than a neck turns: no more than
+// about 100 degrees either side of the way the hips face (riding, the head is already turned toward the board's
+// nose, so a limit from where the animation had it left the far side short).
 void look_toward(std::span<Joint> pose, const Vec3& face, const Vec3& point, float weight) {
     constexpr std::array<float, 3> share{0.3f, 0.25f, 0.45f};
+    constexpr float most_round = 1.75f; // radians either side of the hips' way
+    const float k = std::clamp(weight, 0.0f, 1.0f);
+    const Vec3 hips_way = body_facing(pose);
     std::array<Placed, head_chain.size()> w{};
+    // The way to look, held within the neck's reach of the hips' way (its height kept).
+    const auto wanted = [&](const Vec3& from) {
+        Vec3 to = unit(sub(point, from), hips_way);
+        Vec3 level{to[0], 0.0f, to[2]};
+        const float flat = length(level);
+        if (flat < 1e-3f) return to;
+        level = scaled(level, 1.0f / flat);
+        const float round = std::atan2(dot(cross(hips_way, level), {0.0f, 1.0f, 0.0f}), dot(hips_way, level));
+        if (std::abs(round) <= most_round) return to;
+        const Vec3 held = rotate(about_up(std::copysign(most_round, round)), hips_way);
+        return unit(add(scaled(held, flat), Vec3{0.0f, to[1], 0.0f}), to);
+    };
+    // The turn as an axis and an angle, so each joint's share is exactly its share of it.
+    const auto turn_of = [&](float& angle) {
+        const Vec3 now = rotate(w.back().rotation, face);
+        const Quat q = arc(now, wanted(w.back().position));
+        const float s = std::sqrt(q[0] * q[0] + q[1] * q[1] + q[2] * q[2]);
+        angle = 2.0f * std::atan2(s, q[3]);
+        return s > 1e-6f ? Vec3{q[0] / s, q[1] / s, q[2] / s} : Vec3{0, 1, 0};
+    };
     if (!compose(pose, head_chain, w)) return;
-    const Vec3 now = rotate(w.back().rotation, face);
-    const Vec3 to = unit(sub(point, w.back().position), now);
-    Quat turn = arc(now, to);
-    // (No further round than a neck turns: the rest of the way is left.)
-    const float angle = 2.0f * std::acos(std::clamp(turn[3], -1.0f, 1.0f));
-    const float most = 1.2f;
-    const float k = std::clamp(weight, 0.0f, 1.0f) * (angle > most ? most / angle : 1.0f);
+    float angle = 0.0f;
+    const Vec3 axis = turn_of(angle);
     for (std::size_t i = 0; i < share.size(); ++i) {
         if (!compose(pose, head_chain, w)) return;
         const std::size_t at = 7 + i; // Neck, Neck1, Head in head_chain
-        const Quat part = blend(Quat{0, 0, 0, 1}, turn, share[i] * k);
-        const Quat world = normalised(multiply(part, w[at].rotation));
+        const Quat world = normalised(multiply(anim_studio::axis_angle(axis, angle * share[i] * k), w[at].rotation));
+        pose[head_chain[at]].rotation = local_of(w[at - 1], world);
+    }
+    // (The neck turns the head about itself, so it ends a little off the point: the head takes the rest.)
+    if (k < 0.999f || !compose(pose, head_chain, w)) return;
+    float rest = 0.0f;
+    const Vec3 rest_axis = turn_of(rest);
+    if (rest > 1e-3f) {
+        const std::size_t at = head_chain.size() - 1;
+        const Quat world = normalised(multiply(anim_studio::axis_angle(rest_axis, rest), w[at].rotation));
         pose[head_chain[at]].rotation = local_of(w[at - 1], world);
     }
 }
@@ -426,8 +454,13 @@ Held carry(std::span<Joint> pose, const Goal& goal) noexcept {
     // (Read before the body is bent: the face's way in the head, from the skeleton standing.)
     std::optional<Vec3> face;
     if (goal.look_at && finite(*goal.look_at)) face = face_in_head(pose);
+    // (The point moves with the item: held short of `at` (out of reach, kept out of the body), the face looks
+    // where the item really is, not where it was asked to be.)
     const auto looked = [&](Held held) {
-        if (face && held.valid) look_toward(pose, *face, *goal.look_at, body_weight);
+        if (face && held.valid) {
+            const Vec3 point = goal.exact ? add(*goal.look_at, sub(held.front, goal.front)) : *goal.look_at;
+            look_toward(pose, *face, point, body_weight);
+        }
         return held;
     };
     if (std::abs(goal.turn) > 1e-4f && std::isfinite(goal.turn)) {
