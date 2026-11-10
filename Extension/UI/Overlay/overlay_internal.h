@@ -117,9 +117,6 @@ struct State {
     // The same movement for read_mouse_look, kept apart so the editor's and the flight look's reads
     // do not take it; and the wheel, from raw packets and from WM_MOUSEWHEEL (in its 120 a notch).
     std::atomic<long> look_mouse_x{0}, look_mouse_y{0}, look_wheel_raw{0}, look_wheel_message{0};
-    // Until when a plugin's mouse look is reading the Windows cursor (no raw mouse registered): the
-    // game's own pointer is kept out of sight meanwhile, as it would otherwise sit in the middle.
-    std::atomic<ULONGLONG> cursor_look_until{0};
     std::atomic<unsigned> raw_mouse_buttons{0}; // physical: 1 left, 2 right, 4 middle
     std::atomic<ULONGLONG> raw_mouse_time{0};
     // The mouse registration in effect has RIDEV_NOLEGACY: Windows does not
